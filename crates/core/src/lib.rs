@@ -11,14 +11,12 @@
 
 pub mod model;
 pub mod platform;
-pub mod sqlite_store;
 pub mod store;
 pub mod tracker;
 pub mod watcher;
 
 pub use model::{AppInfo, BrowserKind, FocusEvent, TabEvent};
 pub use platform::PlatformFocusWatcher;
-pub use sqlite_store::SqliteStore;
-pub use store::SessionStore;
+pub use store::{SessionStore, SqliteStore};
 pub use tracker::SessionTracker;
 pub use watcher::FocusWatcher;

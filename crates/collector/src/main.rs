@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use directories::ProjectDirs;
 
-use makora_core::{FocusEvent, FocusWatcher, PlatformFocusWatcher, SessionTracker, SqliteStore};
+use makora_core::{FocusEvent, FocusWatcher, PlatformFocusWatcher, SessionStore, SessionTracker, SqliteStore};
 
 mod ingest;
 
@@ -46,7 +46,7 @@ fn database_path() -> Result<std::path::PathBuf> {
 /// On Ctrl+C (or the equivalent console close event on Windows), close
 /// whatever session is currently open so its `end_time` reflects reality
 /// instead of being recovered later as a dangling, zero-length session.
-fn set_shutdown_handler(tracker: Arc<Mutex<SessionTracker<SqliteStore>>>) -> Result<()> {
+fn set_shutdown_handler<S: SessionStore + Send + 'static>(tracker: Arc<Mutex<SessionTracker<S>>>) -> Result<()> {
     ctrlc::set_handler(move || {
         if let Err(err) = tracker.lock().unwrap().close_current(Utc::now()) {
             eprintln!("makora: failed to close session on shutdown: {err:#}");

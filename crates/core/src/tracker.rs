@@ -1,9 +1,25 @@
+use std::path::Path;
+
 use chrono::{DateTime, Utc};
 
 use anyhow::Result;
 
 use crate::model::{BrowserKind, FocusEvent, TabEvent};
 use crate::store::SessionStore;
+
+/// Executables whose focus events are dropped entirely: they neither end the
+/// current session nor start a new one, so briefly focusing one (e.g.
+/// clicking the desktop) doesn't fragment the session on either side of it.
+/// Matched case-insensitively against the exe's file name, not the full path.
+const IGNORED_APPS: &[&str] = &["explorer.exe"];
+
+fn is_ignored(exe_path: &str) -> bool {
+    let file_name = Path::new(exe_path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(exe_path);
+    IGNORED_APPS.iter().any(|ignored| ignored.eq_ignore_ascii_case(file_name))
+}
 
 /// The currently open app session.
 struct Current {
@@ -50,6 +66,9 @@ impl<S: SessionStore> SessionTracker<S> {
 
     /// Feed one focus-change observation into the tracker.
     pub fn handle_event(&mut self, event: FocusEvent) -> Result<()> {
+        if is_ignored(&event.app.exe_path) {
+            return Ok(());
+        }
         if let Some(current) = &self.current {
             if current.exe_path == event.app.exe_path {
                 return Ok(()); // same app still focused (e.g. window title changed)
@@ -193,6 +212,28 @@ mod tests {
         tracker.handle_event(event("b.exe", "B")).unwrap();
 
         assert_eq!(*log.0.borrow(), vec!["start:a.exe", "end:1", "start:b.exe"]);
+    }
+
+    #[test]
+    fn ignored_app_does_not_interrupt_current_session() {
+        let log = RecordingStore::default();
+        let mut tracker = SessionTracker::new(log.clone()).unwrap();
+
+        tracker.handle_event(event("a.exe", "A")).unwrap();
+        tracker.handle_event(event(r"C:\Windows\explorer.exe", "File Explorer")).unwrap();
+        tracker.handle_event(event("a.exe", "A")).unwrap();
+
+        assert_eq!(*log.0.borrow(), vec!["start:a.exe"]);
+    }
+
+    #[test]
+    fn ignored_app_is_matched_case_insensitively_by_file_name() {
+        let log = RecordingStore::default();
+        let mut tracker = SessionTracker::new(log.clone()).unwrap();
+
+        tracker.handle_event(event(r"C:\Windows\Explorer.EXE", "File Explorer")).unwrap();
+
+        assert_eq!(*log.0.borrow(), Vec::<String>::new());
     }
 
     #[test]

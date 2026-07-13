@@ -325,7 +325,10 @@ name = "makora-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "block2",
  "chrono",
+ "core-foundation-sys",
+ "objc2",
  "rusqlite",
  "windows-sys",
 ]
