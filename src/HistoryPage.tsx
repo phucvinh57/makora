@@ -1,9 +1,16 @@
 import { useEffect, useState } from "react";
-import { listSessions } from "./api";
-import type { SessionRow } from "./types";
-import { formatDuration, formatTimestamp } from "./duration";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { listSessions } from "./api";
+import { formatDuration, formatTimestamp } from "./duration";
+import type { SessionRow } from "./types";
 
 const PAGE_SIZE = 50;
 
@@ -67,7 +74,10 @@ export default function HistoryPage() {
                 <TableCell className="truncate" title={row.app_name}>
                   {row.app_name}
                 </TableCell>
-                <TableCell className="truncate font-mono text-xs" title={row.url ?? undefined}>
+                <TableCell
+                  className="truncate font-mono text-xs"
+                  title={row.url ?? undefined}
+                >
                   {row.url ?? ""}
                 </TableCell>
                 <TableCell className="truncate" title={row.window_title}>
@@ -83,7 +93,10 @@ export default function HistoryPage() {
             ))}
             {!loading && rows.length === 0 && (
               <TableRow>
-                <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
+                <TableCell
+                  colSpan={5}
+                  className="py-8 text-center text-muted-foreground"
+                >
                   No sessions recorded yet.
                 </TableCell>
               </TableRow>
@@ -93,13 +106,23 @@ export default function HistoryPage() {
       </div>
 
       <footer className="flex items-center justify-center gap-4 pt-3 text-sm">
-        <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={page === 0}
+          onClick={() => setPage((p) => Math.max(0, p - 1))}
+        >
           Prev
         </Button>
         <span>
           Page {page + 1} of {pageCount} ({total} sessions)
         </span>
-        <Button variant="outline" size="sm" disabled={page + 1 >= pageCount} onClick={() => setPage((p) => p + 1)}>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={page + 1 >= pageCount}
+          onClick={() => setPage((p) => p + 1)}
+        >
           Next
         </Button>
       </footer>

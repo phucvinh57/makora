@@ -16,7 +16,8 @@ async function detectBrowser() {
   if (navigator.brave && typeof navigator.brave.isBrave === "function") {
     try {
       if (await navigator.brave.isBrave()) {
-        return (cachedBrowser = "brave");
+        cachedBrowser = "brave";
+        return cachedBrowser;
       }
     } catch {
       // fall through to UA sniffing
@@ -45,7 +46,7 @@ function normalizeUrl(rawUrl) {
 
 async function reportActiveTab() {
   const [tab] = await api.tabs.query({ active: true, lastFocusedWindow: true });
-  if (!tab || !tab.url || !/^https?:\/\//.test(tab.url)) {
+  if (!tab?.url || !/^https?:\/\//.test(tab.url)) {
     return; // no active tab, or an internal page (chrome://, about:, extension pages, ...)
   }
 
