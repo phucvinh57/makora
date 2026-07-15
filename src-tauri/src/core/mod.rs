@@ -18,6 +18,6 @@ pub mod watcher;
 
 pub use model::{BrowserKind, FocusEvent, TabEvent};
 pub use platform::PlatformFocusWatcher;
-pub use store::{HistoryReader, SessionRow, SessionStore, SqliteStore};
+pub use store::{open_connection, Category, CategoryStore, HistoryReader, SessionRow, SessionStore, SqliteStore};
 pub use tracker::SessionTracker;
 pub use watcher::FocusWatcher;

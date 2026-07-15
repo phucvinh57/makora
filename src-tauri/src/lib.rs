@@ -11,30 +11,44 @@ use chrono::Utc;
 use directories::ProjectDirs;
 use tauri::{Manager, WindowEvent};
 
-use crate::core::{FocusEvent, FocusWatcher, HistoryReader, PlatformFocusWatcher, SessionTracker, SqliteStore};
+use crate::core::{
+    open_connection, CategoryStore, FocusEvent, FocusWatcher, HistoryReader, PlatformFocusWatcher, SessionTracker,
+    SqliteStore,
+};
 
 /// Shared by the focus-watcher thread, the tab-ingest server, and the
-/// shutdown handler — the read side ([`HistoryReader`]) is intentionally a
-/// separate connection, managed on its own, so UI queries never block on
-/// this write lock.
+/// shutdown handler.
 type SharedTracker = Arc<Mutex<SessionTracker<SqliteStore>>>;
 
 pub fn run() {
     let db_path = database_path().expect("resolving application data directory");
     eprintln!("makora: writing sessions to {}", db_path.display());
 
-    let store = SqliteStore::open(&db_path).expect("opening session database");
+    // One SQLite connection shared by the tracker's write path, the UI's
+    // read-only queries, and category edits — SQLite serializes writes at
+    // the file level regardless of connection count, so separate
+    // connections here would only add the risk of a `SQLITE_BUSY` error
+    // when two of them write at once, not any real concurrency.
+    let conn = open_connection(&db_path).expect("opening database");
+    let store = SqliteStore::new(conn.clone());
     let tracker: SharedTracker = Arc::new(Mutex::new(
         SessionTracker::new(store).expect("initializing session tracker"),
     ));
-    let reader = HistoryReader::open(&db_path).expect("opening history reader");
+    let reader = HistoryReader::new(conn.clone());
+    let categories = CategoryStore::new(conn);
 
     let setup_tracker = tracker.clone();
 
     tauri::Builder::default()
         .manage(tracker)
         .manage(reader)
-        .invoke_handler(tauri::generate_handler![commands::list_sessions])
+        .manage(categories)
+        .invoke_handler(tauri::generate_handler![
+            commands::list_sessions,
+            commands::list_categories,
+            commands::set_session_category,
+            commands::clear_session_category,
+        ])
         .setup(move |app| {
             let (tx, rx) = mpsc::channel::<FocusEvent>();
             let mut watcher = PlatformFocusWatcher::new();
@@ -87,5 +101,5 @@ pub fn run() {
 fn database_path() -> anyhow::Result<std::path::PathBuf> {
     let dirs = ProjectDirs::from("dev", "phucvinh57", "makora")
         .context("could not resolve a per-user application data directory")?;
-    Ok(dirs.data_dir().join("data.db"))
+    Ok(dirs.data_dir().join("makora.sqlite"))
 }

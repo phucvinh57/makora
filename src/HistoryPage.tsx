@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -8,20 +8,27 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { listSessions } from "./api";
+import {
+  clearSessionCategory,
+  listCategories,
+  listSessions,
+  setSessionCategory,
+} from "./api";
 import { formatDuration, formatTimestamp } from "./duration";
-import type { SessionRow } from "./types";
+import type { Category, SessionRow } from "./types";
 
 const PAGE_SIZE = 50;
+const UNCATEGORIZED = "uncategorized";
 
 export default function HistoryPage() {
   const [page, setPage] = useState(0);
   const [rows, setRows] = useState<SessionRow[]>([]);
   const [total, setTotal] = useState(0);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const refreshSessions = useCallback(() => {
     let cancelled = false;
     setLoading(true);
     listSessions(page, PAGE_SIZE)
@@ -41,6 +48,30 @@ export default function HistoryPage() {
       cancelled = true;
     };
   }, [page]);
+
+  useEffect(() => refreshSessions(), [refreshSessions]);
+
+  useEffect(() => {
+    listCategories()
+      .then(setCategories)
+      .catch((err) => setError(String(err)));
+  }, []);
+
+  // A category picked here applies to every session sharing this row's
+  // app/site (see `set_session_category`), so the whole page is re-fetched
+  // rather than patching just this one row in place.
+  async function handleCategoryChange(row: SessionRow, value: string) {
+    try {
+      if (value === UNCATEGORIZED) {
+        await clearSessionCategory(row.id);
+      } else {
+        await setSessionCategory(row.id, Number(value));
+      }
+      refreshSessions();
+    } catch (err) {
+      setError(String(err));
+    }
+  }
 
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -62,6 +93,7 @@ export default function HistoryPage() {
           <TableHeader className="sticky top-0 z-10 bg-background">
             <TableRow>
               <TableHead className="w-40">App</TableHead>
+              <TableHead className="w-36">Category</TableHead>
               <TableHead className="w-56">Site</TableHead>
               <TableHead>Window title</TableHead>
               <TableHead className="w-44">Start</TableHead>
@@ -73,6 +105,29 @@ export default function HistoryPage() {
               <TableRow key={row.id}>
                 <TableCell className="truncate" title={row.app_name}>
                   {row.app_name}
+                </TableCell>
+                <TableCell>
+                  <select
+                    className="w-full rounded-md border bg-transparent px-1.5 py-0.5 text-xs"
+                    style={{
+                      color: row.category_color ?? undefined,
+                      borderColor: row.category_color ?? undefined,
+                    }}
+                    value={row.category_id ?? UNCATEGORIZED}
+                    title={
+                      row.category_is_override
+                        ? "Manually categorized"
+                        : undefined
+                    }
+                    onChange={(e) => handleCategoryChange(row, e.target.value)}
+                  >
+                    <option value={UNCATEGORIZED}>Uncategorized</option>
+                    {categories.map((category) => (
+                      <option key={category.id} value={category.id}>
+                        {category.name}
+                      </option>
+                    ))}
+                  </select>
                 </TableCell>
                 <TableCell
                   className="truncate font-mono text-xs"
@@ -94,7 +149,7 @@ export default function HistoryPage() {
             {!loading && rows.length === 0 && (
               <TableRow>
                 <TableCell
-                  colSpan={5}
+                  colSpan={6}
                   className="py-8 text-center text-muted-foreground"
                 >
                   No sessions recorded yet.

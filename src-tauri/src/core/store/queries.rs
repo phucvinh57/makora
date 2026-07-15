@@ -1,13 +1,9 @@
-use std::path::Path;
-use std::sync::Mutex;
-
-use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use anyhow::Result;
+use rusqlite::params;
 use serde::Serialize;
 
-/// One row from `sessions`, shaped for the UI's history page. `url` is
-/// `Some` when the row represents a browser tab rather than a plain app
-/// focus.
+use super::sqlite::SharedConnection;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionRow {
     pub id: i64,
@@ -17,25 +13,18 @@ pub struct SessionRow {
     pub url: Option<String>,
     pub start_time: String,
     pub end_time: Option<String>,
+    pub category_id: Option<i64>,
+    pub category_name: Option<String>,
+    pub category_color: Option<String>,
+    pub category_is_override: bool,
 }
-
-/// A read-only view over the sessions database, separate from the write path
-/// ([`crate::core::store::SqliteStore`]) so UI queries never contend with
-/// the tracker's write lock. SQLite supports multiple connections to the
-/// same file, so this just opens its own.
-///
-/// `rusqlite::Connection` is `Send` but not `Sync` (its statement cache uses
-/// a `RefCell`), and a Tauri-managed state needs to be both since commands
-/// can run on any thread — hence the `Mutex` even though this is read-only.
 pub struct HistoryReader {
-    conn: Mutex<Connection>,
+    conn: SharedConnection,
 }
 
 impl HistoryReader {
-    pub fn open(path: &Path) -> Result<Self> {
-        let conn = Connection::open(path)
-            .with_context(|| format!("opening database at {}", path.display()))?;
-        Ok(Self { conn: Mutex::new(conn) })
+    pub fn new(conn: SharedConnection) -> Self {
+        Self { conn }
     }
 
     /// Total number of app-focus sessions, for pagination.
@@ -48,13 +37,23 @@ impl HistoryReader {
     }
 
     /// A page of activity rows (app focus and browser-tab rows alike),
-    /// newest first.
+    /// newest first. Category is resolved at read time — an override wins
+    /// over a rule via `COALESCE` — rather than stored on the row, so
+    /// editing a rule or override re-categorizes historical sessions
+    /// immediately instead of only affecting future ones.
     pub fn list_sessions(&self, limit: i64, offset: i64) -> Result<Vec<SessionRow>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, app_name, exe_path, window_title, url, start_time, end_time
-             FROM sessions
-             ORDER BY start_time DESC
+            "SELECT s.id, s.app_name, s.exe_path, s.window_title, s.url, s.start_time, s.end_time,
+                    cat.id, cat.name, cat.color, ov.category_id IS NOT NULL
+             FROM sessions s
+             LEFT JOIN category_overrides ov
+                    ON ov.key_kind = s.category_key_kind AND ov.pattern = s.category_key
+             LEFT JOIN category_rules r
+                    ON r.key_kind = s.category_key_kind AND r.pattern = s.category_key
+             LEFT JOIN categories cat
+                    ON cat.id = COALESCE(ov.category_id, r.category_id)
+             ORDER BY s.start_time DESC
              LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt
@@ -67,6 +66,10 @@ impl HistoryReader {
                     url: row.get(4)?,
                     start_time: row.get(5)?,
                     end_time: row.get(6)?,
+                    category_id: row.get(7)?,
+                    category_name: row.get(8)?,
+                    category_color: row.get(9)?,
+                    category_is_override: row.get(10)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;

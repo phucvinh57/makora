@@ -1,9 +1,8 @@
-use std::path::Path;
-use std::sync::Mutex;
-
-use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use anyhow::Result;
+use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
+
+use super::sqlite::SharedConnection;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Category {
@@ -13,20 +12,18 @@ pub struct Category {
 }
 
 /// Read/write access to the category tables (`categories`, `category_rules`,
-/// `category_overrides`) — separate from both `SessionStore` (the tracker's
-/// write path) and `HistoryReader` (session reads) because category edits
-/// are user-initiated, infrequent, and touch a different set of tables.
-/// SQLite supports multiple connections to the same file, so this just opens
-/// its own, same as `HistoryReader` does.
+/// `category_overrides`). Shares a connection with `SessionStore` (the
+/// tracker's write path) and `HistoryReader` (session reads) rather than
+/// opening its own — SQLite only allows one writer at a time regardless of
+/// connection count, so separate connections wouldn't add write concurrency,
+/// only the risk of a `SQLITE_BUSY` error when two of them write at once.
 pub struct CategoryStore {
-    conn: Mutex<Connection>,
+    conn: SharedConnection,
 }
 
 impl CategoryStore {
-    pub fn open(path: &Path) -> Result<Self> {
-        let conn = Connection::open(path)
-            .with_context(|| format!("opening database at {}", path.display()))?;
-        Ok(Self { conn: Mutex::new(conn) })
+    pub fn new(conn: SharedConnection) -> Self {
+        Self { conn }
     }
 
     pub fn list_categories(&self) -> Result<Vec<Category>> {
