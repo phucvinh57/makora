@@ -1751,6 +1751,7 @@ dependencies = [
  "core-foundation-sys",
  "directories",
  "objc2",
+ "regex",
  "rusqlite",
  "rusqlite_migration",
  "serde",

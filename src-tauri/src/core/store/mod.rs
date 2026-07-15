@@ -5,10 +5,12 @@ use anyhow::Result;
 use crate::core::model::AppInfo;
 
 pub mod categories;
+pub mod ignore;
 pub mod queries;
 pub mod sqlite;
 
-pub use categories::{Category, CategoryRule, CategoryStore};
+pub use categories::{Category, CategorizePreview, CategoryKeyRef, CategoryRule, CategoryStore, RecategorizeFilter};
+pub use ignore::{IgnoreRule, IgnoreStore};
 pub use queries::{CategoryFilter, HistoryReader, SessionFilter, SessionRow};
 pub use sqlite::{open_connection, SqliteStore};
 

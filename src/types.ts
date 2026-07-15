@@ -25,9 +25,32 @@ export interface Category {
 
 export type KeyKind = "exe" | "domain";
 
+export type MatchKind = "exact" | "substring" | "regex";
+
 export interface CategoryRule {
   id: number;
   key_kind: KeyKind;
   pattern: string;
+  match_kind: MatchKind;
   category_id: number;
+}
+
+export interface CategoryKeyRef {
+  key_kind: KeyKind;
+  pattern: string;
+}
+
+export interface CategorizePreview {
+  key_kind: KeyKind;
+  key: string;
+  affected_count: number;
+}
+
+export type IgnoreKind = "app" | "site";
+
+export interface IgnoreRule {
+  id: number;
+  kind: IgnoreKind;
+  pattern: string;
+  match_kind: MatchKind;
 }

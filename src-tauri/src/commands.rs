@@ -1,4 +1,9 @@
-use crate::core::{Category, CategoryFilter, CategoryRule, CategoryStore, HistoryReader, SessionFilter, SessionRow};
+use std::sync::Arc;
+
+use crate::core::{
+    Category, CategorizePreview, CategoryFilter, CategoryKeyRef, CategoryRule, CategoryStore, HistoryReader,
+    IgnoreRule, IgnoreStore, RecategorizeFilter, SessionFilter, SessionRow,
+};
 use serde::Serialize;
 use tauri::State;
 
@@ -49,11 +54,33 @@ pub fn list_categories(categories: State<CategoryStore>) -> Result<Vec<Category>
 }
 
 /// Manually assigns a category to a session — and to every other session
-/// sharing the same app/site, since that's what a user picking a category
-/// for one row actually expects.
+/// sharing the same app/site, since that's what "always put GitHub under
+/// Development" actually expects. For categorizing just one activity, see
+/// `set_session_row_category`.
 #[tauri::command]
 pub fn set_session_category(categories: State<CategoryStore>, session_id: i64, category_id: i64) -> Result<(), String> {
     categories.set_override(session_id, category_id).map_err(|e| e.to_string())
+}
+
+/// Assigns a category to a single activity only, leaving every other
+/// session sharing its app/site key alone. `category_id: null` clears the
+/// pin, falling back to any key-wide override, then rules, then
+/// "Uncategorized".
+#[tauri::command]
+pub fn set_session_row_category(
+    categories: State<CategoryStore>,
+    session_id: i64,
+    category_id: Option<i64>,
+) -> Result<(), String> {
+    categories.set_row_category(session_id, category_id).map_err(|e| e.to_string())
+}
+
+/// How many sessions share `session_id`'s app/site key, i.e. how many rows
+/// `set_session_category` would actually recategorize — for the frontend to
+/// show a "this affects N other activities" confirmation before committing.
+#[tauri::command]
+pub fn preview_session_category(categories: State<CategoryStore>, session_id: i64) -> Result<CategorizePreview, String> {
+    categories.preview_category_change(session_id).map_err(|e| e.to_string())
 }
 
 /// Manually assigns a category to many sessions at once (and to every other
@@ -64,11 +91,33 @@ pub fn set_sessions_category(categories: State<CategoryStore>, session_ids: Vec<
     categories.set_overrides(&session_ids, category_id).map_err(|e| e.to_string())
 }
 
-/// Reverts a session's app/site to whatever the built-in rules say (or
-/// "Uncategorized" if none match), undoing a manual override.
+/// Distinct app/site keys eligible for a bulk recategorization pass — every
+/// key with at least one session inside `start_date`..=`end_date` (plain
+/// `YYYY-MM-DD`, either bound optional), optionally narrowed to keys that
+/// currently resolve to no category at all (`only_uncategorized`), and
+/// optionally excluding any key that already has a manual override
+/// (`protect_manual`). The frontend drives the actual write in chunks over
+/// this list via `recategorize_keys` so it can show progress.
 #[tauri::command]
-pub fn clear_session_category(categories: State<CategoryStore>, session_id: i64) -> Result<(), String> {
-    categories.clear_override(session_id).map_err(|e| e.to_string())
+pub fn list_recategorization_keys(
+    categories: State<CategoryStore>,
+    start_date: Option<String>,
+    end_date: Option<String>,
+    only_uncategorized: bool,
+    protect_manual: bool,
+) -> Result<Vec<CategoryKeyRef>, String> {
+    let filter = RecategorizeFilter { start_date, end_date, only_uncategorized, protect_manual };
+    categories.list_recategorization_keys(&filter).map_err(|e| e.to_string())
+}
+
+/// Re-evaluates a batch of app/site keys (from `list_recategorization_keys`)
+/// against the current rule set by clearing any manual override on them, so
+/// the live rule (or "Uncategorized") resolution takes back over instead of
+/// the frozen manual choice. Returns how many keys in this batch actually
+/// had an override cleared.
+#[tauri::command]
+pub fn recategorize_keys(categories: State<CategoryStore>, keys: Vec<CategoryKeyRef>) -> Result<i64, String> {
+    categories.recategorize_keys(&keys).map_err(|e| e.to_string())
 }
 
 /// Creates a new user-defined category.
@@ -97,15 +146,18 @@ pub fn list_category_rules(categories: State<CategoryStore>) -> Result<Vec<Categ
 }
 
 /// Adds a new rule matching an exe file name or URL domain to a category.
+/// `match_kind` is `"exact"`, `"substring"`, or `"regex"` — see
+/// `core::category::MatchKind`.
 #[tauri::command]
 pub fn create_category_rule(
     categories: State<CategoryStore>,
     key_kind: String,
     pattern: String,
+    match_kind: String,
     category_id: i64,
 ) -> Result<CategoryRule, String> {
     categories
-        .create_rule(&key_kind, &pattern, category_id)
+        .create_rule(&key_kind, &pattern, &match_kind, category_id)
         .map_err(|e| e.to_string())
 }
 
@@ -113,4 +165,30 @@ pub fn create_category_rule(
 #[tauri::command]
 pub fn delete_category_rule(categories: State<CategoryStore>, id: i64) -> Result<(), String> {
     categories.delete_rule(id).map_err(|e| e.to_string())
+}
+
+/// All apps/sites excluded from tracking entirely, for the settings page.
+#[tauri::command]
+pub fn list_ignore_rules(ignore: State<Arc<IgnoreStore>>) -> Result<Vec<IgnoreRule>, String> {
+    ignore.list_rules().map_err(|e| e.to_string())
+}
+
+/// Adds an app or site to the ignore list. `kind` is `"app"` (matched
+/// against the exe file name) or `"site"` (matched against the URL domain);
+/// `match_kind` is `"exact"`, `"substring"`, or `"regex"` — see
+/// `core::category::MatchKind`.
+#[tauri::command]
+pub fn create_ignore_rule(
+    ignore: State<Arc<IgnoreStore>>,
+    kind: String,
+    pattern: String,
+    match_kind: String,
+) -> Result<IgnoreRule, String> {
+    ignore.create_rule(&kind, &pattern, &match_kind).map_err(|e| e.to_string())
+}
+
+/// Removes an app/site from the ignore list.
+#[tauri::command]
+pub fn delete_ignore_rule(ignore: State<Arc<IgnoreStore>>, id: i64) -> Result<(), String> {
+    ignore.delete_rule(id).map_err(|e| e.to_string())
 }

@@ -12,8 +12,8 @@ use directories::ProjectDirs;
 use tauri::{Manager, WindowEvent};
 
 use crate::core::{
-    open_connection, CategoryStore, FocusEvent, FocusWatcher, HistoryReader, PlatformFocusWatcher, SessionTracker,
-    SqliteStore,
+    open_connection, CategoryStore, FocusEvent, FocusWatcher, HistoryReader, IgnoreStore, PlatformFocusWatcher,
+    SessionTracker, SqliteStore,
 };
 
 /// Shared by the focus-watcher thread, the tab-ingest server, and the
@@ -30,9 +30,10 @@ pub fn run() {
     // connections here would only add the risk of a `SQLITE_BUSY` error
     // when two of them write at once, not any real concurrency.
     let conn = open_connection(&db_path).expect("opening database");
+    let ignore = Arc::new(IgnoreStore::new(conn.clone()));
     let store = SqliteStore::new(conn.clone());
     let tracker: SharedTracker = Arc::new(Mutex::new(
-        SessionTracker::new(store).expect("initializing session tracker"),
+        SessionTracker::with_ignore_policy(store, ignore.clone()).expect("initializing session tracker"),
     ));
     let reader = HistoryReader::new(conn.clone());
     let categories = CategoryStore::new(conn);
@@ -43,18 +44,25 @@ pub fn run() {
         .manage(tracker)
         .manage(reader)
         .manage(categories)
+        .manage(ignore)
         .invoke_handler(tauri::generate_handler![
             commands::list_sessions,
             commands::list_categories,
             commands::set_session_category,
+            commands::set_session_row_category,
+            commands::preview_session_category,
             commands::set_sessions_category,
-            commands::clear_session_category,
+            commands::list_recategorization_keys,
+            commands::recategorize_keys,
             commands::create_category,
             commands::update_category,
             commands::delete_category,
             commands::list_category_rules,
             commands::create_category_rule,
             commands::delete_category_rule,
+            commands::list_ignore_rules,
+            commands::create_ignore_rule,
+            commands::delete_ignore_rule,
         ])
         .setup(move |app| {
             let (tx, rx) = mpsc::channel::<FocusEvent>();

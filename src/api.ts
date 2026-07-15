@@ -1,5 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Category, CategoryRule, KeyKind, SessionsPage } from "./types";
+import type {
+  CategorizePreview,
+  Category,
+  CategoryKeyRef,
+  CategoryRule,
+  IgnoreKind,
+  IgnoreRule,
+  KeyKind,
+  MatchKind,
+  SessionsPage,
+} from "./types";
 
 export function listSessions(
   page: number,
@@ -21,8 +31,17 @@ export function setSessionCategory(
   return invoke("set_session_category", { sessionId, categoryId });
 }
 
-export function clearSessionCategory(sessionId: number): Promise<void> {
-  return invoke("clear_session_category", { sessionId });
+export function setSessionRowCategory(
+  sessionId: number,
+  categoryId: number | null,
+): Promise<void> {
+  return invoke("set_session_row_category", { sessionId, categoryId });
+}
+
+export function previewSessionCategory(
+  sessionId: number,
+): Promise<CategorizePreview> {
+  return invoke("preview_session_category", { sessionId });
 }
 
 export function setSessionsCategory(
@@ -32,10 +51,25 @@ export function setSessionsCategory(
   return invoke("set_sessions_category", { sessionIds, categoryId });
 }
 
-export function createCategory(
-  name: string,
-  color: string,
-): Promise<Category> {
+export function listRecategorizationKeys(
+  startDate: string | undefined,
+  endDate: string | undefined,
+  onlyUncategorized: boolean,
+  protectManual: boolean,
+): Promise<CategoryKeyRef[]> {
+  return invoke("list_recategorization_keys", {
+    startDate,
+    endDate,
+    onlyUncategorized,
+    protectManual,
+  });
+}
+
+export function recategorizeKeys(keys: CategoryKeyRef[]): Promise<number> {
+  return invoke("recategorize_keys", { keys });
+}
+
+export function createCategory(name: string, color: string): Promise<Category> {
   return invoke("create_category", { name, color });
 }
 
@@ -58,15 +92,33 @@ export function listCategoryRules(): Promise<CategoryRule[]> {
 export function createCategoryRule(
   keyKind: KeyKind,
   pattern: string,
+  matchKind: MatchKind,
   categoryId: number,
 ): Promise<CategoryRule> {
   return invoke("create_category_rule", {
     keyKind,
     pattern,
+    matchKind,
     categoryId,
   });
 }
 
 export function deleteCategoryRule(id: number): Promise<void> {
   return invoke("delete_category_rule", { id });
+}
+
+export function listIgnoreRules(): Promise<IgnoreRule[]> {
+  return invoke("list_ignore_rules");
+}
+
+export function createIgnoreRule(
+  kind: IgnoreKind,
+  pattern: string,
+  matchKind: MatchKind,
+): Promise<IgnoreRule> {
+  return invoke("create_ignore_rule", { kind, pattern, matchKind });
+}
+
+export function deleteIgnoreRule(id: number): Promise<void> {
+  return invoke("delete_ignore_rule", { id });
 }

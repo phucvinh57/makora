@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use super::sqlite::SharedConnection;
+use crate::core::category;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionRow {
@@ -35,11 +36,11 @@ impl HistoryReader {
              FROM sessions s
              LEFT JOIN category_overrides ov
                     ON ov.key_kind = s.category_key_kind AND ov.pattern = s.category_key
-             LEFT JOIN category_rules r
-                    ON r.key_kind = s.category_key_kind AND r.pattern = s.category_key
+             {rule_join}
              LEFT JOIN categories cat
-                    ON cat.id = COALESCE(ov.category_id, r.category_id)
-             WHERE {where_sql}"
+                    ON cat.id = COALESCE(s.category_id, ov.category_id, r.category_id)
+             WHERE {where_sql}",
+            rule_join = category::rule_join_sql("r", "s"),
         );
         let param_refs: Vec<&dyn rusqlite::types::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
         Ok(conn.query_row(&sql, param_refs.as_slice(), |row| row.get(0))?)
@@ -47,25 +48,26 @@ impl HistoryReader {
 
     /// A page of activity rows (app focus and browser-tab rows alike)
     /// matching `filter`, newest first. Category is resolved at read time —
-    /// an override wins over a rule via `COALESCE` — rather than stored on
-    /// the row, so editing a rule or override re-categorizes historical
-    /// sessions immediately instead of only affecting future ones.
+    /// a per-session pin wins over a key-wide override, which wins over a
+    /// rule, via `COALESCE` — rather than stored denormalized, so editing a
+    /// rule or override re-categorizes historical sessions immediately
+    /// instead of only affecting future ones.
     pub fn list_sessions(&self, limit: i64, offset: i64, filter: &SessionFilter) -> Result<Vec<SessionRow>> {
         let conn = self.conn.lock().unwrap();
         let (where_sql, mut binds) = filter.to_sql();
         let sql = format!(
             "SELECT s.id, s.app_name, s.exe_path, s.window_title, s.url, s.start_time, s.end_time,
-                    cat.id, cat.name, cat.color, ov.category_id IS NOT NULL
+                    cat.id, cat.name, cat.color, (s.category_id IS NOT NULL OR ov.category_id IS NOT NULL)
              FROM sessions s
              LEFT JOIN category_overrides ov
                     ON ov.key_kind = s.category_key_kind AND ov.pattern = s.category_key
-             LEFT JOIN category_rules r
-                    ON r.key_kind = s.category_key_kind AND r.pattern = s.category_key
+             {rule_join}
              LEFT JOIN categories cat
-                    ON cat.id = COALESCE(ov.category_id, r.category_id)
+                    ON cat.id = COALESCE(s.category_id, ov.category_id, r.category_id)
              WHERE {where_sql}
              ORDER BY s.start_time DESC
-             LIMIT ? OFFSET ?"
+             LIMIT ? OFFSET ?",
+            rule_join = category::rule_join_sql("r", "s"),
         );
         binds.push(Box::new(limit));
         binds.push(Box::new(offset));

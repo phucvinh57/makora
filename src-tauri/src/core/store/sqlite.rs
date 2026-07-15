@@ -56,7 +56,70 @@ fn migrations() -> Migrations<'static> {
             CREATE INDEX IF NOT EXISTS idx_sessions_start_time ON sessions(start_time);
             CREATE INDEX IF NOT EXISTS idx_sessions_category_key ON sessions(category_key_kind, category_key);",
         ),
+        // Per-session category pin, checked before the key-wide override and
+        // rules — lets a single activity be categorized on its own instead of
+        // always affecting every session sharing its app/site key.
+        M::up("ALTER TABLE sessions ADD COLUMN category_id INTEGER REFERENCES categories(id);"),
+        // User-configured apps/sites to exclude from tracking entirely (see
+        // `core::ignore::IgnorePolicy`). Matched as a substring of the exe
+        // file name or URL domain, not an exact key like `category_rules`.
+        M::up("CREATE TABLE IF NOT EXISTS ignore_rules (
+                id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind    TEXT NOT NULL CHECK (kind IN ('app', 'site')),
+                pattern TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_ignore_rules_pattern ON ignore_rules(kind, pattern);",
+        ),
+        // Lets a rule match a substring or a regex instead of only an exact
+        // key (see `category::rule_join_sql`), so e.g. one rule can catch
+        // every `*.corp.example.com` subdomain instead of one row per host.
+        // The old (key_kind, pattern) unique index is replaced with one that
+        // also includes match_kind, since the same pattern text can now be
+        // meaningful under more than one match kind at once.
+        M::up("ALTER TABLE category_rules ADD COLUMN match_kind TEXT NOT NULL DEFAULT 'exact'
+                CHECK (match_kind IN ('exact', 'substring', 'regex'));
+            DROP INDEX IF EXISTS idx_category_rules_key;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_category_rules_key
+                ON category_rules(key_kind, match_kind, pattern);",
+        ),
+        // Gives `ignore_rules` the same exact/substring/regex matching as
+        // `category_rules` (see `category::MatchKind`) instead of only ever
+        // matching a substring. Existing rows default to 'substring' so
+        // their behavior is unchanged by the migration. The old (kind,
+        // pattern) unique index is replaced the same way the category_rules
+        // one was above.
+        M::up("ALTER TABLE ignore_rules ADD COLUMN match_kind TEXT NOT NULL DEFAULT 'substring'
+                CHECK (match_kind IN ('exact', 'substring', 'regex'));
+            DROP INDEX IF EXISTS idx_ignore_rules_pattern;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_ignore_rules_pattern
+                ON ignore_rules(kind, match_kind, pattern);",
+        ),
     ])
+}
+
+/// Registers the `regexp` scalar function SQLite dispatches `X REGEXP Y`
+/// to (as `regexp(Y, X)` — pattern first, then the text being tested), so
+/// `category::rule_join_sql`'s `Regex` match arm has an operator to use.
+/// Matching is case-insensitive, same convention as the `Substring` arm's
+/// `lower()`/`instr()`. An invalid pattern (e.g. a rule someone is still
+/// mid-edit on) simply never matches rather than erroring the whole query.
+fn register_regexp_function(conn: &Connection) -> Result<()> {
+    conn.create_scalar_function(
+        "regexp",
+        2,
+        rusqlite::functions::FunctionFlags::SQLITE_UTF8 | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            let pattern = ctx.get::<String>(0)?;
+            let text = ctx.get::<String>(1)?;
+            let matched = regex::RegexBuilder::new(&pattern)
+                .case_insensitive(true)
+                .build()
+                .map(|re| re.is_match(&text))
+                .unwrap_or(false);
+            Ok(matched)
+        },
+    )?;
+    Ok(())
 }
 
 pub fn open_connection(path: &Path) -> Result<SharedConnection> {
@@ -65,6 +128,7 @@ pub fn open_connection(path: &Path) -> Result<SharedConnection> {
             .with_context(|| format!("creating database directory {}", parent.display()))?;
     }
     let mut conn = Connection::open(path).with_context(|| format!("opening database at {}", path.display()))?;
+    register_regexp_function(&conn).context("registering regexp SQL function")?;
     migrations().to_latest(&mut conn).context("migrating schema")?;
     seed_default_categories(&conn).context("seeding default categories")?;
     Ok(Arc::new(Mutex::new(conn)))
@@ -99,7 +163,7 @@ fn seed_default_categories(conn: &Connection) -> Result<()> {
         (
             "Communication",
             "#22c55e",
-            &["slack.exe", "discord.exe", "teams.exe", "outlook.exe"],
+            &["slack.exe", "discord.exe", "teams.exe", "outlook.exe", "whatsapp.exe", "whatsapp.root.exe", "signal.exe"],
             &["mail.google.com", "outlook.office.com"],
         ),
         (

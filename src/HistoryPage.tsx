@@ -1,4 +1,12 @@
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -9,28 +17,41 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
-  clearSessionCategory,
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   listCategories,
+  listRecategorizationKeys,
   listSessions,
+  previewSessionCategory,
+  recategorizeKeys,
   setSessionCategory,
+  setSessionRowCategory,
   setSessionsCategory,
 } from "./api";
 import { formatDuration, formatTimestamp } from "./duration";
-import type { Category, SessionRow } from "./types";
+import type { SessionRow } from "./types";
+
+// The exe file name (lowercased) is exactly what an "app" category rule's
+// pattern must match — showing it as a tooltip saves a trip to Task Manager
+// when the user wants to categorize an app from the history table.
+function exeFileName(exePath: string): string {
+  const segments = exePath.split(/[\\/]/);
+  return (segments[segments.length - 1] || exePath).toLowerCase();
+}
 
 const PAGE_SIZE = 50;
 const UNCATEGORIZED = "uncategorized";
 const ALL_CATEGORIES = "all";
 const SEARCH_DEBOUNCE_MS = 300;
+const RECATEGORIZE_CHUNK_SIZE = 25;
 
 export default function HistoryPage() {
-  const [page, setPage] = useState(0);
-  const [rows, setRows] = useState<SessionRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
+  const [page, setPage] = useState(0);
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState(ALL_CATEGORIES);
@@ -55,55 +76,161 @@ export default function HistoryPage() {
     setSelectedIds(new Set());
   }
 
-  function refreshSessions() {
-    let cancelled = false;
-    setLoading(true);
-    listSessions(
+  const sessionsQuery = useQuery({
+    queryKey: [
+      "sessions",
       page,
       PAGE_SIZE,
-      search || undefined,
+      search,
       categoryFilter === ALL_CATEGORIES ? undefined : categoryFilter,
-    )
-      .then((data) => {
-        if (cancelled) return;
-        setRows(data.rows);
-        setTotal(data.total);
-        setError(null);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
+    ],
+    queryFn: () =>
+      listSessions(
+        page,
+        PAGE_SIZE,
+        search || undefined,
+        categoryFilter === ALL_CATEGORIES ? undefined : categoryFilter,
+      ),
+    placeholderData: keepPreviousData,
+  });
+
+  const categoriesQuery = useQuery({
+    queryKey: ["categories"],
+    queryFn: listCategories,
+  });
+
+  const rows = sessionsQuery.data?.rows ?? [];
+  const total = sessionsQuery.data?.total ?? 0;
+  const categories = categoriesQuery.data ?? [];
+  const loading = sessionsQuery.isFetching;
+  const error =
+    (sessionsQuery.error && String(sessionsQuery.error)) ||
+    (categoriesQuery.error && String(categoriesQuery.error)) ||
+    null;
+
+  function invalidateSessions() {
+    queryClient.invalidateQueries({ queryKey: ["sessions"] });
   }
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the React Compiler stabilizes refreshSessions's identity across renders when page/search/categoryFilter don't change
-  useEffect(() => refreshSessions(), [refreshSessions]);
+  // Applies a category to every session sharing a key (from the toast
+  // action below, or the multi-select bulk bar) — a wider, deliberate
+  // choice, so it gets its own success toast rather than the row-level one.
+  const applyToAllMutation = useMutation({
+    mutationFn: ({
+      sessionId,
+      categoryId,
+    }: {
+      sessionId: number;
+      categoryId: number;
+      label: string;
+    }) => setSessionCategory(sessionId, categoryId),
+    onSuccess: (_, { label }) => {
+      invalidateSessions();
+      toast.success(`Applied to all ${label} activities`);
+    },
+    onError: (err) => toast.error(String(err)),
+  });
 
-  useEffect(() => {
-    listCategories()
-      .then(setCategories)
-      .catch((err) => setError(String(err)));
-  }, []);
-
-  // A category picked here applies to every session sharing this row's
-  // app/site (see `set_session_category`), so the whole page is re-fetched
-  // rather than patching just this one row in place.
-  async function handleCategoryChange(row: SessionRow, value: string) {
-    try {
-      if (value === UNCATEGORIZED) {
-        await clearSessionCategory(row.id);
-      } else {
-        await setSessionCategory(row.id, Number(value));
+  // Sets (or clears) the category on just this one activity — no other
+  // session sharing its app/site is touched. On success, a toast offers a
+  // one-click way to widen the choice to every activity sharing the same
+  // key instead (via `applyToAllMutation`) — replacing an earlier
+  // confirm-before-committing dialog, which had the problem that canceling
+  // it silently left the row uncategorized.
+  const categoryChangeMutation = useMutation({
+    mutationFn: async ({ row, value }: { row: SessionRow; value: string }) => {
+      const categoryId = value === UNCATEGORIZED ? null : Number(value);
+      await setSessionRowCategory(row.id, categoryId);
+      const preview =
+        categoryId === null ? null : await previewSessionCategory(row.id);
+      return { row, categoryId, preview };
+    },
+    onSuccess: ({ row, categoryId, preview }) => {
+      invalidateSessions();
+      if (categoryId === null) {
+        toast.success("Cleared this activity's category");
+        return;
       }
-      refreshSessions();
+      const categoryName =
+        categories.find((c) => c.id === categoryId)?.name ?? "category";
+      toast.success(`Set to ${categoryName}`, {
+        description: row.window_title,
+        action:
+          preview && preview.affected_count > 1
+            ? {
+                label: `Apply to all ${preview.affected_count} ${preview.key} activities`,
+                onClick: () =>
+                  applyToAllMutation.mutate({
+                    sessionId: row.id,
+                    categoryId,
+                    label: preview.key,
+                  }),
+              }
+            : undefined,
+      });
+    },
+    onError: (err) => toast.error(String(err)),
+  });
+
+  const bulkApplyMutation = useMutation({
+    mutationFn: () =>
+      setSessionsCategory([...selectedIds], Number(bulkCategory)),
+    onSuccess: () => {
+      setSelectedIds(new Set());
+      setBulkCategory("");
+      invalidateSessions();
+    },
+  });
+
+  // Re-evaluates every app/site key in history against the current rule
+  // set by clearing any manual categorization (key-wide override or
+  // per-session pin) — after that, the read-time join in `list_sessions`
+  // picks the category back up from the live rules (or "Uncategorized")
+  // instead of a frozen manual choice. Keys are fetched once, then cleared
+  // in chunks so the toast can show real progress instead of blocking
+  // behind one opaque round trip.
+  async function runRecategorize() {
+    const toastId = toast.loading("Finding activities to recategorize…");
+    try {
+      const keys = await listRecategorizationKeys(
+        undefined,
+        undefined,
+        false,
+        false,
+      );
+      if (keys.length === 0) {
+        toast.success("Nothing to recategorize.", { id: toastId });
+        return;
+      }
+
+      let processed = 0;
+      let changed = 0;
+      for (let i = 0; i < keys.length; i += RECATEGORIZE_CHUNK_SIZE) {
+        const chunk = keys.slice(i, i + RECATEGORIZE_CHUNK_SIZE);
+        changed += await recategorizeKeys(chunk);
+        processed += chunk.length;
+        toast.loading(`Recategorizing… ${processed} / ${keys.length}`, {
+          id: toastId,
+        });
+      }
+
+      invalidateSessions();
+      toast.success(
+        `Recategorized ${changed} of ${keys.length} app/site groups.`,
+        { id: toastId },
+      );
     } catch (err) {
-      setError(String(err));
+      toast.error(String(err), { id: toastId });
     }
+  }
+
+  function handleRecategorizeClick() {
+    toast("Recategorize all history with current rules?", {
+      description:
+        'Clears any manual categorization (per-activity or per-app/site) so your current rules — and "Uncategorized" where none match — decide instead.',
+      action: { label: "Apply", onClick: runRecategorize },
+      duration: 10000,
+    });
   }
 
   function toggleRow(id: number, checked: boolean) {
@@ -119,19 +246,8 @@ export default function HistoryPage() {
     setSelectedIds(checked ? new Set(rows.map((r) => r.id)) : new Set());
   }
 
-  async function handleBulkApply() {
-    if (!bulkCategory || selectedIds.size === 0) return;
-    try {
-      await setSessionsCategory([...selectedIds], Number(bulkCategory));
-      setSelectedIds(new Set());
-      setBulkCategory("");
-      refreshSessions();
-    } catch (err) {
-      setError(String(err));
-    }
-  }
-
-  const allVisibleSelected = rows.length > 0 && rows.every((r) => selectedIds.has(r.id));
+  const allVisibleSelected =
+    rows.length > 0 && rows.every((r) => selectedIds.has(r.id));
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
@@ -159,6 +275,18 @@ export default function HistoryPage() {
               </option>
             ))}
           </select>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={loading}
+            onClick={() => sessionsQuery.refetch()}
+            aria-label="Refresh history"
+          >
+            <RefreshCw className={loading ? "animate-spin" : undefined} />
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleRecategorizeClick}>
+            Recategorize
+          </Button>
         </div>
       </header>
 
@@ -185,7 +313,11 @@ export default function HistoryPage() {
               </option>
             ))}
           </select>
-          <Button size="sm" disabled={!bulkCategory} onClick={handleBulkApply}>
+          <Button
+            size="sm"
+            disabled={!bulkCategory || bulkApplyMutation.isPending}
+            onClick={() => bulkApplyMutation.mutate()}
+          >
             Apply
           </Button>
           <Button
@@ -198,8 +330,8 @@ export default function HistoryPage() {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto rounded-md border">
-        <Table className="table-fixed">
+      <div className="flex-1 overflow-y-auto no-scrollbar rounded-md border">
+        <Table className="table-fixed min-w-270">
           <TableHeader className="sticky top-0 z-10 bg-background">
             <TableRow>
               <TableHead className="w-8">
@@ -214,7 +346,7 @@ export default function HistoryPage() {
               <TableHead className="w-40">App</TableHead>
               <TableHead className="w-36">Category</TableHead>
               <TableHead className="w-56">Site</TableHead>
-              <TableHead>Window title</TableHead>
+              <TableHead className="min-w-56">Window title</TableHead>
               <TableHead className="w-44">Start</TableHead>
               <TableHead className="w-20 text-right">Duration</TableHead>
             </TableRow>
@@ -231,12 +363,17 @@ export default function HistoryPage() {
                     style={{ colorScheme: "light" }}
                   />
                 </TableCell>
-                <TableCell className="truncate" title={row.app_name}>
-                  {row.app_name}
+                <TableCell className="truncate">
+                  <Tooltip>
+                    <TooltipTrigger className="truncate text-left">
+                      {row.app_name}
+                    </TooltipTrigger>
+                    <TooltipContent>{exeFileName(row.exe_path)}</TooltipContent>
+                  </Tooltip>
                 </TableCell>
                 <TableCell>
                   <select
-                    className="w-full rounded-md border bg-transparent px-1.5 py-0.5 text-xs"
+                    className="w-full min-w-0 rounded-md border bg-transparent px-1.5 py-0.5 text-xs"
                     style={{
                       color: row.category_color ?? undefined,
                       borderColor: row.category_color ?? undefined,
@@ -247,7 +384,12 @@ export default function HistoryPage() {
                         ? "Manually categorized"
                         : undefined
                     }
-                    onChange={(e) => handleCategoryChange(row, e.target.value)}
+                    onChange={(e) =>
+                      categoryChangeMutation.mutate({
+                        row,
+                        value: e.target.value,
+                      })
+                    }
                   >
                     <option value={UNCATEGORIZED}>Uncategorized</option>
                     {categories.map((category) => (

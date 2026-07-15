@@ -1,5 +1,6 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Trash2Icon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   createCategory,
@@ -10,89 +11,120 @@ import {
   listCategoryRules,
   updateCategory,
 } from "./api";
-import type { Category, CategoryRule, KeyKind } from "./types";
+import type { Category, CategoryRule, KeyKind, MatchKind } from "./types";
+
+const MATCH_KIND_LABEL: Record<MatchKind, string> = {
+  exact: "is",
+  substring: "contains",
+  regex: "matches",
+};
+
+function matchKindPlaceholder(keyKind: KeyKind, matchKind: MatchKind): string {
+  if (matchKind === "regex") {
+    return keyKind === "exe"
+      ? "^game\\d*\\.exe$"
+      : "^.*\\.corp\\.example\\.com$";
+  }
+  if (matchKind === "substring") {
+    return keyKind === "exe" ? "steam" : "google.com";
+  }
+  return keyKind === "exe" ? "code.exe" : "github.com";
+}
 
 const DEFAULT_COLOR = "#6366f1";
 
 export default function CategoriesPage() {
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [rules, setRules] = useState<CategoryRule[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
   const [newName, setNewName] = useState("");
   const [newColor, setNewColor] = useState(DEFAULT_COLOR);
 
-  function refresh() {
-    setLoading(true);
-    Promise.all([listCategories(), listCategoryRules()])
-      .then(([cats, rls]) => {
-        setCategories(cats);
-        setRules(rls);
-        setError(null);
-      })
-      .catch((err) => setError(String(err)))
-      .finally(() => setLoading(false));
+  const categoriesQuery = useQuery({
+    queryKey: ["categories"],
+    queryFn: listCategories,
+  });
+  const rulesQuery = useQuery({
+    queryKey: ["categoryRules"],
+    queryFn: listCategoryRules,
+  });
+
+  const categories = categoriesQuery.data ?? [];
+  const rules = rulesQuery.data ?? [];
+  const loading = categoriesQuery.isLoading || rulesQuery.isLoading;
+  const error =
+    (categoriesQuery.error && String(categoriesQuery.error)) ||
+    (rulesQuery.error && String(rulesQuery.error)) ||
+    null;
+
+  function invalidateAll() {
+    queryClient.invalidateQueries({ queryKey: ["categories"] });
+    queryClient.invalidateQueries({ queryKey: ["categoryRules"] });
   }
 
-  useEffect(refresh, []);
-
-  async function handleCreateCategory(e: React.FormEvent) {
-    e.preventDefault();
-    if (!newName.trim()) return;
-    try {
-      await createCategory(newName.trim(), newColor);
+  const createCategoryMutation = useMutation({
+    mutationFn: () => createCategory(newName.trim(), newColor),
+    onSuccess: () => {
       setNewName("");
       setNewColor(DEFAULT_COLOR);
-      refresh();
-    } catch (err) {
-      setError(String(err));
-    }
-  }
+      invalidateAll();
+    },
+  });
 
-  async function handleRenameCategory(category: Category, name: string, color: string) {
-    try {
-      await updateCategory(category.id, name, color);
-      refresh();
-    } catch (err) {
-      setError(String(err));
-    }
-  }
+  const renameCategoryMutation = useMutation({
+    mutationFn: ({
+      category,
+      name,
+      color,
+    }: {
+      category: Category;
+      name: string;
+      color: string;
+    }) => updateCategory(category.id, name, color),
+    onSuccess: invalidateAll,
+  });
 
-  async function handleDeleteCategory(category: Category) {
-    try {
-      await deleteCategory(category.id);
-      refresh();
-    } catch (err) {
-      setError(String(err));
-    }
-  }
+  const deleteCategoryMutation = useMutation({
+    mutationFn: (category: Category) => deleteCategory(category.id),
+    onSuccess: invalidateAll,
+  });
 
-  async function handleAddRule(categoryId: number, keyKind: KeyKind, pattern: string) {
-    if (!pattern.trim()) return;
-    try {
-      await createCategoryRule(keyKind, pattern.trim().toLowerCase(), categoryId);
-      refresh();
-    } catch (err) {
-      setError(String(err));
-    }
-  }
+  const addRuleMutation = useMutation({
+    mutationFn: ({
+      categoryId,
+      keyKind,
+      pattern,
+      matchKind,
+    }: {
+      categoryId: number;
+      keyKind: KeyKind;
+      pattern: string;
+      matchKind: MatchKind;
+    }) => {
+      // Lowercasing canonicalizes exact/substring patterns (matching is
+      // case-insensitive either way), but would corrupt case-sensitive
+      // regex escapes like `\D`/`\S`/`\W`, so regex patterns are sent as-is.
+      const normalized =
+        matchKind === "regex" ? pattern.trim() : pattern.trim().toLowerCase();
+      return createCategoryRule(keyKind, normalized, matchKind, categoryId);
+    },
+    onSuccess: invalidateAll,
+  });
 
-  async function handleDeleteRule(rule: CategoryRule) {
-    try {
-      await deleteCategoryRule(rule.id);
-      refresh();
-    } catch (err) {
-      setError(String(err));
-    }
+  const deleteRuleMutation = useMutation({
+    mutationFn: (rule: CategoryRule) => deleteCategoryRule(rule.id),
+    onSuccess: invalidateAll,
+  });
+
+  function handleCreateCategory(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newName.trim()) return;
+    createCategoryMutation.mutate();
   }
 
   return (
     <div className="flex h-full flex-col box-border">
       <header className="mb-4">
-        <p className="m-0 text-sm text-muted-foreground">
-          Categories & rules
-        </p>
+        <p className="m-0 text-sm text-muted-foreground">Categories & rules</p>
       </header>
 
       {error && (
@@ -124,11 +156,9 @@ export default function CategoriesPage() {
         </Button>
       </form>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto no-scrollbar">
         {!loading && categories.length === 0 && (
-          <p className="text-sm text-muted-foreground">
-            No categories yet.
-          </p>
+          <p className="text-sm text-muted-foreground">No categories yet.</p>
         )}
         <div className="flex flex-col gap-3">
           {categories.map((category) => (
@@ -136,10 +166,20 @@ export default function CategoriesPage() {
               key={category.id}
               category={category}
               rules={rules.filter((r) => r.category_id === category.id)}
-              onRename={handleRenameCategory}
-              onDelete={handleDeleteCategory}
-              onAddRule={handleAddRule}
-              onDeleteRule={handleDeleteRule}
+              onRename={(cat, name, color) =>
+                renameCategoryMutation.mutate({ category: cat, name, color })
+              }
+              onDelete={(cat) => deleteCategoryMutation.mutate(cat)}
+              onAddRule={(categoryId, keyKind, pattern, matchKind) => {
+                if (!pattern.trim()) return;
+                addRuleMutation.mutate({
+                  categoryId,
+                  keyKind,
+                  pattern,
+                  matchKind,
+                });
+              }}
+              onDeleteRule={(rule) => deleteRuleMutation.mutate(rule)}
             />
           ))}
         </div>
@@ -160,7 +200,12 @@ function CategoryCard({
   rules: CategoryRule[];
   onRename: (category: Category, name: string, color: string) => void;
   onDelete: (category: Category) => void;
-  onAddRule: (categoryId: number, keyKind: KeyKind, pattern: string) => void;
+  onAddRule: (
+    categoryId: number,
+    keyKind: KeyKind,
+    pattern: string,
+    matchKind: MatchKind,
+  ) => void;
   onDeleteRule: (rule: CategoryRule) => void;
 }) {
   const [editing, setEditing] = useState(false);
@@ -168,6 +213,7 @@ function CategoryCard({
   const [color, setColor] = useState(category.color);
   const [pattern, setPattern] = useState("");
   const [keyKind, setKeyKind] = useState<KeyKind>("exe");
+  const [matchKind, setMatchKind] = useState<MatchKind>("exact");
 
   function startEditing() {
     setName(category.name);
@@ -184,7 +230,7 @@ function CategoryCard({
 
   function handleAddRule(e: React.FormEvent) {
     e.preventDefault();
-    onAddRule(category.id, keyKind, pattern);
+    onAddRule(category.id, keyKind, pattern, matchKind);
     setPattern("");
   }
 
@@ -223,9 +269,7 @@ function CategoryCard({
               className="size-4 shrink-0 rounded-full"
               style={{ backgroundColor: category.color }}
             />
-            <span className="flex-1 text-sm font-medium">
-              {category.name}
-            </span>
+            <span className="flex-1 text-sm font-medium">{category.name}</span>
             <Button variant="outline" size="sm" onClick={startEditing}>
               Edit
             </Button>
@@ -252,7 +296,8 @@ function CategoryCard({
             className="inline-flex items-center gap-1 rounded-md border bg-muted px-1.5 py-0.5 text-xs"
           >
             <span className="text-muted-foreground">
-              {rule.key_kind === "exe" ? "app" : "site"}
+              {rule.key_kind === "exe" ? "app" : "site"}{" "}
+              {MATCH_KIND_LABEL[rule.match_kind]}
             </span>
             <span className="font-mono">{rule.pattern}</span>
             <button
@@ -267,10 +312,7 @@ function CategoryCard({
         ))}
       </div>
 
-      <form
-        onSubmit={handleAddRule}
-        className="mt-2 flex items-center gap-1.5"
-      >
+      <form onSubmit={handleAddRule} className="mt-2 flex items-center gap-1.5">
         <select
           value={keyKind}
           onChange={(e) => setKeyKind(e.target.value as KeyKind)}
@@ -279,14 +321,29 @@ function CategoryCard({
           <option value="exe">App (exe)</option>
           <option value="domain">Site (domain)</option>
         </select>
+        <select
+          value={matchKind}
+          onChange={(e) => setMatchKind(e.target.value as MatchKind)}
+          className="h-6 rounded-md border bg-transparent px-1 text-xs"
+          aria-label="Match kind"
+        >
+          <option value="exact">is</option>
+          <option value="substring">contains</option>
+          <option value="regex">matches (regex)</option>
+        </select>
         <input
           type="text"
           value={pattern}
           onChange={(e) => setPattern(e.target.value)}
-          placeholder={keyKind === "exe" ? "code.exe" : "github.com"}
-          className="h-6 rounded-md border bg-transparent px-1.5 text-xs"
+          placeholder={matchKindPlaceholder(keyKind, matchKind)}
+          className="h-6 rounded-md border bg-transparent px-1.5 text-xs font-mono"
         />
-        <Button type="submit" size="xs" variant="outline" disabled={!pattern.trim()}>
+        <Button
+          type="submit"
+          size="xs"
+          variant="outline"
+          disabled={!pattern.trim()}
+        >
           Add rule
         </Button>
       </form>

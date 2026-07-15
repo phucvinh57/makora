@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "makora tab reporter",
+  "name": "Makora's tab reporter",
   "version": "0.1.0",
-  "description": "Reports the active tab's URL to the local makora collector so app-usage sessions can be broken down per site. Nothing leaves your machine.",
+  "description": "Reports the active tab's URL to the local Makora collector so app-usage sessions can be broken down per site. Nothing leaves your machine.",
   "permissions": ["tabs"],
   "host_permissions": ["http://127.0.0.1:47632/*"],
   "background": {
