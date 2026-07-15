@@ -1,0 +1,13 @@
+{
+  "identifier": "default",
+  "description": "Capability for the main window: core window/tray control. The app's own #[tauri::command] handlers (list_sessions) are allowed for all windows by default and don't need an entry here.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "core:tray:default"
+  ]
+}

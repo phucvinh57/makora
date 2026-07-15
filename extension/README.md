@@ -1,22 +1,23 @@
 # makora tab reporter
 
 A small cross-browser WebExtension that reports the active tab's URL to the
-local `makora-collector` process, so browser sessions can be broken down
-per site instead of showing up as one opaque `chrome`/`firefox` block.
+local `makora` app, so browser sessions can be broken down per site instead
+of showing up as one opaque `chrome`/`firefox` block.
 
 It POSTs `{ browser, url, title }` to `http://127.0.0.1:47632/event`
 whenever the active tab changes — on tab switch, on navigation, and on
 window focus change. `url` is already stripped down to origin + path (no
 query string or fragment) before it leaves the browser. Non-`http(s)` tabs
-(`chrome://`, `about:`, extension pages, ...) are skipped. If the collector
-isn't running, the request just fails silently — there's no retry queue.
+(`chrome://`, `about:`, extension pages, ...) are skipped. If the app isn't
+running, the request just fails silently — there's no retry queue.
 
 Nothing is sent anywhere except `127.0.0.1`.
 
 ## Loading it
 
-The collector must be running first (`cargo run -p makora-collector`) —
-otherwise the requests just fail silently until it is.
+The makora app must be running first (`npm run tauri dev` from the repo
+root, or the installed app) — otherwise the requests just fail silently
+until it is.
 
 **Chrome / Edge / Brave**
 
@@ -33,5 +34,5 @@ otherwise the requests just fail silently until it is.
 ## Why a fixed port
 
 `47632` is hardcoded in both `background.js` and
-[`crates/collector/src/ingest.rs`](../crates/collector/src/ingest.rs). There's
+[`src-tauri/src/ingest.rs`](../src-tauri/src/ingest.rs). There's
 no config file yet, so if you change one, change the other.
