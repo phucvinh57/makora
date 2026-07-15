@@ -22,3 +22,12 @@ export interface Category {
   name: string;
   color: string;
 }
+
+export type KeyKind = "exe" | "domain";
+
+export interface CategoryRule {
+  id: number;
+  key_kind: KeyKind;
+  pattern: string;
+  category_id: number;
+}

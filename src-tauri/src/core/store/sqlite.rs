@@ -37,6 +37,25 @@ fn migrations() -> Migrations<'static> {
                 PRIMARY KEY (key_kind, pattern)
             );",
         ),
+        // Added after the categories/rules/overrides step above (rather than
+        // reordered before it) so that a database which already applied that
+        // step picks up this one too instead of being skipped as
+        // already-migrated.
+        M::up("CREATE TABLE IF NOT EXISTS sessions (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                app_name           TEXT NOT NULL,
+                exe_path           TEXT NOT NULL,
+                window_title       TEXT NOT NULL,
+                url                TEXT,
+                category_key       TEXT NOT NULL DEFAULT '',
+                category_key_kind  TEXT NOT NULL DEFAULT 'exe',
+                start_time         TEXT NOT NULL,
+                end_time           TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_sessions_exe_path ON sessions(exe_path);
+            CREATE INDEX IF NOT EXISTS idx_sessions_start_time ON sessions(start_time);
+            CREATE INDEX IF NOT EXISTS idx_sessions_category_key ON sessions(category_key_kind, category_key);",
+        ),
     ])
 }
 

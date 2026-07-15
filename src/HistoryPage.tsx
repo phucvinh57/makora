@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Table,
@@ -13,12 +13,15 @@ import {
   listCategories,
   listSessions,
   setSessionCategory,
+  setSessionsCategory,
 } from "./api";
 import { formatDuration, formatTimestamp } from "./duration";
 import type { Category, SessionRow } from "./types";
 
 const PAGE_SIZE = 50;
 const UNCATEGORIZED = "uncategorized";
+const ALL_CATEGORIES = "all";
+const SEARCH_DEBOUNCE_MS = 300;
 
 export default function HistoryPage() {
   const [page, setPage] = useState(0);
@@ -28,10 +31,39 @@ export default function HistoryPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const refreshSessions = useCallback(() => {
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [categoryFilter, setCategoryFilter] = useState(ALL_CATEGORIES);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [bulkCategory, setBulkCategory] = useState("");
+
+  // Debounce the search box so typing doesn't fire a query per keystroke. A
+  // change lands the user back on page 0 and clears the (now possibly
+  // stale) selection, same as changing the category filter does below.
+  useEffect(() => {
+    const handle = setTimeout(() => {
+      setSearch(searchInput.trim());
+      setPage(0);
+      setSelectedIds(new Set());
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(handle);
+  }, [searchInput]);
+
+  function handleCategoryFilterChange(value: string) {
+    setCategoryFilter(value);
+    setPage(0);
+    setSelectedIds(new Set());
+  }
+
+  function refreshSessions() {
     let cancelled = false;
     setLoading(true);
-    listSessions(page, PAGE_SIZE)
+    listSessions(
+      page,
+      PAGE_SIZE,
+      search || undefined,
+      categoryFilter === ALL_CATEGORIES ? undefined : categoryFilter,
+    )
       .then((data) => {
         if (cancelled) return;
         setRows(data.rows);
@@ -47,8 +79,9 @@ export default function HistoryPage() {
     return () => {
       cancelled = true;
     };
-  }, [page]);
+  }
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the React Compiler stabilizes refreshSessions's identity across renders when page/search/categoryFilter don't change
   useEffect(() => refreshSessions(), [refreshSessions]);
 
   useEffect(() => {
@@ -73,13 +106,60 @@ export default function HistoryPage() {
     }
   }
 
+  function toggleRow(id: number, checked: boolean) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  function toggleAllVisible(checked: boolean) {
+    setSelectedIds(checked ? new Set(rows.map((r) => r.id)) : new Set());
+  }
+
+  async function handleBulkApply() {
+    if (!bulkCategory || selectedIds.size === 0) return;
+    try {
+      await setSessionsCategory([...selectedIds], Number(bulkCategory));
+      setSelectedIds(new Set());
+      setBulkCategory("");
+      refreshSessions();
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  const allVisibleSelected = rows.length > 0 && rows.every((r) => selectedIds.has(r.id));
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
-    <div className="flex h-screen flex-col box-border p-6">
-      <header className="mb-4">
-        <h1 className="m-0 text-xl font-semibold">makora</h1>
+    <div className="flex h-full flex-col box-border">
+      <header className="mb-4 flex items-center justify-between gap-3">
         <p className="m-0 text-sm text-muted-foreground">App-focus history</p>
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder="Search app, title, or site…"
+            className="h-7 w-64 rounded-md border bg-transparent px-2 text-sm"
+          />
+          <select
+            value={categoryFilter}
+            onChange={(e) => handleCategoryFilterChange(e.target.value)}
+            className="h-7 rounded-md border bg-transparent px-1.5 text-sm"
+          >
+            <option value={ALL_CATEGORIES}>All categories</option>
+            <option value={UNCATEGORIZED}>Uncategorized</option>
+            {categories.map((category) => (
+              <option key={category.id} value={category.id}>
+                {category.name}
+              </option>
+            ))}
+          </select>
+        </div>
       </header>
 
       {error && (
@@ -88,10 +168,49 @@ export default function HistoryPage() {
         </div>
       )}
 
+      {selectedIds.size > 0 && (
+        <div className="mb-3 flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2 text-sm">
+          <span>{selectedIds.size} selected</span>
+          <select
+            value={bulkCategory}
+            onChange={(e) => setBulkCategory(e.target.value)}
+            className="h-7 rounded-md border bg-transparent px-1.5 text-xs"
+          >
+            <option value="" disabled>
+              Set category…
+            </option>
+            {categories.map((category) => (
+              <option key={category.id} value={category.id}>
+                {category.name}
+              </option>
+            ))}
+          </select>
+          <Button size="sm" disabled={!bulkCategory} onClick={handleBulkApply}>
+            Apply
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setSelectedIds(new Set())}
+          >
+            Clear selection
+          </Button>
+        </div>
+      )}
+
       <div className="flex-1 overflow-y-auto rounded-md border">
         <Table className="table-fixed">
           <TableHeader className="sticky top-0 z-10 bg-background">
             <TableRow>
+              <TableHead className="w-8">
+                <input
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  onChange={(e) => toggleAllVisible(e.target.checked)}
+                  aria-label="Select all visible rows"
+                  style={{ colorScheme: "light" }}
+                />
+              </TableHead>
               <TableHead className="w-40">App</TableHead>
               <TableHead className="w-36">Category</TableHead>
               <TableHead className="w-56">Site</TableHead>
@@ -103,6 +222,15 @@ export default function HistoryPage() {
           <TableBody>
             {rows.map((row) => (
               <TableRow key={row.id}>
+                <TableCell>
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(row.id)}
+                    onChange={(e) => toggleRow(row.id, e.target.checked)}
+                    aria-label={`Select session ${row.id}`}
+                    style={{ colorScheme: "light" }}
+                  />
+                </TableCell>
                 <TableCell className="truncate" title={row.app_name}>
                   {row.app_name}
                 </TableCell>
@@ -149,10 +277,12 @@ export default function HistoryPage() {
             {!loading && rows.length === 0 && (
               <TableRow>
                 <TableCell
-                  colSpan={6}
+                  colSpan={7}
                   className="py-8 text-center text-muted-foreground"
                 >
-                  No sessions recorded yet.
+                  {search || categoryFilter !== ALL_CATEGORIES
+                    ? "No sessions match this filter."
+                    : "No sessions recorded yet."}
                 </TableCell>
               </TableRow>
             )}

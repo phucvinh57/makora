@@ -47,7 +47,14 @@ pub fn run() {
             commands::list_sessions,
             commands::list_categories,
             commands::set_session_category,
+            commands::set_sessions_category,
             commands::clear_session_category,
+            commands::create_category,
+            commands::update_category,
+            commands::delete_category,
+            commands::list_category_rules,
+            commands::create_category_rule,
+            commands::delete_category_rule,
         ])
         .setup(move |app| {
             let (tx, rx) = mpsc::channel::<FocusEvent>();

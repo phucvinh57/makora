@@ -8,8 +8,8 @@ pub mod categories;
 pub mod queries;
 pub mod sqlite;
 
-pub use categories::{Category, CategoryStore};
-pub use queries::{HistoryReader, SessionRow};
+pub use categories::{Category, CategoryRule, CategoryStore};
+pub use queries::{CategoryFilter, HistoryReader, SessionFilter, SessionRow};
 pub use sqlite::{open_connection, SqliteStore};
 
 /// Persistence for app-usage sessions.
