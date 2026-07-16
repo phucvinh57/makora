@@ -16,6 +16,7 @@ tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
 tauri = { version = "2.11.5", features = ["tray-icon"] }
+tauri-plugin-autostart = "2"
 anyhow = "1.0.103"
 chrono = "0.4.45"
 directories = "6.0.0"

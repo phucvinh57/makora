@@ -42,6 +42,10 @@ pub fn run() {
     let setup_tracker = tracker.clone();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .manage(tracker)
         .manage(reader)
         .manage(categories)

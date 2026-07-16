@@ -11,10 +11,10 @@ Makora is a desktop app (Tauri 2 + Rust backend, React/TypeScript frontend) that
 Requires a Rust toolchain, Node.js, and — because `rusqlite` builds SQLite from source via the `bundled` feature — MSVC C++ build tools on Windows (Visual Studio Build Tools, "Desktop development with C++").
 
 ```
-npm install          # installs JS deps (bun.lock is present but npm scripts are what's wired up)
-npm run tauri dev    # runs the full app (Vite dev server + Rust backend) — the normal dev loop
-npm run dev           # frontend only (Vite), no Tauri/Rust backend
-npm run build          # tsc typecheck + vite build (frontend only)
+bun install          # installs JS deps (bun.lock is present but bun scripts are what's wired up)
+bun tauri dev    # runs the full app (Vite dev server + Rust backend) — the normal dev loop
+bun dev           # frontend only (Vite), no Tauri/Rust backend
+bun run build          # tsc typecheck + vite build (frontend only)
 ```
 
 Rust backend (`src-tauri/`, a single crate — no workspace):
@@ -25,7 +25,7 @@ cargo test             # run Rust unit tests (see src-tauri/src/core/category.rs
 cargo clippy
 ```
 
-There is no ESLint/Prettier config in the repo; TypeScript strictness (`strict`, `noUnusedLocals`, `noUnusedParameters`) is enforced via `tsc` in `npm run build`.
+There is no ESLint/Prettier config in the repo; TypeScript strictness (`strict`, `noUnusedLocals`, `noUnusedParameters`) is enforced via `tsc` in `bun run build`.
 
 The database is written to the per-user app-data directory (on Windows, `%APPDATA%\phucvinh57\makora\data\data.db`).
 

@@ -1,4 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
+import {
+  disable as disableAutostart,
+  enable as enableAutostart,
+  isEnabled as checkAutostartEnabled,
+} from "@tauri-apps/plugin-autostart";
 import type {
   ActivityStats,
   CategorizePreview,
@@ -137,4 +142,12 @@ export function createIgnoreRule(
 
 export function deleteIgnoreRule(id: number): Promise<void> {
   return invoke("delete_ignore_rule", { id });
+}
+
+export function isAutostartEnabled(): Promise<boolean> {
+  return checkAutostartEnabled();
+}
+
+export function setAutostartEnabled(enabled: boolean): Promise<void> {
+  return enabled ? enableAutostart() : disableAutostart();
 }
