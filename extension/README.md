@@ -1,38 +1,16 @@
 # makora tab reporter
 
-A small cross-browser WebExtension that reports the active tab's URL to the
-local `makora` app, so browser sessions can be broken down per site instead
-of showing up as one opaque `chrome`/`firefox` block.
+A small cross-browser WebExtension companion to the [makora](../README.md)
+desktop app. Makora tracks how long you spend in each application by
+watching OS-level window focus, which means a browser is normally just one
+opaque `chrome` or `firefox` block. This extension reports the active tab's
+URL to makora's local ingest server so that block can be broken down
+per site instead.
 
 It POSTs `{ browser, url, title }` to `http://127.0.0.1:47632/event`
 whenever the active tab changes — on tab switch, on navigation, and on
-window focus change. `url` is already stripped down to origin + path (no
-query string or fragment) before it leaves the browser. Non-`http(s)` tabs
-(`chrome://`, `about:`, extension pages, ...) are skipped. If the app isn't
-running, the request just fails silently — there's no retry queue.
+window focus change. Nothing is sent anywhere except `127.0.0.1`; if the
+app isn't running, requests just fail silently.
 
-Nothing is sent anywhere except `127.0.0.1`.
-
-## Loading it
-
-The makora app must be running first (`npm run tauri dev` from the repo
-root, or the installed app) — otherwise the requests just fail silently
-until it is.
-
-**Chrome / Edge / Brave**
-
-1. Go to `chrome://extensions` (or `edge://extensions`, `brave://extensions`).
-2. Enable "Developer mode" (top right).
-3. Click "Load unpacked" and select this `extension/` folder.
-
-**Firefox**
-
-1. Go to `about:debugging#/runtime/this-firefox`.
-2. Click "Load Temporary Add-on…" and select `manifest.json` in this folder.
-3. Temporary add-ons are removed when Firefox restarts — reload it each session.
-
-## Why a fixed port
-
-`47632` is hardcoded in both `background.js` and
-[`src-tauri/src/ingest.rs`](../src-tauri/src/ingest.rs). There's
-no config file yet, so if you change one, change the other.
+This extension is entirely optional — without it loaded, browsers are
+tracked like any other app.

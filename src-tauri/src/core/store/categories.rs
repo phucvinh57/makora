@@ -10,6 +10,10 @@ pub struct Category {
     pub id: i64,
     pub name: String,
     pub color: String,
+    /// Manual precedence when rules in different categories both match the
+    /// same session key, lowest wins — see [`CategoryStore::reorder_categories`]
+    /// and `category::rule_join_sql`.
+    pub priority: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -78,32 +82,63 @@ impl CategoryStore {
         Self { conn }
     }
 
+    /// Ordered by `priority` (the same order the Categories page's
+    /// drag-and-drop reordering controls) rather than name, so every list of
+    /// categories in the UI reflects the user's chosen precedence.
     pub fn list_categories(&self) -> Result<Vec<Category>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, name, color FROM categories ORDER BY name")?;
+        let mut stmt = conn
+            .prepare("SELECT id, name, color, priority FROM categories ORDER BY priority, id")?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(Category {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     color: row.get(2)?,
+                    priority: row.get(3)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
+    /// The new category is appended after every existing one (lowest
+    /// precedence) — see [`Self::reorder_categories`] to move it up.
     pub fn create_category(&self, name: &str, color: &str) -> Result<Category> {
         let conn = self.conn.lock().unwrap();
+        let priority: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(priority), -1) + 1 FROM categories",
+            [],
+            |row| row.get(0),
+        )?;
         conn.execute(
-            "INSERT INTO categories (name, color) VALUES (?1, ?2)",
-            params![name, color],
+            "INSERT INTO categories (name, color, priority) VALUES (?1, ?2, ?3)",
+            params![name, color, priority],
         )?;
         Ok(Category {
             id: conn.last_insert_rowid(),
             name: name.to_string(),
             color: color.to_string(),
+            priority,
         })
+    }
+
+    /// Reassigns priority for every category to match the given order
+    /// (index 0 = highest precedence) — how the Categories page's
+    /// drag-and-drop reordering is persisted. `ordered_ids` must be every
+    /// category id; see `category::rule_join_sql` for how this resolves a
+    /// session key matched by rules in more than one category.
+    pub fn reorder_categories(&self, ordered_ids: &[i64]) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        for (index, id) in ordered_ids.iter().enumerate() {
+            tx.execute(
+                "UPDATE categories SET priority = ?1 WHERE id = ?2",
+                params![index as i64, id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn update_category(&self, id: i64, name: &str, color: &str) -> Result<()> {
@@ -773,7 +808,8 @@ mod tests {
     }
 
     #[test]
-    fn exact_rule_wins_over_a_broader_substring_rule_on_the_same_key() {
+    fn rules_in_different_categories_resolve_by_category_priority_and_reordering_changes_the_winner()
+    {
         let (store, path) = temp_store();
         let conn = store.conn.clone();
         let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
@@ -789,11 +825,35 @@ mod tests {
             .unwrap();
 
         let a = insert_session(&conn, "steamwebhelper.exe", "2024-06-15T00:00:00Z");
+        let category_of = |rows: &[crate::core::store::queries::SessionRow]| {
+            rows.iter().find(|r| r.id == a).unwrap().category_id
+        };
+
+        // "Broad" was created first, so it defaults to the higher
+        // precedence category — even though its rule is less specific.
         let rows = reader.list_sessions(10, 0, &filter).unwrap();
-        assert_eq!(
-            rows.iter().find(|r| r.id == a).unwrap().category_id,
-            Some(specific.id)
-        );
+        assert_eq!(category_of(&rows), Some(broad.id));
+
+        // Dragging "Specific" above "Broad" flips the winner, even though
+        // neither rule changed.
+        store
+            .reorder_categories(&[specific.id, broad.id])
+            .unwrap();
+        let rows = reader.list_sessions(10, 0, &filter).unwrap();
+        assert_eq!(category_of(&rows), Some(specific.id));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn create_category_appends_to_the_bottom_of_priority_order() {
+        let (store, path) = temp_store();
+
+        // Default categories are seeded already, so assert relative
+        // ordering rather than an absolute priority value.
+        let first = store.create_category("First", "#111111").unwrap();
+        let second = store.create_category("Second", "#222222").unwrap();
+        assert_eq!(second.priority, first.priority + 1);
 
         let _ = std::fs::remove_file(&path);
     }

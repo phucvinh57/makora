@@ -59,6 +59,7 @@ pub fn run() {
             commands::create_category,
             commands::update_category,
             commands::delete_category,
+            commands::reorder_categories,
             commands::list_category_rules,
             commands::create_category_rule,
             commands::delete_category_rule,

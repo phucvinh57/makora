@@ -21,6 +21,9 @@ export interface Category {
   id: number;
   name: string;
   color: string;
+  /** Manual precedence when rules in different categories both match the
+   * same app/site, lowest wins. */
+  priority: number;
 }
 
 export type KeyKind = "exe" | "domain";

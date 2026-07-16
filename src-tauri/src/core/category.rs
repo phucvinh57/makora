@@ -59,11 +59,19 @@ impl MatchKind {
 /// case-insensitive regex (via the `regexp` SQLite function registered in
 /// `store::sqlite::open_connection`, backing the `REGEXP` operator).
 ///
-/// When more than one rule matches the same key (e.g. an `Exact` rule and a
-/// broader `Substring` rule both apply), the subquery picks a single
-/// deterministic winner — `Exact` beats `Substring` beats `Regex`, then
-/// lowest rule id — so this join can never fan a session row out into
-/// duplicates the way a plain multi-match `ON` condition would.
+/// When more than one rule matches the same key (e.g. an `Exact` rule in one
+/// category and a broader `Substring` rule in another both apply), the
+/// subquery picks a single deterministic winner — the rule whose category
+/// has the lowest `priority`, then lowest rule id as a final tiebreak — so
+/// this join can never fan a session row out into duplicates the way a
+/// plain multi-match `ON` condition would. Category `priority` is manually
+/// ordered by the user from the Categories page (see
+/// `CategoryStore::reorder_categories`) rather than derived from
+/// `match_kind`, so a `Substring` rule can be made to win over a more
+/// specific `Exact` rule in a lower-priority category. The rule-id tiebreak
+/// only matters when two rules in the *same* category both match — which
+/// specific rule "wins" is immaterial there, since they resolve to the same
+/// category either way.
 ///
 /// `rule_alias` names the joined `category_rules` row; `sessions_alias`
 /// names the table/subquery being joined against (must expose
@@ -72,12 +80,13 @@ pub fn rule_join_sql(rule_alias: &str, sessions_alias: &str) -> String {
     format!(
         "LEFT JOIN category_rules {rule_alias} ON {rule_alias}.id = (
             SELECT r2.id FROM category_rules r2
+            JOIN categories c2 ON c2.id = r2.category_id
             WHERE r2.key_kind = {sessions_alias}.category_key_kind AND (
                 (r2.match_kind = 'exact' AND r2.pattern = {sessions_alias}.category_key)
                 OR (r2.match_kind = 'substring' AND instr(lower({sessions_alias}.category_key), lower(r2.pattern)) > 0)
                 OR (r2.match_kind = 'regex' AND {sessions_alias}.category_key REGEXP r2.pattern)
             )
-            ORDER BY CASE r2.match_kind WHEN 'exact' THEN 0 WHEN 'substring' THEN 1 ELSE 2 END, r2.id
+            ORDER BY c2.priority, r2.id
             LIMIT 1
         )"
     )

@@ -95,6 +95,12 @@ export function deleteCategory(id: number): Promise<void> {
   return invoke("delete_category", { id });
 }
 
+/** `orderedIds` must be every category id, in the new order (index 0 =
+ * highest precedence). */
+export function reorderCategories(orderedIds: number[]): Promise<void> {
+  return invoke("reorder_categories", { orderedIds });
+}
+
 export function listCategoryRules(): Promise<CategoryRule[]> {
   return invoke("list_category_rules");
 }

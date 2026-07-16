@@ -94,6 +94,45 @@ fn migrations() -> Migrations<'static> {
             CREATE UNIQUE INDEX IF NOT EXISTS idx_ignore_rules_pattern
                 ON ignore_rules(kind, match_kind, pattern);",
         ),
+        // Superseded by the next migration: per-rule priority turned out to
+        // be finer-grained than needed (see below), but this step may
+        // already be applied on some databases, so it's kept rather than
+        // edited in place — never rewrite a migration once it may have run.
+        M::up("ALTER TABLE category_rules ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
+            UPDATE category_rules
+            SET priority = ranked.rn
+            FROM (
+                SELECT id, ROW_NUMBER() OVER (
+                    PARTITION BY key_kind
+                    ORDER BY CASE match_kind WHEN 'exact' THEN 0 WHEN 'substring' THEN 1 ELSE 2 END, id
+                ) - 1 AS rn
+                FROM category_rules
+            ) AS ranked
+            WHERE category_rules.id = ranked.id;",
+        ),
+        // Lets the winner between two rules that both match the same
+        // session key (e.g. a `Substring` rule in one category and a
+        // narrower one in another, both matching an overlapping domain) be
+        // manually ordered from the Categories page — by dragging whole
+        // categories, not individual rules, since which specific rule wins
+        // never matters on its own (only its category does; see
+        // `category::rule_join_sql` and `CategoryStore::reorder_categories`).
+        // Lower `priority` wins; backfilled here in category creation order
+        // as the best available default — unlike the per-rule priority it
+        // replaces, this can't exactly reproduce every key's prior
+        // resolution (that depended on match-kind specificity per rule, not
+        // just category), so some already-ambiguous keys may resolve to a
+        // different category until manually reordered.
+        M::up("ALTER TABLE category_rules DROP COLUMN priority;
+            ALTER TABLE categories ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
+            UPDATE categories
+            SET priority = ranked.rn
+            FROM (
+                SELECT id, ROW_NUMBER() OVER (ORDER BY id) - 1 AS rn
+                FROM categories
+            ) AS ranked
+            WHERE categories.id = ranked.id;",
+        ),
     ])
 }
 
@@ -284,5 +323,64 @@ impl SessionStore for SqliteStore {
             .unwrap()
             .execute("DELETE FROM sessions WHERE end_time IS NULL", [])?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_db_path() -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            ^ (std::process::id() as u128) << 64;
+        std::env::temp_dir().join(format!("makora-sqlite-migration-test-{unique}.sqlite"))
+    }
+
+    /// Simulates an install upgrading across the migration that replaces
+    /// per-rule `priority` with per-category `priority` (see `migrations`):
+    /// stops at the pre-existing schema, inserts categories the way an
+    /// older build's `create_category` would have (no `priority` column in
+    /// play yet), then migrates the rest of the way and checks the backfill
+    /// assigns priority in category creation (id) order — the best
+    /// available default described in that migration's comment.
+    #[test]
+    fn category_priority_backfill_orders_by_creation_id_ascending() {
+        let path = temp_db_path();
+        let mut conn = Connection::open(&path).unwrap();
+        register_regexp_function(&conn).unwrap();
+        let migs = migrations();
+        // Version 7: through the superseded per-rule `priority` migration,
+        // one short of the per-category `priority` migration being tested.
+        migs.to_version(&mut conn, 7).unwrap();
+        conn.execute_batch(
+            "INSERT INTO categories (name, color) VALUES ('First', '#111111');
+             INSERT INTO categories (name, color) VALUES ('Second', '#222222');
+             INSERT INTO categories (name, color) VALUES ('Third', '#333333');",
+        )
+        .unwrap();
+
+        migs.to_latest(&mut conn).unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT name, priority FROM categories ORDER BY id")
+            .unwrap();
+        let rows: Vec<(String, i64)> = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("First".to_string(), 0),
+                ("Second".to_string(), 1),
+                ("Third".to_string(), 2),
+            ]
+        );
+
+        let _ = std::fs::remove_file(&path);
     }
 }

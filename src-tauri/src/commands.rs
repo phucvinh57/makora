@@ -203,6 +203,21 @@ pub fn delete_category(categories: State<CategoryStore>, id: i64) -> Result<(), 
     categories.delete_category(id).map_err(|e| e.to_string())
 }
 
+/// Reorders every category after a drag-and-drop reorder on the Categories
+/// page — `ordered_ids` must be every category id, in the new order (index
+/// 0 = highest precedence). When rules in two different categories both
+/// match the same app/site, the higher-precedence category wins; see
+/// `core::category::rule_join_sql`.
+#[tauri::command]
+pub fn reorder_categories(
+    categories: State<CategoryStore>,
+    ordered_ids: Vec<i64>,
+) -> Result<(), String> {
+    categories
+        .reorder_categories(&ordered_ids)
+        .map_err(|e| e.to_string())
+}
+
 /// All built-in categorization rules (exe name / URL domain patterns), for
 /// the category management page.
 #[tauri::command]
