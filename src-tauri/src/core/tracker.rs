@@ -263,6 +263,23 @@ mod tests {
         }
     }
 
+    /// A focus event for a recognized browser exe reported under a specific
+    /// `app_name` — lets tests exercise `BrowserKind::from_app_name` across
+    /// the different exe stems platforms report (e.g. `chrome` on Windows vs.
+    /// `Google Chrome` on macOS), unlike `browser_event` which always uses
+    /// the Windows stem.
+    fn browser_event_named(exe: &str, app_name: &str) -> FocusEvent {
+        FocusEvent {
+            app: AppInfo {
+                process_id: 1,
+                exe_path: exe.to_string(),
+                app_name: app_name.to_string(),
+            },
+            window_title: "New Tab".to_string(),
+            timestamp: Utc::now(),
+        }
+    }
+
     fn tab_event(browser: BrowserKind, url: &str) -> TabEvent {
         TabEvent {
             browser,
@@ -429,6 +446,63 @@ mod tests {
         tracker.handle_event(event("b.exe", "B")).unwrap();
 
         assert_eq!(*log.0.borrow(), vec!["start:b.exe"]);
+    }
+
+    #[test]
+    fn macos_chrome_exe_stem_is_recognized_as_a_browser() {
+        let log = RecordingStore::default();
+        let mut tracker = SessionTracker::new(log.clone()).unwrap();
+
+        tracker
+            .handle_event(browser_event_named(
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                "Google Chrome",
+            ))
+            .unwrap();
+        tracker
+            .handle_tab_event(tab_event(BrowserKind::Chrome, "https://a.example/"))
+            .unwrap();
+
+        assert_eq!(
+            *log.0.borrow(),
+            vec!["start:/Applications/Google Chrome.app/Contents/MacOS/Google Chrome:https://a.example/"]
+        );
+    }
+
+    #[test]
+    fn macos_edge_exe_stem_is_recognized_as_a_browser() {
+        let log = RecordingStore::default();
+        let mut tracker = SessionTracker::new(log.clone()).unwrap();
+
+        tracker
+            .handle_event(browser_event_named("msedge.app", "Microsoft Edge"))
+            .unwrap();
+        tracker
+            .handle_tab_event(tab_event(BrowserKind::Edge, "https://a.example/"))
+            .unwrap();
+
+        assert_eq!(
+            *log.0.borrow(),
+            vec!["start:msedge.app:https://a.example/"]
+        );
+    }
+
+    #[test]
+    fn macos_brave_exe_stem_is_recognized_as_a_browser() {
+        let log = RecordingStore::default();
+        let mut tracker = SessionTracker::new(log.clone()).unwrap();
+
+        tracker
+            .handle_event(browser_event_named("brave.app", "Brave Browser"))
+            .unwrap();
+        tracker
+            .handle_tab_event(tab_event(BrowserKind::Brave, "https://a.example/"))
+            .unwrap();
+
+        assert_eq!(
+            *log.0.borrow(),
+            vec!["start:brave.app:https://a.example/"]
+        );
     }
 
     #[test]

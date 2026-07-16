@@ -135,6 +135,13 @@ unsafe fn focus_event_from_notification(notification: *mut AnyObject) -> Option<
         return None;
     }
 
+    // Mirrors `WINEVENT_SKIPOWNPROCESS` on Windows: `NSWorkspace` has no
+    // built-in way to exclude the observing process itself, so activating
+    // Makora's own window would otherwise be recorded as a focus change.
+    if pid == std::process::id() as i32 {
+        return None;
+    }
+
     let exe_url: *mut AnyObject = msg_send![app, executableURL];
     let exe_path = ns_url_path(exe_url)?;
     let app_name = Path::new(&exe_path)

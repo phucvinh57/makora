@@ -37,13 +37,14 @@ pub enum BrowserKind {
 
 impl BrowserKind {
     /// Maps an executable file stem (as captured by a `FocusWatcher`, e.g.
-    /// `chrome`, `msedge`) to the browser it belongs to.
+    /// `chrome`, `msedge` on Windows, or `Google Chrome`, `Microsoft Edge` on
+    /// macOS) to the browser it belongs to.
     pub fn from_app_name(app_name: &str) -> Option<Self> {
         match app_name.to_ascii_lowercase().as_str() {
-            "chrome" => Some(Self::Chrome),
-            "msedge" => Some(Self::Edge),
+            "chrome" | "google chrome" => Some(Self::Chrome),
+            "msedge" | "microsoft edge" => Some(Self::Edge),
             "firefox" => Some(Self::Firefox),
-            "brave" => Some(Self::Brave),
+            "brave" | "brave browser" => Some(Self::Brave),
             _ => None,
         }
     }
