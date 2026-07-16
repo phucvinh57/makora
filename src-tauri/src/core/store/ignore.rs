@@ -38,10 +38,17 @@ impl IgnoreStore {
 
     pub fn list_rules(&self) -> Result<Vec<IgnoreRule>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, kind, pattern, match_kind FROM ignore_rules ORDER BY kind, pattern")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, kind, pattern, match_kind FROM ignore_rules ORDER BY kind, pattern",
+        )?;
         let rows = stmt
             .query_map([], |row| {
-                Ok(IgnoreRule { id: row.get(0)?, kind: row.get(1)?, pattern: row.get(2)?, match_kind: row.get(3)? })
+                Ok(IgnoreRule {
+                    id: row.get(0)?,
+                    kind: row.get(1)?,
+                    pattern: row.get(2)?,
+                    match_kind: row.get(3)?,
+                })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -58,10 +65,11 @@ impl IgnoreStore {
             // which would silently stop all tracking for that kind.
             bail!("ignore pattern must not be empty");
         }
-        let parsed_match_kind =
-            MatchKind::parse(match_kind).ok_or_else(|| anyhow!("invalid match kind: {match_kind}"))?;
+        let parsed_match_kind = MatchKind::parse(match_kind)
+            .ok_or_else(|| anyhow!("invalid match kind: {match_kind}"))?;
         if parsed_match_kind == MatchKind::Regex {
-            regex::Regex::new(pattern).with_context(|| format!("invalid regex pattern: {pattern}"))?;
+            regex::Regex::new(pattern)
+                .with_context(|| format!("invalid regex pattern: {pattern}"))?;
         }
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -77,7 +85,10 @@ impl IgnoreStore {
     }
 
     pub fn delete_rule(&self, id: i64) -> Result<()> {
-        self.conn.lock().unwrap().execute("DELETE FROM ignore_rules WHERE id = ?1", params![id])?;
+        self.conn
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM ignore_rules WHERE id = ?1", params![id])?;
         Ok(())
     }
 
@@ -123,7 +134,8 @@ mod tests {
     use crate::core::store::sqlite::open_connection;
 
     fn temp_store() -> (IgnoreStore, std::path::PathBuf) {
-        let path = std::env::temp_dir().join(format!("makora-ignore-store-test-{}.sqlite", uuid_ish()));
+        let path =
+            std::env::temp_dir().join(format!("makora-ignore-store-test-{}.sqlite", uuid_ish()));
         let conn = open_connection(&path).expect("opening test database");
         (IgnoreStore::new(conn), path)
     }
@@ -195,7 +207,9 @@ mod tests {
     #[test]
     fn regex_app_pattern_matches_against_the_exe_file_name() {
         let (store, path) = temp_store();
-        store.create_rule("app", r"^game\d+\.exe$", "regex").unwrap();
+        store
+            .create_rule("app", r"^game\d+\.exe$", "regex")
+            .unwrap();
 
         assert!(store.is_app_ignored(r"C:\Games\game1.exe"));
         assert!(!store.is_app_ignored(r"C:\Games\game.exe"));
@@ -206,7 +220,9 @@ mod tests {
     #[test]
     fn site_pattern_matches_against_the_normalized_url_domain_not_the_full_url() {
         let (store, path) = temp_store();
-        store.create_rule("site", "youtube.com", "substring").unwrap();
+        store
+            .create_rule("site", "youtube.com", "substring")
+            .unwrap();
 
         assert!(store.is_site_ignored("https://www.youtube.com/watch?v=abc"));
         assert!(!store.is_site_ignored("https://example.com/youtube.com"));

@@ -107,7 +107,10 @@ pub fn normalized_domain(url: &str) -> Option<String> {
 }
 
 fn exe_file_name(exe_path: &str) -> &str {
-    Path::new(exe_path).file_name().and_then(|s| s.to_str()).unwrap_or(exe_path)
+    Path::new(exe_path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(exe_path)
 }
 
 /// Extracts the host from a URL that's already been normalized to
@@ -153,7 +156,10 @@ mod tests {
 
     #[test]
     fn domain_extraction_strips_port_and_userinfo() {
-        assert_eq!(domain_of("https://user@example.com:8080/path"), Some("example.com"));
+        assert_eq!(
+            domain_of("https://user@example.com:8080/path"),
+            Some("example.com")
+        );
     }
 
     #[test]

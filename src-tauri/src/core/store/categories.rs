@@ -95,7 +95,10 @@ impl CategoryStore {
 
     pub fn create_category(&self, name: &str, color: &str) -> Result<Category> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("INSERT INTO categories (name, color) VALUES (?1, ?2)", params![name, color])?;
+        conn.execute(
+            "INSERT INTO categories (name, color) VALUES (?1, ?2)",
+            params![name, color],
+        )?;
         Ok(Category {
             id: conn.last_insert_rowid(),
             name: name.to_string(),
@@ -117,8 +120,14 @@ impl CategoryStore {
     pub fn delete_category(&self, id: i64) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        tx.execute("DELETE FROM category_rules WHERE category_id = ?1", params![id])?;
-        tx.execute("DELETE FROM category_overrides WHERE category_id = ?1", params![id])?;
+        tx.execute(
+            "DELETE FROM category_rules WHERE category_id = ?1",
+            params![id],
+        )?;
+        tx.execute(
+            "DELETE FROM category_overrides WHERE category_id = ?1",
+            params![id],
+        )?;
         tx.execute("DELETE FROM categories WHERE id = ?1", params![id])?;
         tx.commit()?;
         Ok(())
@@ -147,14 +156,22 @@ impl CategoryStore {
     /// [`MatchKind`]); a `"regex"` pattern is compiled up front so an
     /// invalid one is rejected here rather than silently never matching at
     /// query time.
-    pub fn create_rule(&self, key_kind: &str, pattern: &str, match_kind: &str, category_id: i64) -> Result<CategoryRule> {
+    pub fn create_rule(
+        &self,
+        key_kind: &str,
+        pattern: &str,
+        match_kind: &str,
+        category_id: i64,
+    ) -> Result<CategoryRule> {
         let pattern = pattern.trim();
         if pattern.is_empty() {
             bail!("rule pattern must not be empty");
         }
-        let kind = MatchKind::parse(match_kind).ok_or_else(|| anyhow!("invalid match kind: {match_kind}"))?;
+        let kind = MatchKind::parse(match_kind)
+            .ok_or_else(|| anyhow!("invalid match kind: {match_kind}"))?;
         if kind == MatchKind::Regex {
-            regex::Regex::new(pattern).with_context(|| format!("invalid regex pattern: {pattern}"))?;
+            regex::Regex::new(pattern)
+                .with_context(|| format!("invalid regex pattern: {pattern}"))?;
         }
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -171,7 +188,10 @@ impl CategoryStore {
     }
 
     pub fn delete_rule(&self, id: i64) -> Result<()> {
-        self.conn.lock().unwrap().execute("DELETE FROM category_rules WHERE id = ?1", params![id])?;
+        self.conn
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM category_rules WHERE id = ?1", params![id])?;
         Ok(())
     }
 
@@ -190,7 +210,11 @@ impl CategoryStore {
             params![key_kind, key],
             |row| row.get(0),
         )?;
-        Ok(CategorizePreview { key_kind, key, affected_count })
+        Ok(CategorizePreview {
+            key_kind,
+            key,
+            affected_count,
+        })
     }
 
     /// Assigns `category_id` to a single session only — a per-session pin
@@ -198,10 +222,10 @@ impl CategoryStore {
     /// `HistoryReader::list_sessions`). `None` clears the pin, letting the
     /// key-wide override / rules / "Uncategorized" resolve it instead.
     pub fn set_row_category(&self, session_id: i64, category_id: Option<i64>) -> Result<()> {
-        self.conn
-            .lock()
-            .unwrap()
-            .execute("UPDATE sessions SET category_id = ?1 WHERE id = ?2", params![category_id, session_id])?;
+        self.conn.lock().unwrap().execute(
+            "UPDATE sessions SET category_id = ?1 WHERE id = ?2",
+            params![category_id, session_id],
+        )?;
         Ok(())
     }
 
@@ -277,7 +301,10 @@ impl CategoryStore {
     /// the caller (e.g. the frontend, in chunks so it can show progress)
     /// drives the actual write via [`Self::recategorize_keys`] over this
     /// list.
-    pub fn list_recategorization_keys(&self, filter: &RecategorizeFilter) -> Result<Vec<CategoryKeyRef>> {
+    pub fn list_recategorization_keys(
+        &self,
+        filter: &RecategorizeFilter,
+    ) -> Result<Vec<CategoryKeyRef>> {
         let conn = self.conn.lock().unwrap();
 
         let mut where_sql = "1=1".to_string();
@@ -297,7 +324,9 @@ impl CategoryStore {
         // to a category, so `protect_manual` has no further effect on top
         // of it).
         if filter.only_uncategorized {
-            where_sql.push_str(" AND s.category_id IS NULL AND ov.category_id IS NULL AND r.category_id IS NULL");
+            where_sql.push_str(
+                " AND s.category_id IS NULL AND ov.category_id IS NULL AND r.category_id IS NULL",
+            );
         } else if filter.protect_manual {
             where_sql.push_str(" AND s.category_id IS NULL AND ov.category_id IS NULL");
         }
@@ -310,11 +339,15 @@ impl CategoryStore {
              WHERE {where_sql}",
             rule_join = crate::core::category::rule_join_sql("r", "s"),
         );
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            binds.iter().map(|b| b.as_ref()).collect();
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
             .query_map(param_refs.as_slice(), |row| {
-                Ok(CategoryKeyRef { key_kind: row.get(0)?, pattern: row.get(1)? })
+                Ok(CategoryKeyRef {
+                    key_kind: row.get(0)?,
+                    pattern: row.get(1)?,
+                })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -356,7 +389,8 @@ mod tests {
     use crate::core::store::sqlite::open_connection;
 
     fn temp_store() -> (CategoryStore, std::path::PathBuf) {
-        let path = std::env::temp_dir().join(format!("makora-category-store-test-{}.sqlite", uuid_ish()));
+        let path =
+            std::env::temp_dir().join(format!("makora-category-store-test-{}.sqlite", uuid_ish()));
         let conn = open_connection(&path).expect("opening test database");
         (CategoryStore::new(conn), path)
     }
@@ -380,9 +414,15 @@ mod tests {
 
         let created = store.create_category("Focus", "#123456").unwrap();
         assert_eq!(created.name, "Focus");
-        assert!(store.list_categories().unwrap().iter().any(|c| c.id == created.id));
+        assert!(store
+            .list_categories()
+            .unwrap()
+            .iter()
+            .any(|c| c.id == created.id));
 
-        store.update_category(created.id, "Deep Work", "#654321").unwrap();
+        store
+            .update_category(created.id, "Deep Work", "#654321")
+            .unwrap();
         let updated = store
             .list_categories()
             .unwrap()
@@ -392,15 +432,23 @@ mod tests {
         assert_eq!(updated.name, "Deep Work");
         assert_eq!(updated.color, "#654321");
 
-        let rule = store.create_rule("exe", "obs64.exe", "exact", created.id).unwrap();
+        let rule = store
+            .create_rule("exe", "obs64.exe", "exact", created.id)
+            .unwrap();
         assert!(store.list_rules().unwrap().iter().any(|r| r.id == rule.id));
 
         store.delete_rule(rule.id).unwrap();
         assert!(!store.list_rules().unwrap().iter().any(|r| r.id == rule.id));
 
-        let rule = store.create_rule("domain", "example.com", "exact", created.id).unwrap();
+        let rule = store
+            .create_rule("domain", "example.com", "exact", created.id)
+            .unwrap();
         store.delete_category(created.id).unwrap();
-        assert!(!store.list_categories().unwrap().iter().any(|c| c.id == created.id));
+        assert!(!store
+            .list_categories()
+            .unwrap()
+            .iter()
+            .any(|c| c.id == created.id));
         assert!(
             !store.list_rules().unwrap().iter().any(|r| r.id == rule.id),
             "deleting a category should cascade to its rules"
@@ -443,7 +491,9 @@ mod tests {
         let conn = store.conn.clone();
 
         let other = store.create_category("Other", "#654321").unwrap();
-        store.create_rule("exe", "ruled.exe", "exact", other.id).unwrap();
+        store
+            .create_rule("exe", "ruled.exe", "exact", other.id)
+            .unwrap();
         insert_session(&conn, "ruled.exe", "2024-06-15T00:00:00Z"); // rule-matched, in range
         insert_session(&conn, "plain.exe", "2024-06-15T00:00:00Z"); // uncategorized, in range
         insert_session(&conn, "outside.exe", "2023-01-01T00:00:00Z"); // uncategorized, out of range
@@ -455,13 +505,17 @@ mod tests {
             protect_manual: false,
         };
         let keys = store.list_recategorization_keys(&filter).unwrap();
-        assert_eq!(keys.iter().map(|k| k.pattern.as_str()).collect::<Vec<_>>(), vec!["plain.exe"]);
+        assert_eq!(
+            keys.iter().map(|k| k.pattern.as_str()).collect::<Vec<_>>(),
+            vec!["plain.exe"]
+        );
 
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
-    fn recategorize_keys_clears_overrides_but_protect_manual_excludes_them_from_the_candidate_list() {
+    fn recategorize_keys_clears_overrides_but_protect_manual_excludes_them_from_the_candidate_list()
+    {
         let (store, path) = temp_store();
         let conn = store.conn.clone();
 
@@ -471,13 +525,22 @@ mod tests {
         store.set_override(manual_id, other.id).unwrap(); // manual.exe manually categorized
 
         // Protected: only the non-manual key is a candidate.
-        let protected = RecategorizeFilter { protect_manual: true, ..Default::default() };
+        let protected = RecategorizeFilter {
+            protect_manual: true,
+            ..Default::default()
+        };
         let keys = store.list_recategorization_keys(&protected).unwrap();
-        assert_eq!(keys.iter().map(|k| k.pattern.as_str()).collect::<Vec<_>>(), vec!["plain.exe"]);
+        assert_eq!(
+            keys.iter().map(|k| k.pattern.as_str()).collect::<Vec<_>>(),
+            vec!["plain.exe"]
+        );
 
         // Unprotected: both keys are candidates, and clearing them removes
         // the manual override (the non-manual key has nothing to clear).
-        let unprotected = RecategorizeFilter { protect_manual: false, ..Default::default() };
+        let unprotected = RecategorizeFilter {
+            protect_manual: false,
+            ..Default::default()
+        };
         let keys = store.list_recategorization_keys(&unprotected).unwrap();
         assert_eq!(keys.len(), 2);
         let cleared = store.recategorize_keys(&keys).unwrap();
@@ -500,7 +563,9 @@ mod tests {
         let rule_cat = store.create_category("RuleCat", "#111111").unwrap();
         let override_cat = store.create_category("OverrideCat", "#222222").unwrap();
         let pin_cat = store.create_category("PinCat", "#333333").unwrap();
-        store.create_rule("exe", "shared.exe", "exact", rule_cat.id).unwrap();
+        store
+            .create_rule("exe", "shared.exe", "exact", rule_cat.id)
+            .unwrap();
 
         let a = insert_session(&conn, "shared.exe", "2024-06-15T00:00:00Z");
         let b = insert_session(&conn, "shared.exe", "2024-06-16T00:00:00Z");
@@ -551,9 +616,16 @@ mod tests {
         let pinned: Option<i64> = conn
             .lock()
             .unwrap()
-            .query_row("SELECT category_id FROM sessions WHERE id = ?1", params![a], |row| row.get(0))
+            .query_row(
+                "SELECT category_id FROM sessions WHERE id = ?1",
+                params![a],
+                |row| row.get(0),
+            )
             .unwrap();
-        assert_eq!(pinned, None, "a key-wide override should clear the per-session pin it supersedes");
+        assert_eq!(
+            pinned, None,
+            "a key-wide override should clear the per-session pin it supersedes"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -569,7 +641,9 @@ mod tests {
         store.set_override(a, first_cat.id).unwrap();
         let rules = store.list_rules().unwrap();
         assert!(
-            rules.iter().any(|r| r.key_kind == "exe" && r.pattern == "lockapp.exe" && r.category_id == first_cat.id),
+            rules.iter().any(|r| r.key_kind == "exe"
+                && r.pattern == "lockapp.exe"
+                && r.category_id == first_cat.id),
             "applying a category key-wide should surface it as a rule on the Categories page too"
         );
 
@@ -578,8 +652,16 @@ mod tests {
         let second_cat = store.create_category("SecondCat", "#222222").unwrap();
         store.set_override(a, second_cat.id).unwrap();
         let rules = store.list_rules().unwrap();
-        assert_eq!(rules.iter().filter(|r| r.key_kind == "exe" && r.pattern == "lockapp.exe").count(), 1);
-        assert!(rules.iter().any(|r| r.pattern == "lockapp.exe" && r.category_id == second_cat.id));
+        assert_eq!(
+            rules
+                .iter()
+                .filter(|r| r.key_kind == "exe" && r.pattern == "lockapp.exe")
+                .count(),
+            1
+        );
+        assert!(rules
+            .iter()
+            .any(|r| r.pattern == "lockapp.exe" && r.category_id == second_cat.id));
 
         let _ = std::fs::remove_file(&path);
     }
@@ -593,14 +675,21 @@ mod tests {
         let a = insert_session(&conn, "pinned.exe", "2024-06-15T00:00:00Z");
         store.set_row_category(a, Some(pin_cat.id)).unwrap();
 
-        let key = CategoryKeyRef { key_kind: "exe".to_string(), pattern: "pinned.exe".to_string() };
+        let key = CategoryKeyRef {
+            key_kind: "exe".to_string(),
+            pattern: "pinned.exe".to_string(),
+        };
         let changed = store.recategorize_keys(&[key]).unwrap();
         assert_eq!(changed, 1);
 
         let pinned: Option<i64> = conn
             .lock()
             .unwrap()
-            .query_row("SELECT category_id FROM sessions WHERE id = ?1", params![a], |row| row.get(0))
+            .query_row(
+                "SELECT category_id FROM sessions WHERE id = ?1",
+                params![a],
+                |row| row.get(0),
+            )
             .unwrap();
         assert_eq!(pinned, None);
 
@@ -615,7 +704,9 @@ mod tests {
         let filter = crate::core::store::queries::SessionFilter::default();
 
         let cat = store.create_category("Games", "#111111").unwrap();
-        store.create_rule("exe", "steam", "substring", cat.id).unwrap();
+        store
+            .create_rule("exe", "steam", "substring", cat.id)
+            .unwrap();
 
         let a = insert_session(&conn, "steamwebhelper.exe", "2024-06-15T00:00:00Z");
         let b = insert_session(&conn, "notepad.exe", "2024-06-15T00:00:00Z");
@@ -636,7 +727,9 @@ mod tests {
         let filter = crate::core::store::queries::SessionFilter::default();
 
         let cat = store.create_category("Work", "#222222").unwrap();
-        store.create_rule("domain", r"^[\w-]+\.corp\.example\.com$", "regex", cat.id).unwrap();
+        store
+            .create_rule("domain", r"^[\w-]+\.corp\.example\.com$", "regex", cat.id)
+            .unwrap();
 
         let a = insert_session(&conn, "chrome.exe", "2024-06-15T00:00:00Z");
         {
@@ -660,7 +753,11 @@ mod tests {
         let rows = reader.list_sessions(10, 0, &filter).unwrap();
         let category_of = |id: i64| rows.iter().find(|r| r.id == id).unwrap().category_id;
         assert_eq!(category_of(a), Some(cat.id));
-        assert_eq!(category_of(b), None, "regex is anchored, so a lookalike suffix should not match");
+        assert_eq!(
+            category_of(b),
+            None,
+            "regex is anchored, so a lookalike suffix should not match"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -669,7 +766,9 @@ mod tests {
     fn invalid_regex_pattern_is_rejected_up_front() {
         let (store, path) = temp_store();
         let cat = store.create_category("Bad", "#333333").unwrap();
-        assert!(store.create_rule("exe", "(unclosed", "regex", cat.id).is_err());
+        assert!(store
+            .create_rule("exe", "(unclosed", "regex", cat.id)
+            .is_err());
         let _ = std::fs::remove_file(&path);
     }
 
@@ -682,12 +781,19 @@ mod tests {
 
         let broad = store.create_category("Broad", "#444444").unwrap();
         let specific = store.create_category("Specific", "#555555").unwrap();
-        store.create_rule("exe", "steam", "substring", broad.id).unwrap();
-        store.create_rule("exe", "steamwebhelper.exe", "exact", specific.id).unwrap();
+        store
+            .create_rule("exe", "steam", "substring", broad.id)
+            .unwrap();
+        store
+            .create_rule("exe", "steamwebhelper.exe", "exact", specific.id)
+            .unwrap();
 
         let a = insert_session(&conn, "steamwebhelper.exe", "2024-06-15T00:00:00Z");
         let rows = reader.list_sessions(10, 0, &filter).unwrap();
-        assert_eq!(rows.iter().find(|r| r.id == a).unwrap().category_id, Some(specific.id));
+        assert_eq!(
+            rows.iter().find(|r| r.id == a).unwrap().category_id,
+            Some(specific.id)
+        );
 
         let _ = std::fs::remove_file(&path);
     }

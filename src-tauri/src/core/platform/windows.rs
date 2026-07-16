@@ -7,11 +7,13 @@ use anyhow::{anyhow, Result};
 use chrono::Utc;
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HWND};
-use windows_sys::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION};
+use windows_sys::Win32::System::Threading::{
+    OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+};
 use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetMessageW, GetWindowTextW, GetWindowThreadProcessId, CHILDID_SELF, EVENT_SYSTEM_FOREGROUND, MSG, OBJID_WINDOW,
-    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+    GetMessageW, GetWindowTextW, GetWindowThreadProcessId, CHILDID_SELF, EVENT_SYSTEM_FOREGROUND,
+    MSG, OBJID_WINDOW, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
 };
 
 use crate::core::model::{AppInfo, FocusEvent};
@@ -96,7 +98,11 @@ unsafe extern "system" fn win_event_proc(
 ) {
     // OBJID_WINDOW/CHILDID_SELF filters out events for controls *within* a
     // window (scrollbars, menus, ...) so only whole-window focus counts.
-    if event != EVENT_SYSTEM_FOREGROUND || hwnd.is_null() || id_object != OBJID_WINDOW || id_child != CHILDID_SELF as i32 {
+    if event != EVENT_SYSTEM_FOREGROUND
+        || hwnd.is_null()
+        || id_object != OBJID_WINDOW
+        || id_child != CHILDID_SELF as i32
+    {
         return;
     }
 

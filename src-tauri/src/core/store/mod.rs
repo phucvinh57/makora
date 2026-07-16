@@ -9,9 +9,11 @@ pub mod ignore;
 pub mod queries;
 pub mod sqlite;
 
-pub use categories::{Category, CategorizePreview, CategoryKeyRef, CategoryRule, CategoryStore, RecategorizeFilter};
+pub use categories::{
+    CategorizePreview, Category, CategoryKeyRef, CategoryRule, CategoryStore, RecategorizeFilter,
+};
 pub use ignore::{IgnoreRule, IgnoreStore};
-pub use queries::{CategoryFilter, HistoryReader, SessionFilter, SessionRow};
+pub use queries::{ActivityStats, CategoryFilter, HistoryReader, SessionFilter, SessionRow};
 pub use sqlite::{open_connection, SqliteStore};
 
 /// Persistence for app-usage sessions.
@@ -25,7 +27,13 @@ pub trait SessionStore {
     /// Insert a new open session (`end_time` is NULL) and return its id.
     /// `url` is `Some` when this row represents a browser tab rather than a
     /// plain app focus.
-    fn start_session(&mut self, app: &AppInfo, window_title: &str, url: Option<&str>, at: DateTime<Utc>) -> Result<i64>;
+    fn start_session(
+        &mut self,
+        app: &AppInfo,
+        window_title: &str,
+        url: Option<&str>,
+        at: DateTime<Utc>,
+    ) -> Result<i64>;
 
     /// Close a previously opened session.
     fn end_session(&mut self, id: i64, at: DateTime<Utc>) -> Result<()>;

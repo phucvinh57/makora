@@ -54,3 +54,32 @@ export interface IgnoreRule {
   pattern: string;
   match_kind: MatchKind;
 }
+
+export interface CategoryStat {
+  category_id: number | null;
+  name: string | null;
+  color: string | null;
+  total_seconds: number;
+  session_count: number;
+}
+
+export interface AppStat {
+  label: string;
+  kind: KeyKind;
+  category_color: string | null;
+  total_seconds: number;
+  session_count: number;
+}
+
+export interface DailyStat {
+  day: string;
+  total_seconds: number;
+}
+
+export interface ActivityStats {
+  total_seconds: number;
+  session_count: number;
+  categories: CategoryStat[];
+  apps: AppStat[];
+  daily: DailyStat[];
+}

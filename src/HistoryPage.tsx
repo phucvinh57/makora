@@ -8,6 +8,23 @@ import { RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import {
+  Pagination,
+  PaginationContent,
+  PaginationItem,
+  PaginationNext,
+  PaginationPrevious,
+} from "@/components/ui/pagination";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -248,46 +265,55 @@ export default function HistoryPage() {
 
   const allVisibleSelected =
     rows.length > 0 && rows.every((r) => selectedIds.has(r.id));
+  const someVisibleSelected =
+    !allVisibleSelected && rows.some((r) => selectedIds.has(r.id));
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
     <div className="flex h-full flex-col box-border">
-      <header className="mb-4 flex items-center justify-between gap-3">
-        <p className="m-0 text-sm text-muted-foreground">App-focus history</p>
-        <div className="flex items-center gap-2">
-          <input
-            type="text"
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            placeholder="Search app, title, or site…"
-            className="h-7 w-64 rounded-md border bg-transparent px-2 text-sm"
-          />
-          <select
-            value={categoryFilter}
-            onChange={(e) => handleCategoryFilterChange(e.target.value)}
-            className="h-7 rounded-md border bg-transparent px-1.5 text-sm"
-          >
-            <option value={ALL_CATEGORIES}>All categories</option>
-            <option value={UNCATEGORIZED}>Uncategorized</option>
-            {categories.map((category) => (
-              <option key={category.id} value={category.id}>
-                {category.name}
-              </option>
-            ))}
-          </select>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={loading}
-            onClick={() => sessionsQuery.refetch()}
-            aria-label="Refresh history"
-          >
-            <RefreshCw className={loading ? "animate-spin" : undefined} />
-          </Button>
-          <Button variant="outline" size="sm" onClick={handleRecategorizeClick}>
-            Recategorize
-          </Button>
+      <header className="mb-4 flex flex-wrap items-center gap-2">
+        <div className="mr-auto">
+          <h1 className="m-0 text-lg font-semibold">History</h1>
+          <p className="m-0 text-sm text-muted-foreground">App-focus history</p>
         </div>
+        <Input
+          type="text"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          placeholder="Search app, title, or site…"
+          className="h-8 min-w-40 flex-1 basis-48 sm:max-w-64"
+        />
+        <Select
+          value={categoryFilter}
+          onValueChange={(value) =>
+            handleCategoryFilterChange(value ?? ALL_CATEGORIES)
+          }
+        >
+          <SelectTrigger size="sm" className="w-40">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL_CATEGORIES}>All categories</SelectItem>
+            <SelectItem value={UNCATEGORIZED}>Uncategorized</SelectItem>
+            {categories.map((category) => (
+              <SelectItem key={category.id} value={String(category.id)}>
+                {category.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={loading}
+          onClick={() => sessionsQuery.refetch()}
+          aria-label="Refresh history"
+        >
+          <RefreshCw className={loading ? "animate-spin" : undefined} />
+        </Button>
+        <Button variant="outline" size="sm" onClick={handleRecategorizeClick}>
+          Recategorize
+        </Button>
       </header>
 
       {error && (
@@ -297,22 +323,23 @@ export default function HistoryPage() {
       )}
 
       {selectedIds.size > 0 && (
-        <div className="mb-3 flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2 text-sm">
+        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-md border bg-muted/50 px-3 py-2 text-sm">
           <span>{selectedIds.size} selected</span>
-          <select
+          <Select
             value={bulkCategory}
-            onChange={(e) => setBulkCategory(e.target.value)}
-            className="h-7 rounded-md border bg-transparent px-1.5 text-xs"
+            onValueChange={(value) => setBulkCategory(value ?? "")}
           >
-            <option value="" disabled>
-              Set category…
-            </option>
-            {categories.map((category) => (
-              <option key={category.id} value={category.id}>
-                {category.name}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger size="sm" className="w-40">
+              <SelectValue placeholder="Set category…" />
+            </SelectTrigger>
+            <SelectContent>
+              {categories.map((category) => (
+                <SelectItem key={category.id} value={String(category.id)}>
+                  {category.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Button
             size="sm"
             disabled={!bulkCategory || bulkApplyMutation.isPending}
@@ -330,128 +357,184 @@ export default function HistoryPage() {
         </div>
       )}
 
-      <div className="flex-1 overflow-y-auto no-scrollbar rounded-md border">
-        <Table className="table-fixed min-w-270">
-          <TableHeader className="sticky top-0 z-10 bg-background">
-            <TableRow>
-              <TableHead className="w-8">
-                <input
-                  type="checkbox"
-                  checked={allVisibleSelected}
-                  onChange={(e) => toggleAllVisible(e.target.checked)}
-                  aria-label="Select all visible rows"
-                  style={{ colorScheme: "light" }}
-                />
-              </TableHead>
-              <TableHead className="w-40">App</TableHead>
-              <TableHead className="w-36">Category</TableHead>
-              <TableHead className="w-56">Site</TableHead>
-              <TableHead className="min-w-56">Window title</TableHead>
-              <TableHead className="w-44">Start</TableHead>
-              <TableHead className="w-20 text-right">Duration</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {rows.map((row) => (
-              <TableRow key={row.id}>
-                <TableCell>
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.has(row.id)}
-                    onChange={(e) => toggleRow(row.id, e.target.checked)}
-                    aria-label={`Select session ${row.id}`}
-                    style={{ colorScheme: "light" }}
-                  />
-                </TableCell>
-                <TableCell className="truncate">
-                  <Tooltip>
-                    <TooltipTrigger className="truncate text-left">
-                      {row.app_name}
-                    </TooltipTrigger>
-                    <TooltipContent>{exeFileName(row.exe_path)}</TooltipContent>
-                  </Tooltip>
-                </TableCell>
-                <TableCell>
-                  <select
-                    className="w-full min-w-0 rounded-md border bg-transparent px-1.5 py-0.5 text-xs"
-                    style={{
-                      color: row.category_color ?? undefined,
-                      borderColor: row.category_color ?? undefined,
-                    }}
-                    value={row.category_id ?? UNCATEGORIZED}
-                    title={
-                      row.category_is_override
-                        ? "Manually categorized"
-                        : undefined
+      <Card className="@container flex-1 overflow-hidden p-0">
+        <div className="h-full overflow-y-auto subtle-scrollbar">
+          <Table className="table-fixed w-full">
+            <TableHeader className="sticky top-0 z-10 bg-card">
+              <TableRow>
+                <TableHead className="w-8">
+                  <Checkbox
+                    checked={allVisibleSelected}
+                    indeterminate={someVisibleSelected}
+                    onCheckedChange={(checked) =>
+                      toggleAllVisible(checked === true)
                     }
-                    onChange={(e) =>
-                      categoryChangeMutation.mutate({
-                        row,
-                        value: e.target.value,
-                      })
+                    aria-label="Select all visible rows"
+                  />
+                </TableHead>
+                <TableHead className="w-36">App</TableHead>
+                <TableHead className="w-36">Category</TableHead>
+                <TableHead className="hidden w-52 @4xl:table-cell">
+                  Site
+                </TableHead>
+                <TableHead>Window title</TableHead>
+                <TableHead className="hidden w-40 @2xl:table-cell">
+                  Start
+                </TableHead>
+                <TableHead className="w-20 text-right">Duration</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((row) => (
+                <TableRow key={row.id}>
+                  <TableCell>
+                    <Checkbox
+                      checked={selectedIds.has(row.id)}
+                      onCheckedChange={(checked) =>
+                        toggleRow(row.id, checked === true)
+                      }
+                      aria-label={`Select session ${row.id}`}
+                    />
+                  </TableCell>
+                  <TableCell className="truncate">
+                    <Tooltip>
+                      <TooltipTrigger className="truncate text-left">
+                        {row.app_name}
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {exeFileName(row.exe_path)}
+                      </TooltipContent>
+                    </Tooltip>
+                  </TableCell>
+                  <TableCell>
+                    <Select
+                      value={String(row.category_id ?? UNCATEGORIZED)}
+                      onValueChange={(value) =>
+                        categoryChangeMutation.mutate({
+                          row,
+                          value: value ?? UNCATEGORIZED,
+                        })
+                      }
+                    >
+                      <SelectTrigger
+                        size="sm"
+                        className="h-6 w-full min-w-0 px-1.5 text-xs"
+                        title={
+                          row.category_is_override
+                            ? "Manually categorized"
+                            : undefined
+                        }
+                      >
+                        <SelectValue>
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            <span
+                              className="size-2 shrink-0 rounded-full"
+                              style={{
+                                backgroundColor:
+                                  row.category_color ??
+                                  "var(--muted-foreground)",
+                              }}
+                            />
+                            <span className="truncate">
+                              {row.category_name ?? "Uncategorized"}
+                            </span>
+                          </span>
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={UNCATEGORIZED}>
+                          Uncategorized
+                        </SelectItem>
+                        {categories.map((category) => (
+                          <SelectItem
+                            key={category.id}
+                            value={String(category.id)}
+                          >
+                            {category.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </TableCell>
+                  <TableCell
+                    className="hidden truncate font-mono text-xs @4xl:table-cell"
+                    title={row.url ?? undefined}
+                  >
+                    {row.url ?? ""}
+                  </TableCell>
+                  <TableCell
+                    className="truncate"
+                    title={
+                      row.url
+                        ? `${row.window_title}\n${row.url}`
+                        : row.window_title
                     }
                   >
-                    <option value={UNCATEGORIZED}>Uncategorized</option>
-                    {categories.map((category) => (
-                      <option key={category.id} value={category.id}>
-                        {category.name}
-                      </option>
-                    ))}
-                  </select>
-                </TableCell>
-                <TableCell
-                  className="truncate font-mono text-xs"
-                  title={row.url ?? undefined}
-                >
-                  {row.url ?? ""}
-                </TableCell>
-                <TableCell className="truncate" title={row.window_title}>
-                  {row.window_title}
-                </TableCell>
-                <TableCell className="text-muted-foreground tabular-nums">
-                  {formatTimestamp(row.start_time)}
-                </TableCell>
-                <TableCell className="text-right tabular-nums">
-                  {formatDuration(row.start_time, row.end_time)}
-                </TableCell>
-              </TableRow>
-            ))}
-            {!loading && rows.length === 0 && (
-              <TableRow>
-                <TableCell
-                  colSpan={7}
-                  className="py-8 text-center text-muted-foreground"
-                >
-                  {search || categoryFilter !== ALL_CATEGORIES
-                    ? "No sessions match this filter."
-                    : "No sessions recorded yet."}
-                </TableCell>
-              </TableRow>
-            )}
-          </TableBody>
-        </Table>
-      </div>
+                    {row.window_title}
+                  </TableCell>
+                  <TableCell className="hidden text-muted-foreground tabular-nums @2xl:table-cell">
+                    {formatTimestamp(row.start_time)}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {formatDuration(row.start_time, row.end_time)}
+                  </TableCell>
+                </TableRow>
+              ))}
+              {!loading && rows.length === 0 && (
+                <TableRow>
+                  <TableCell
+                    colSpan={7}
+                    className="py-8 text-center text-muted-foreground"
+                  >
+                    {search || categoryFilter !== ALL_CATEGORIES
+                      ? "No sessions match this filter."
+                      : "No sessions recorded yet."}
+                  </TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </Card>
 
       <footer className="flex items-center justify-center gap-4 pt-3 text-sm">
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={page === 0}
-          onClick={() => setPage((p) => Math.max(0, p - 1))}
-        >
-          Prev
-        </Button>
-        <span>
-          Page {page + 1} of {pageCount} ({total} sessions)
-        </span>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={page + 1 >= pageCount}
-          onClick={() => setPage((p) => p + 1)}
-        >
-          Next
-        </Button>
+        <Pagination className="w-auto">
+          <PaginationContent>
+            <PaginationItem>
+              <PaginationPrevious
+                href="#"
+                aria-disabled={page === 0}
+                className={
+                  page === 0 ? "pointer-events-none opacity-50" : undefined
+                }
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (page > 0) setPage((p) => p - 1);
+                }}
+              />
+            </PaginationItem>
+            <PaginationItem>
+              <span className="px-2 text-sm text-muted-foreground">
+                Page {page + 1} of {pageCount} ({total} sessions)
+              </span>
+            </PaginationItem>
+            <PaginationItem>
+              <PaginationNext
+                href="#"
+                aria-disabled={page + 1 >= pageCount}
+                className={
+                  page + 1 >= pageCount
+                    ? "pointer-events-none opacity-50"
+                    : undefined
+                }
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (page + 1 < pageCount) setPage((p) => p + 1);
+                }}
+              />
+            </PaginationItem>
+          </PaginationContent>
+        </Pagination>
       </footer>
     </div>
   );

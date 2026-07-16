@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
 use crate::core::{
-    Category, CategorizePreview, CategoryFilter, CategoryKeyRef, CategoryRule, CategoryStore, HistoryReader,
-    IgnoreRule, IgnoreStore, RecategorizeFilter, SessionFilter, SessionRow,
+    ActivityStats, CategorizePreview, Category, CategoryFilter, CategoryKeyRef, CategoryRule,
+    CategoryStore, HistoryReader, IgnoreRule, IgnoreStore, RecategorizeFilter, SessionFilter,
+    SessionRow,
 };
 use serde::Serialize;
 use tauri::State;
@@ -33,16 +34,36 @@ pub fn list_sessions(
         search,
         category: parse_category_filter(category.as_deref())?,
     };
-    let rows = reader.list_sessions(page_size, offset, &filter).map_err(|e| e.to_string())?;
+    let rows = reader
+        .list_sessions(page_size, offset, &filter)
+        .map_err(|e| e.to_string())?;
     let total = reader.count_sessions(&filter).map_err(|e| e.to_string())?;
     Ok(SessionsPage { rows, total })
+}
+
+/// Aggregate activity totals between `start` and `end` (RFC 3339 UTC
+/// bounds, half-open) — a total, a per-category breakdown, a top-apps/sites
+/// breakdown, and a per-day breakdown in the machine's local time zone, for
+/// the Statistics page.
+#[tauri::command]
+pub fn activity_stats(
+    reader: State<HistoryReader>,
+    start: String,
+    end: String,
+) -> Result<ActivityStats, String> {
+    reader
+        .activity_stats(&start, &end)
+        .map_err(|e| e.to_string())
 }
 
 fn parse_category_filter(category: Option<&str>) -> Result<CategoryFilter, String> {
     match category {
         None => Ok(CategoryFilter::All),
         Some("uncategorized") => Ok(CategoryFilter::Uncategorized),
-        Some(id) => id.parse::<i64>().map(CategoryFilter::Category).map_err(|_| format!("invalid category filter: {id}")),
+        Some(id) => id
+            .parse::<i64>()
+            .map(CategoryFilter::Category)
+            .map_err(|_| format!("invalid category filter: {id}")),
     }
 }
 
@@ -58,8 +79,14 @@ pub fn list_categories(categories: State<CategoryStore>) -> Result<Vec<Category>
 /// Development" actually expects. For categorizing just one activity, see
 /// `set_session_row_category`.
 #[tauri::command]
-pub fn set_session_category(categories: State<CategoryStore>, session_id: i64, category_id: i64) -> Result<(), String> {
-    categories.set_override(session_id, category_id).map_err(|e| e.to_string())
+pub fn set_session_category(
+    categories: State<CategoryStore>,
+    session_id: i64,
+    category_id: i64,
+) -> Result<(), String> {
+    categories
+        .set_override(session_id, category_id)
+        .map_err(|e| e.to_string())
 }
 
 /// Assigns a category to a single activity only, leaving every other
@@ -72,23 +99,36 @@ pub fn set_session_row_category(
     session_id: i64,
     category_id: Option<i64>,
 ) -> Result<(), String> {
-    categories.set_row_category(session_id, category_id).map_err(|e| e.to_string())
+    categories
+        .set_row_category(session_id, category_id)
+        .map_err(|e| e.to_string())
 }
 
 /// How many sessions share `session_id`'s app/site key, i.e. how many rows
 /// `set_session_category` would actually recategorize — for the frontend to
 /// show a "this affects N other activities" confirmation before committing.
 #[tauri::command]
-pub fn preview_session_category(categories: State<CategoryStore>, session_id: i64) -> Result<CategorizePreview, String> {
-    categories.preview_category_change(session_id).map_err(|e| e.to_string())
+pub fn preview_session_category(
+    categories: State<CategoryStore>,
+    session_id: i64,
+) -> Result<CategorizePreview, String> {
+    categories
+        .preview_category_change(session_id)
+        .map_err(|e| e.to_string())
 }
 
 /// Manually assigns a category to many sessions at once (and to every other
 /// session sharing each one's app/site key) — for batch-categorizing a
 /// filtered set of history rows in one action.
 #[tauri::command]
-pub fn set_sessions_category(categories: State<CategoryStore>, session_ids: Vec<i64>, category_id: i64) -> Result<(), String> {
-    categories.set_overrides(&session_ids, category_id).map_err(|e| e.to_string())
+pub fn set_sessions_category(
+    categories: State<CategoryStore>,
+    session_ids: Vec<i64>,
+    category_id: i64,
+) -> Result<(), String> {
+    categories
+        .set_overrides(&session_ids, category_id)
+        .map_err(|e| e.to_string())
 }
 
 /// Distinct app/site keys eligible for a bulk recategorization pass — every
@@ -106,8 +146,15 @@ pub fn list_recategorization_keys(
     only_uncategorized: bool,
     protect_manual: bool,
 ) -> Result<Vec<CategoryKeyRef>, String> {
-    let filter = RecategorizeFilter { start_date, end_date, only_uncategorized, protect_manual };
-    categories.list_recategorization_keys(&filter).map_err(|e| e.to_string())
+    let filter = RecategorizeFilter {
+        start_date,
+        end_date,
+        only_uncategorized,
+        protect_manual,
+    };
+    categories
+        .list_recategorization_keys(&filter)
+        .map_err(|e| e.to_string())
 }
 
 /// Re-evaluates a batch of app/site keys (from `list_recategorization_keys`)
@@ -116,20 +163,38 @@ pub fn list_recategorization_keys(
 /// the frozen manual choice. Returns how many keys in this batch actually
 /// had an override cleared.
 #[tauri::command]
-pub fn recategorize_keys(categories: State<CategoryStore>, keys: Vec<CategoryKeyRef>) -> Result<i64, String> {
-    categories.recategorize_keys(&keys).map_err(|e| e.to_string())
+pub fn recategorize_keys(
+    categories: State<CategoryStore>,
+    keys: Vec<CategoryKeyRef>,
+) -> Result<i64, String> {
+    categories
+        .recategorize_keys(&keys)
+        .map_err(|e| e.to_string())
 }
 
 /// Creates a new user-defined category.
 #[tauri::command]
-pub fn create_category(categories: State<CategoryStore>, name: String, color: String) -> Result<Category, String> {
-    categories.create_category(&name, &color).map_err(|e| e.to_string())
+pub fn create_category(
+    categories: State<CategoryStore>,
+    name: String,
+    color: String,
+) -> Result<Category, String> {
+    categories
+        .create_category(&name, &color)
+        .map_err(|e| e.to_string())
 }
 
 /// Renames a category or changes its color.
 #[tauri::command]
-pub fn update_category(categories: State<CategoryStore>, id: i64, name: String, color: String) -> Result<(), String> {
-    categories.update_category(id, &name, &color).map_err(|e| e.to_string())
+pub fn update_category(
+    categories: State<CategoryStore>,
+    id: i64,
+    name: String,
+    color: String,
+) -> Result<(), String> {
+    categories
+        .update_category(id, &name, &color)
+        .map_err(|e| e.to_string())
 }
 
 /// Deletes a category along with any rules/overrides that reference it.
@@ -184,7 +249,9 @@ pub fn create_ignore_rule(
     pattern: String,
     match_kind: String,
 ) -> Result<IgnoreRule, String> {
-    ignore.create_rule(&kind, &pattern, &match_kind).map_err(|e| e.to_string())
+    ignore
+        .create_rule(&kind, &pattern, &match_kind)
+        .map_err(|e| e.to_string())
 }
 
 /// Removes an app/site from the ignore list.

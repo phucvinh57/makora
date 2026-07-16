@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  ActivityStats,
   CategorizePreview,
   Category,
   CategoryKeyRef,
@@ -18,6 +19,15 @@ export function listSessions(
   category?: string,
 ): Promise<SessionsPage> {
   return invoke("list_sessions", { page, pageSize, search, category });
+}
+
+/** `start`/`end` are RFC 3339 UTC timestamps; the range is half-open
+ * (`start_time >= start && start_time < end`). */
+export function activityStats(
+  start: string,
+  end: string,
+): Promise<ActivityStats> {
+  return invoke("activity_stats", { start, end });
 }
 
 export function listCategories(): Promise<Category[]> {

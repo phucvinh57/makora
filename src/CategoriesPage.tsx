@@ -1,7 +1,23 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Trash2Icon } from "lucide-react";
 import { useState } from "react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardAction,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   createCategory,
   createCategoryRule,
@@ -124,6 +140,7 @@ export default function CategoriesPage() {
   return (
     <div className="flex h-full flex-col box-border">
       <header className="mb-4">
+        <h1 className="m-0 text-lg font-semibold">Categories</h1>
         <p className="m-0 text-sm text-muted-foreground">Categories & rules</p>
       </header>
 
@@ -135,28 +152,28 @@ export default function CategoriesPage() {
 
       <form
         onSubmit={handleCreateCategory}
-        className="mb-4 flex items-center gap-2"
+        className="mb-4 flex flex-wrap items-center gap-2"
       >
         <input
           type="color"
           value={newColor}
           onChange={(e) => setNewColor(e.target.value)}
-          className="h-7 w-9 shrink-0 cursor-pointer rounded-md border bg-transparent p-0.5"
+          className="h-8 w-10 shrink-0 cursor-pointer rounded-md border bg-transparent p-0.5"
           aria-label="New category color"
         />
-        <input
+        <Input
           type="text"
           value={newName}
           onChange={(e) => setNewName(e.target.value)}
           placeholder="New category name"
-          className="h-7 rounded-md border bg-transparent px-2 text-sm"
+          className="w-56"
         />
         <Button type="submit" size="sm" disabled={!newName.trim()}>
           Add category
         </Button>
       </form>
 
-      <div className="flex-1 overflow-y-auto no-scrollbar">
+      <div className="flex-1 overflow-y-auto subtle-scrollbar">
         {!loading && categories.length === 0 && (
           <p className="text-sm text-muted-foreground">No categories yet.</p>
         )}
@@ -235,22 +252,22 @@ function CategoryCard({
   }
 
   return (
-    <div className="rounded-md border p-3">
-      <div className="flex items-center gap-2">
+    <Card size="sm">
+      <CardHeader>
         {editing ? (
-          <>
+          <div className="flex flex-1 flex-wrap items-center gap-2">
             <input
               type="color"
               value={color}
               onChange={(e) => setColor(e.target.value)}
-              className="h-7 w-9 shrink-0 cursor-pointer rounded-md border bg-transparent p-0.5"
+              className="h-8 w-10 shrink-0 cursor-pointer rounded-md border bg-transparent p-0.5"
               aria-label="Category color"
             />
-            <input
+            <Input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="h-7 flex-1 rounded-md border bg-transparent px-2 text-sm"
+              className="min-w-40 flex-1"
             />
             <Button size="sm" onClick={saveEditing}>
               Save
@@ -262,91 +279,104 @@ function CategoryCard({
             >
               Cancel
             </Button>
-          </>
+          </div>
         ) : (
           <>
-            <span
-              className="size-4 shrink-0 rounded-full"
-              style={{ backgroundColor: category.color }}
-            />
-            <span className="flex-1 text-sm font-medium">{category.name}</span>
-            <Button variant="outline" size="sm" onClick={startEditing}>
-              Edit
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => onDelete(category)}
-            >
-              Delete
-            </Button>
+            <CardTitle className="flex items-center gap-2">
+              <span
+                className="size-2.5 shrink-0 rounded-full"
+                style={{ backgroundColor: category.color }}
+              />
+              {category.name}
+            </CardTitle>
+            <CardAction className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={startEditing}>
+                Edit
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => onDelete(category)}
+              >
+                Delete
+              </Button>
+            </CardAction>
           </>
         )}
-      </div>
+      </CardHeader>
 
-      <div className="mt-3 flex flex-wrap items-center gap-1.5">
-        {rules.length === 0 && (
-          <span className="text-xs text-muted-foreground">
-            No rules — this category has to be assigned manually.
-          </span>
-        )}
-        {rules.map((rule) => (
-          <span
-            key={rule.id}
-            className="inline-flex items-center gap-1 rounded-md border bg-muted px-1.5 py-0.5 text-xs"
-          >
-            <span className="text-muted-foreground">
-              {rule.key_kind === "exe" ? "app" : "site"}{" "}
-              {MATCH_KIND_LABEL[rule.match_kind]}
+      <CardContent>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {rules.length === 0 && (
+            <span className="text-xs text-muted-foreground">
+              No rules — this category has to be assigned manually.
             </span>
-            <span className="font-mono">{rule.pattern}</span>
-            <button
-              type="button"
-              onClick={() => onDeleteRule(rule)}
-              aria-label={`Remove rule ${rule.pattern}`}
-              className="text-muted-foreground hover:text-destructive"
-            >
-              <Trash2Icon className="size-3" />
-            </button>
-          </span>
-        ))}
-      </div>
+          )}
+          {rules.map((rule) => (
+            <Badge key={rule.id} variant="secondary" className="h-auto py-0.5">
+              <span className="text-muted-foreground">
+                {rule.key_kind === "exe" ? "app" : "site"}{" "}
+                {MATCH_KIND_LABEL[rule.match_kind]}
+              </span>
+              <span className="font-mono">{rule.pattern}</span>
+              <button
+                type="button"
+                onClick={() => onDeleteRule(rule)}
+                aria-label={`Remove rule ${rule.pattern}`}
+                className="text-muted-foreground hover:text-destructive"
+              >
+                <Trash2Icon className="size-3" />
+              </button>
+            </Badge>
+          ))}
+        </div>
 
-      <form onSubmit={handleAddRule} className="mt-2 flex items-center gap-1.5">
-        <select
-          value={keyKind}
-          onChange={(e) => setKeyKind(e.target.value as KeyKind)}
-          className="h-6 rounded-md border bg-transparent px-1 text-xs"
+        <form
+          onSubmit={handleAddRule}
+          className="mt-3 flex flex-wrap items-center gap-1.5"
         >
-          <option value="exe">App (exe)</option>
-          <option value="domain">Site (domain)</option>
-        </select>
-        <select
-          value={matchKind}
-          onChange={(e) => setMatchKind(e.target.value as MatchKind)}
-          className="h-6 rounded-md border bg-transparent px-1 text-xs"
-          aria-label="Match kind"
-        >
-          <option value="exact">is</option>
-          <option value="substring">contains</option>
-          <option value="regex">matches (regex)</option>
-        </select>
-        <input
-          type="text"
-          value={pattern}
-          onChange={(e) => setPattern(e.target.value)}
-          placeholder={matchKindPlaceholder(keyKind, matchKind)}
-          className="h-6 rounded-md border bg-transparent px-1.5 text-xs font-mono"
-        />
-        <Button
-          type="submit"
-          size="xs"
-          variant="outline"
-          disabled={!pattern.trim()}
-        >
-          Add rule
-        </Button>
-      </form>
-    </div>
+          <Select
+            value={keyKind}
+            onValueChange={(value) => setKeyKind(value as KeyKind)}
+          >
+            <SelectTrigger size="sm" className="w-36">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="exe">App (exe)</SelectItem>
+              <SelectItem value="domain">Site (domain)</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select
+            value={matchKind}
+            onValueChange={(value) => setMatchKind(value as MatchKind)}
+          >
+            <SelectTrigger size="sm" className="w-32" aria-label="Match kind">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="exact">is</SelectItem>
+              <SelectItem value="substring">contains</SelectItem>
+              <SelectItem value="regex">matches (regex)</SelectItem>
+            </SelectContent>
+          </Select>
+          <Input
+            type="text"
+            value={pattern}
+            onChange={(e) => setPattern(e.target.value)}
+            placeholder={matchKindPlaceholder(keyKind, matchKind)}
+            className="h-7 min-w-32 flex-1 font-mono"
+          />
+          <Button
+            type="submit"
+            size="xs"
+            variant="outline"
+            disabled={!pattern.trim()}
+          >
+            Add rule
+          </Button>
+        </form>
+      </CardContent>
+    </Card>
   );
 }

@@ -46,7 +46,10 @@ fn run<S: SessionStore>(server: Server, tracker: Arc<Mutex<SessionTracker<S>>>) 
     }
 }
 
-fn handle_request<S: SessionStore>(request: &mut tiny_http::Request, tracker: &Arc<Mutex<SessionTracker<S>>>) -> u16 {
+fn handle_request<S: SessionStore>(
+    request: &mut tiny_http::Request,
+    tracker: &Arc<Mutex<SessionTracker<S>>>,
+) -> u16 {
     if *request.method() != Method::Post || request.url() != "/event" {
         return 404;
     }

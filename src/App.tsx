@@ -1,5 +1,7 @@
 import {
+  BarChart3,
   History,
+  Hourglass,
   PanelLeftClose,
   PanelLeftOpen,
   Settings as SettingsIcon,
@@ -15,14 +17,25 @@ import { cn } from "@/lib/utils";
 import CategoriesPage from "./CategoriesPage";
 import HistoryPage from "./HistoryPage";
 import SettingsPage from "./SettingsPage";
+import StatisticsPage from "./StatisticsPage";
 
-type Tab = "history" | "categories" | "settings";
+type Tab = "history" | "statistics" | "categories" | "settings";
 
 const NAV_ITEMS: { tab: Tab; label: string; icon: typeof History }[] = [
   { tab: "history", label: "History", icon: History },
+  { tab: "statistics", label: "Statistics", icon: BarChart3 },
   { tab: "categories", label: "Categories", icon: Tags },
   { tab: "settings", label: "Settings", icon: SettingsIcon },
 ];
+
+// A 4th tab makes a nested `? :` ternary hard to read, so the render branch
+// below looks the active tab up in this map instead.
+const TAB_PAGES: Record<Tab, React.ReactNode> = {
+  history: <HistoryPage />,
+  statistics: <StatisticsPage />,
+  categories: <CategoriesPage />,
+  settings: <SettingsPage />,
+};
 
 const COLLAPSE_STORAGE_KEY = "makora-sidebar-collapsed";
 
@@ -54,7 +67,16 @@ export default function App() {
             collapsed ? "justify-center px-2" : "justify-between px-4",
           )}
         >
-          {!collapsed && <h1 className="m-0 text-xl font-semibold">makora</h1>}
+          {!collapsed && (
+            <div className="flex items-center gap-2">
+              <div className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
+                <Hourglass className="size-4" />
+              </div>
+              <span className="text-base font-semibold tracking-tight">
+                makora
+              </span>
+            </div>
+          )}
           <button
             type="button"
             onClick={toggleCollapsed}
@@ -74,7 +96,7 @@ export default function App() {
               "flex items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm font-medium transition-colors",
               collapsed && "justify-center px-0",
               tab === itemTab
-                ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                ? "bg-sidebar-primary/10 text-sidebar-primary"
                 : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground",
             );
 
@@ -107,14 +129,8 @@ export default function App() {
           })}
         </nav>
       </aside>
-      <div className="min-w-0 flex-1 overflow-y-auto p-6">
-        {tab === "history" ? (
-          <HistoryPage />
-        ) : tab === "categories" ? (
-          <CategoriesPage />
-        ) : (
-          <SettingsPage />
-        )}
+      <div className="@container/main min-w-0 flex-1 overflow-y-auto p-6">
+        {TAB_PAGES[tab]}
       </div>
     </div>
   );

@@ -12,8 +12,8 @@ use directories::ProjectDirs;
 use tauri::{Manager, WindowEvent};
 
 use crate::core::{
-    open_connection, CategoryStore, FocusEvent, FocusWatcher, HistoryReader, IgnoreStore, PlatformFocusWatcher,
-    SessionTracker, SqliteStore,
+    open_connection, CategoryStore, FocusEvent, FocusWatcher, HistoryReader, IgnoreStore,
+    PlatformFocusWatcher, SessionTracker, SqliteStore,
 };
 
 /// Shared by the focus-watcher thread, the tab-ingest server, and the
@@ -33,7 +33,8 @@ pub fn run() {
     let ignore = Arc::new(IgnoreStore::new(conn.clone()));
     let store = SqliteStore::new(conn.clone());
     let tracker: SharedTracker = Arc::new(Mutex::new(
-        SessionTracker::with_ignore_policy(store, ignore.clone()).expect("initializing session tracker"),
+        SessionTracker::with_ignore_policy(store, ignore.clone())
+            .expect("initializing session tracker"),
     ));
     let reader = HistoryReader::new(conn.clone());
     let categories = CategoryStore::new(conn);
@@ -47,6 +48,7 @@ pub fn run() {
         .manage(ignore)
         .invoke_handler(tauri::generate_handler![
             commands::list_sessions,
+            commands::activity_stats,
             commands::list_categories,
             commands::set_session_category,
             commands::set_session_row_category,
@@ -82,7 +84,10 @@ pub fn run() {
                 .context("spawning focus-tracker thread")?;
 
             ingest::spawn(setup_tracker.clone()).context("starting tab-ingest server")?;
-            eprintln!("makora: listening for tab events on http://127.0.0.1:{}", ingest::PORT);
+            eprintln!(
+                "makora: listening for tab events on http://127.0.0.1:{}",
+                ingest::PORT
+            );
 
             tray::build(app.handle())?;
 

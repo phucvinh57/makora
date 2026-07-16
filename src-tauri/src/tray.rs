@@ -11,7 +11,11 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
     TrayIconBuilder::new()
-        .icon(app.default_window_icon().cloned().expect("app icon configured in tauri.conf.json"))
+        .icon(
+            app.default_window_icon()
+                .cloned()
+                .expect("app icon configured in tauri.conf.json"),
+        )
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {

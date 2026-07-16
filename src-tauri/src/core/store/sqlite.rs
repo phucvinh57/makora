@@ -107,7 +107,8 @@ fn register_regexp_function(conn: &Connection) -> Result<()> {
     conn.create_scalar_function(
         "regexp",
         2,
-        rusqlite::functions::FunctionFlags::SQLITE_UTF8 | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
+        rusqlite::functions::FunctionFlags::SQLITE_UTF8
+            | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
         |ctx| {
             let pattern = ctx.get::<String>(0)?;
             let text = ctx.get::<String>(1)?;
@@ -127,9 +128,12 @@ pub fn open_connection(path: &Path) -> Result<SharedConnection> {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating database directory {}", parent.display()))?;
     }
-    let mut conn = Connection::open(path).with_context(|| format!("opening database at {}", path.display()))?;
+    let mut conn = Connection::open(path)
+        .with_context(|| format!("opening database at {}", path.display()))?;
     register_regexp_function(&conn).context("registering regexp SQL function")?;
-    migrations().to_latest(&mut conn).context("migrating schema")?;
+    migrations()
+        .to_latest(&mut conn)
+        .context("migrating schema")?;
     seed_default_categories(&conn).context("seeding default categories")?;
     Ok(Arc::new(Mutex::new(conn)))
 }
@@ -147,7 +151,10 @@ impl SqliteStore {
 }
 
 fn seed_default_categories(conn: &Connection) -> Result<()> {
-    let already_seeded: bool = conn.query_row("SELECT EXISTS(SELECT 1 FROM categories)", [], |row| row.get(0))?;
+    let already_seeded: bool =
+        conn.query_row("SELECT EXISTS(SELECT 1 FROM categories)", [], |row| {
+            row.get(0)
+        })?;
     if already_seeded {
         return Ok(());
     }
@@ -157,26 +164,58 @@ fn seed_default_categories(conn: &Connection) -> Result<()> {
         (
             "Development",
             "#6366f1",
-            &["code.exe", "devenv.exe", "pycharm64.exe", "windowsterminal.exe", "powershell.exe", "pwsh.exe", "cmd.exe"],
-            &["github.com", "gitlab.com", "stackoverflow.com", "developer.mozilla.org"],
+            &[
+                "code.exe",
+                "devenv.exe",
+                "pycharm64.exe",
+                "windowsterminal.exe",
+                "powershell.exe",
+                "pwsh.exe",
+                "cmd.exe",
+            ],
+            &[
+                "github.com",
+                "gitlab.com",
+                "stackoverflow.com",
+                "developer.mozilla.org",
+            ],
         ),
         (
             "Communication",
             "#22c55e",
-            &["slack.exe", "discord.exe", "teams.exe", "outlook.exe", "whatsapp.exe", "whatsapp.root.exe", "signal.exe"],
+            &[
+                "slack.exe",
+                "discord.exe",
+                "teams.exe",
+                "outlook.exe",
+                "whatsapp.exe",
+                "whatsapp.root.exe",
+                "signal.exe",
+            ],
             &["mail.google.com", "outlook.office.com"],
         ),
         (
             "Entertainment",
             "#f97316",
             &["spotify.exe", "steam.exe", "vlc.exe"],
-            &["youtube.com", "netflix.com", "twitch.tv", "open.spotify.com"],
+            &[
+                "youtube.com",
+                "netflix.com",
+                "twitch.tv",
+                "open.spotify.com",
+            ],
         ),
         (
             "Social Media",
             "#ec4899",
             &[],
-            &["twitter.com", "x.com", "facebook.com", "instagram.com", "reddit.com"],
+            &[
+                "twitter.com",
+                "x.com",
+                "facebook.com",
+                "instagram.com",
+                "reddit.com",
+            ],
         ),
         (
             "Productivity",
@@ -187,7 +226,10 @@ fn seed_default_categories(conn: &Connection) -> Result<()> {
     ];
 
     for (name, color, exe_patterns, domain_patterns) in DEFAULTS {
-        conn.execute("INSERT INTO categories (name, color) VALUES (?1, ?2)", params![name, color])?;
+        conn.execute(
+            "INSERT INTO categories (name, color) VALUES (?1, ?2)",
+            params![name, color],
+        )?;
         let category_id = conn.last_insert_rowid();
         for pattern in *exe_patterns {
             conn.execute(
@@ -206,7 +248,13 @@ fn seed_default_categories(conn: &Connection) -> Result<()> {
 }
 
 impl SessionStore for SqliteStore {
-    fn start_session(&mut self, app: &AppInfo, window_title: &str, url: Option<&str>, at: DateTime<Utc>) -> Result<i64> {
+    fn start_session(
+        &mut self,
+        app: &AppInfo,
+        window_title: &str,
+        url: Option<&str>,
+        at: DateTime<Utc>,
+    ) -> Result<i64> {
         let (key_kind, key) = category_key(&app.exe_path, url);
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -231,10 +279,10 @@ impl SessionStore for SqliteStore {
         // time, so close it at its own start rather than "now" — that
         // undercounts one session instead of silently inflating it by
         // however long the machine was off.
-        self.conn.lock().unwrap().execute(
-            "DELETE FROM sessions WHERE end_time IS NULL",
-            [],
-        )?;
+        self.conn
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM sessions WHERE end_time IS NULL", [])?;
         Ok(())
     }
 }

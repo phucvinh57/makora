@@ -22,7 +22,9 @@ fn is_ignored(exe_path: &str) -> bool {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or(exe_path);
-    IGNORED_APPS.iter().any(|ignored| ignored.eq_ignore_ascii_case(file_name))
+    IGNORED_APPS
+        .iter()
+        .any(|ignored| ignored.eq_ignore_ascii_case(file_name))
 }
 
 /// The currently open activity row — either a plain app focus (`url: None`)
@@ -70,7 +72,11 @@ impl<S: SessionStore> SessionTracker<S> {
 
     pub fn with_ignore_policy(mut store: S, ignore: Arc<dyn IgnorePolicy>) -> Result<Self> {
         store.close_dangling_sessions()?;
-        Ok(Self { store, current: None, ignore })
+        Ok(Self {
+            store,
+            current: None,
+            ignore,
+        })
     }
 
     /// Feed one focus-change observation into the tracker.
@@ -88,7 +94,12 @@ impl<S: SessionStore> SessionTracker<S> {
             // A user-ignored app: the previous session was already closed
             // above, but no session opens for this one — none of its time
             // is recorded until a non-ignored app regains focus.
-            self.current = Some(Current { id: None, app: event.app, browser: None, url: None });
+            self.current = Some(Current {
+                id: None,
+                app: event.app,
+                browser: None,
+                url: None,
+            });
             return Ok(());
         }
         let browser = BrowserKind::from_app_name(&event.app.app_name);
@@ -98,10 +109,12 @@ impl<S: SessionStore> SessionTracker<S> {
             // URL-less row here and a URL-bearing row from the extension.
             None
         } else {
-            Some(
-                self.store
-                    .start_session(&event.app, &event.window_title, None, event.timestamp)?,
-            )
+            Some(self.store.start_session(
+                &event.app,
+                &event.window_title,
+                None,
+                event.timestamp,
+            )?)
         };
         self.current = Some(Current {
             id,
@@ -137,12 +150,20 @@ impl<S: SessionStore> SessionTracker<S> {
             // closed above, but no session opens for this one. `url` is
             // still recorded on `current` so revisiting the same ignored
             // site again is a no-op via the check above, same as normal.
-            self.current = Some(Current { id: None, app: current.app, browser: current.browser, url: Some(event.url) });
+            self.current = Some(Current {
+                id: None,
+                app: current.app,
+                browser: current.browser,
+                url: Some(event.url),
+            });
             return Ok(());
         }
-        let id = self
-            .store
-            .start_session(&current.app, &event.title, Some(&event.url), event.timestamp)?;
+        let id = self.store.start_session(
+            &current.app,
+            &event.title,
+            Some(&event.url),
+            event.timestamp,
+        )?;
         self.current = Some(Current {
             id: Some(id),
             app: current.app,
@@ -174,7 +195,13 @@ mod tests {
     struct RecordingStore(Rc<RefCell<Vec<String>>>);
 
     impl SessionStore for RecordingStore {
-        fn start_session(&mut self, app: &AppInfo, _window_title: &str, url: Option<&str>, _at: DateTime<Utc>) -> Result<i64> {
+        fn start_session(
+            &mut self,
+            app: &AppInfo,
+            _window_title: &str,
+            url: Option<&str>,
+            _at: DateTime<Utc>,
+        ) -> Result<i64> {
             let mut log = self.0.borrow_mut();
             match url {
                 Some(url) => log.push(format!("start:{}:{url}", app.exe_path)),
@@ -262,7 +289,9 @@ mod tests {
         let mut tracker = SessionTracker::new(log.clone()).unwrap();
 
         tracker.handle_event(event("a.exe", "A")).unwrap();
-        tracker.handle_event(event(r"C:\Windows\explorer.exe", "File Explorer")).unwrap();
+        tracker
+            .handle_event(event(r"C:\Windows\explorer.exe", "File Explorer"))
+            .unwrap();
         tracker.handle_event(event("a.exe", "A")).unwrap();
 
         assert_eq!(*log.0.borrow(), vec!["start:a.exe"]);
@@ -273,7 +302,9 @@ mod tests {
         let log = RecordingStore::default();
         let mut tracker = SessionTracker::new(log.clone()).unwrap();
 
-        tracker.handle_event(event(r"C:\Windows\Explorer.EXE", "File Explorer")).unwrap();
+        tracker
+            .handle_event(event(r"C:\Windows\Explorer.EXE", "File Explorer"))
+            .unwrap();
 
         assert_eq!(*log.0.borrow(), Vec::<String>::new());
     }
@@ -353,7 +384,11 @@ mod tests {
 
         assert_eq!(
             *log.0.borrow(),
-            vec!["start:chrome.exe:https://a.example/", "end:1", "start:b.exe"]
+            vec![
+                "start:chrome.exe:https://a.example/",
+                "end:1",
+                "start:b.exe"
+            ]
         );
     }
 
@@ -362,7 +397,9 @@ mod tests {
         let log = RecordingStore::default();
         let mut tracker = SessionTracker::new(log.clone()).unwrap();
 
-        tracker.handle_event(event("notepad.exe", "Untitled")).unwrap();
+        tracker
+            .handle_event(event("notepad.exe", "Untitled"))
+            .unwrap();
         tracker
             .handle_tab_event(tab_event(BrowserKind::Chrome, "https://a.example/"))
             .unwrap();
@@ -397,7 +434,10 @@ mod tests {
     #[test]
     fn ignore_policy_closes_previous_session_but_opens_none_for_an_ignored_app() {
         let log = RecordingStore::default();
-        let ignore = Arc::new(FakeIgnorePolicy { apps: &["steam"], sites: &[] });
+        let ignore = Arc::new(FakeIgnorePolicy {
+            apps: &["steam"],
+            sites: &[],
+        });
         let mut tracker = SessionTracker::with_ignore_policy(log.clone(), ignore).unwrap();
 
         tracker.handle_event(event("a.exe", "A")).unwrap();
@@ -412,7 +452,10 @@ mod tests {
     #[test]
     fn ignore_policy_ignores_a_site_without_leaving_the_previous_tab_open() {
         let log = RecordingStore::default();
-        let ignore = Arc::new(FakeIgnorePolicy { apps: &[], sites: &["youtube.com"] });
+        let ignore = Arc::new(FakeIgnorePolicy {
+            apps: &[],
+            sites: &["youtube.com"],
+        });
         let mut tracker = SessionTracker::with_ignore_policy(log.clone(), ignore).unwrap();
 
         tracker.handle_event(browser_event("chrome.exe")).unwrap();
@@ -439,7 +482,10 @@ mod tests {
     #[test]
     fn revisiting_the_same_ignored_site_is_a_noop() {
         let log = RecordingStore::default();
-        let ignore = Arc::new(FakeIgnorePolicy { apps: &[], sites: &["youtube.com"] });
+        let ignore = Arc::new(FakeIgnorePolicy {
+            apps: &[],
+            sites: &["youtube.com"],
+        });
         let mut tracker = SessionTracker::with_ignore_policy(log.clone(), ignore).unwrap();
 
         tracker.handle_event(browser_event("chrome.exe")).unwrap();
