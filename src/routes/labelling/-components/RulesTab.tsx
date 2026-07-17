@@ -3,6 +3,7 @@ import { Trash2Icon } from "lucide-react";
 import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -188,7 +189,7 @@ export function RulesTab({
           type="text"
           value={textFilter}
           onChange={(e) => setTextFilter(e.target.value)}
-          placeholder="Filter by pattern…"
+          placeholder="Search..."
           className="h-7 w-48"
         />
         <Select
@@ -240,63 +241,72 @@ export function RulesTab({
         </Button>
       </div>
 
-      <div className="flex-1 overflow-y-auto subtle-scrollbar">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Target</TableHead>
-              <TableHead>Match</TableHead>
-              <TableHead>Pattern</TableHead>
-              <TableHead>Category</TableHead>
-              <TableHead className="w-10" />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {filteredRules.map((rule) => {
-              const category = categoryById.get(rule.category_id);
-              return (
-                <TableRow key={rule.id}>
-                  <TableCell>
-                    <Badge variant="secondary">
-                      {KEY_KIND_LABEL[rule.key_kind]}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {MATCH_KIND_LABEL[rule.match_kind]}
-                  </TableCell>
-                  <TableCell className="font-mono">{rule.pattern}</TableCell>
-                  <TableCell>
-                    {category && (
-                      <span className="flex items-center gap-1.5">
-                        <span
-                          className="size-2 shrink-0 rounded-full"
-                          style={{ backgroundColor: category.color }}
-                        />
-                        {category.name}
-                      </span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      aria-label={`Remove rule ${rule.pattern}`}
-                      onClick={() => deleteRuleMutation.mutate(rule)}
-                    >
-                      <Trash2Icon size={14} />
-                    </Button>
+      <Card className="flex-1 overflow-hidden p-0">
+        <div className="h-full overflow-y-auto subtle-scrollbar">
+          <Table className="table-fixed w-full">
+            <TableHeader className="sticky top-0 z-10 bg-card">
+              <TableRow>
+                <TableHead className="w-24">Target</TableHead>
+                <TableHead className="w-32">Match</TableHead>
+                <TableHead>Pattern</TableHead>
+                <TableHead className="w-40">Category</TableHead>
+                <TableHead className="w-10" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filteredRules.map((rule) => {
+                const category = categoryById.get(rule.category_id);
+                return (
+                  <TableRow key={rule.id}>
+                    <TableCell>
+                      <Badge variant="secondary">
+                        {KEY_KIND_LABEL[rule.key_kind]}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {MATCH_KIND_LABEL[rule.match_kind]}
+                    </TableCell>
+                    <TableCell className="truncate font-mono">
+                      {rule.pattern}
+                    </TableCell>
+                    <TableCell className="truncate">
+                      {category && (
+                        <span className="flex items-center gap-1.5">
+                          <span
+                            className="size-2 shrink-0 rounded-full"
+                            style={{ backgroundColor: category.color }}
+                          />
+                          {category.name}
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`Remove rule ${rule.pattern}`}
+                        onClick={() => deleteRuleMutation.mutate(rule)}
+                      >
+                        <Trash2Icon size={14} />
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+              {filteredRules.length === 0 && (
+                <TableRow>
+                  <TableCell
+                    colSpan={5}
+                    className="py-8 text-center text-muted-foreground"
+                  >
+                    No rules match this filter.
                   </TableCell>
                 </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
-        {filteredRules.length === 0 && (
-          <p className="mt-3 text-sm text-muted-foreground">
-            No rules match this filter.
-          </p>
-        )}
-      </div>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </Card>
 
       <p className="mt-3 text-xs text-muted-foreground">
         When several rules match the same activity, the most specific one wins:

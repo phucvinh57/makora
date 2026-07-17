@@ -19,8 +19,8 @@ import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
 type NavItem = { to: string; label: string; icon: typeof History };
 
 const NAV_ITEMS: NavItem[] = [
-  { to: "/history", label: "History", icon: History },
   { to: "/statistics", label: "Statistics", icon: BarChart3 },
+  { to: "/history", label: "History", icon: History },
   { to: "/labelling", label: "Labelling", icon: Tags },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
@@ -64,7 +64,7 @@ function RootLayout() {
                 <Hourglass className="size-4" />
               </div>
               <span className="text-base font-semibold tracking-tight">
-                makora
+                Makora
               </span>
             </div>
           )}
