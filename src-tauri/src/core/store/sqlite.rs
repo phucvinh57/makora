@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use rusqlite_migration::{Migrations, M};
 
-use crate::core::category::category_key;
+use crate::core::category::{category_key, url_key};
 use crate::core::model::AppInfo;
 use crate::core::store::SessionStore;
 
@@ -132,6 +132,53 @@ fn migrations() -> Migrations<'static> {
                 FROM categories
             ) AS ranked
             WHERE categories.id = ranked.id;",
+        ),
+        // Replaces category priority ordering with pure specificity-based
+        // rule resolution (see `category::rule_join_sql`): a `url` rule now
+        // beats a `domain`/`exe` rule, then match kind ranks `exact` >
+        // `prefix` > `substring` > `regex`, then longer pattern wins. This
+        // makes per-category ordering unnecessary — a rule pattern already
+        // belongs to exactly one category (`idx_category_rules_key`) — so
+        // `categories.priority` and the drag-to-reorder UI it backed are
+        // removed entirely.
+        //
+        // `category_rules`' CHECK constraints can't be altered in place, so
+        // the table is rebuilt to add the `url` key_kind and `prefix` match
+        // kind rather than just adding a column as earlier migrations did.
+        M::up("CREATE TABLE category_rules_new (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                key_kind    TEXT NOT NULL CHECK (key_kind IN ('exe', 'domain', 'url')),
+                pattern     TEXT NOT NULL,
+                category_id INTEGER NOT NULL REFERENCES categories(id),
+                match_kind  TEXT NOT NULL DEFAULT 'exact'
+                    CHECK (match_kind IN ('exact', 'prefix', 'substring', 'regex'))
+            );
+            INSERT INTO category_rules_new (id, key_kind, pattern, category_id, match_kind)
+                SELECT id, key_kind, pattern, category_id, match_kind FROM category_rules;
+            DROP TABLE category_rules;
+            ALTER TABLE category_rules_new RENAME TO category_rules;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_category_rules_key
+                ON category_rules(key_kind, match_kind, pattern);
+            ALTER TABLE categories DROP COLUMN priority;
+            -- Normalized URL match target for `url` rules (see
+            -- `category::url_key`), computed at write time like
+            -- `category_key`. NULL for non-browser rows.
+            ALTER TABLE sessions ADD COLUMN url_key TEXT;",
+        ),
+        // Lets query-string params be selectively kept per domain instead of
+        // always stripped (see `ingest::normalize_url` and
+        // `store::QueryWhitelistStore`) — e.g. keeping YouTube's `v` so
+        // different videos become different sessions rather than one
+        // continuous `youtube.com` block. Seeded here (rather than in
+        // `seed_default_categories`-style startup logic) so a user who
+        // deliberately empties the list isn't re-seeded on next launch.
+        M::up("CREATE TABLE IF NOT EXISTS url_query_whitelist (
+                id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain TEXT NOT NULL,
+                param  TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_url_query_whitelist ON url_query_whitelist(domain, param);
+            INSERT INTO url_query_whitelist (domain, param) VALUES ('youtube.com', 'v');",
         ),
     ])
 }
@@ -295,11 +342,12 @@ impl SessionStore for SqliteStore {
         at: DateTime<Utc>,
     ) -> Result<i64> {
         let (key_kind, key) = category_key(&app.exe_path, url);
+        let url_key_value = url.and_then(url_key);
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO sessions (app_name, exe_path, window_title, url, category_key, category_key_kind, start_time)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![app.app_name, app.exe_path, window_title, url, key, key_kind.as_str(), at.to_rfc3339()],
+            "INSERT INTO sessions (app_name, exe_path, window_title, url, category_key, category_key_kind, url_key, start_time)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![app.app_name, app.exe_path, window_title, url, key, key_kind.as_str(), url_key_value, at.to_rfc3339()],
         )?;
         Ok(conn.last_insert_rowid())
     }
@@ -339,13 +387,17 @@ mod tests {
         std::env::temp_dir().join(format!("makora-sqlite-migration-test-{unique}.sqlite"))
     }
 
-    /// Simulates an install upgrading across the migration that replaces
+    /// Simulates an install upgrading across the migration that replaced
     /// per-rule `priority` with per-category `priority` (see `migrations`):
     /// stops at the pre-existing schema, inserts categories the way an
     /// older build's `create_category` would have (no `priority` column in
-    /// play yet), then migrates the rest of the way and checks the backfill
-    /// assigns priority in category creation (id) order — the best
-    /// available default described in that migration's comment.
+    /// play yet), then migrates through that step and checks the backfill
+    /// assigned priority in category creation (id) order — the best
+    /// available default described in that migration's comment. `priority`
+    /// was itself later dropped entirely (rules now resolve by specificity,
+    /// see `category::rule_join_sql`), so this only pins down the
+    /// now-historical backfill behavior rather than any current-schema
+    /// guarantee.
     #[test]
     fn category_priority_backfill_orders_by_creation_id_ascending() {
         let path = temp_db_path();
@@ -362,7 +414,9 @@ mod tests {
         )
         .unwrap();
 
-        migs.to_latest(&mut conn).unwrap();
+        // Version 8: through the per-category `priority` backfill, one short
+        // of the migration that drops `priority` again.
+        migs.to_version(&mut conn, 8).unwrap();
 
         let mut stmt = conn
             .prepare("SELECT name, priority FROM categories ORDER BY id")
@@ -380,6 +434,41 @@ mod tests {
                 ("Third".to_string(), 2),
             ]
         );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// After migrating to latest, `categories.priority` is gone and
+    /// `category_rules` accepts the new `url` key_kind and `prefix`
+    /// match_kind (its CHECK constraints were rebuilt, not just extended).
+    #[test]
+    fn latest_schema_drops_category_priority_and_accepts_url_and_prefix_rules() {
+        let path = temp_db_path();
+        let mut conn = Connection::open(&path).unwrap();
+        register_regexp_function(&conn).unwrap();
+        migrations().to_latest(&mut conn).unwrap();
+
+        let priority_column_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('categories') WHERE name = 'priority'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(priority_column_count, 0);
+
+        conn.execute(
+            "INSERT INTO categories (name, color) VALUES ('Test', '#000000')",
+            [],
+        )
+        .unwrap();
+        let category_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO category_rules (key_kind, pattern, match_kind, category_id)
+             VALUES ('url', 'example.com/path', 'prefix', ?1)",
+            params![category_id],
+        )
+        .unwrap();
 
         let _ = std::fs::remove_file(&path);
     }

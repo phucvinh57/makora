@@ -63,13 +63,15 @@ SQLite table `sessions`, one row per activity block (plain app focus, or a brows
 | `app_name`     | executable file stem, e.g. `chrome`, `Code` |
 | `exe_path`     | full path to the executable |
 | `window_title` | window/tab title at session start (does not update mid-session) |
-| `url`          | origin + path only, no query string/fragment; `NULL` unless a browser-tab row |
+| `url`          | origin + path, plus any query params whitelisted for the domain (`url_query_whitelist` table, editable from Settings — e.g. YouTube's `v`); fragment never recorded; `NULL` unless a browser-tab row |
 | `start_time`   | RFC 3339 UTC timestamp |
 | `end_time`     | RFC 3339 UTC timestamp, `NULL` while the row is open |
 
 A row left with `end_time IS NULL` after a restart means the previous run was killed rather than shut down cleanly; it's closed at its own `start_time` on next startup (so a crash undercounts by one row rather than inflating it by however long the machine was off).
 
-`src-tauri/src/core/category.rs` derives a stable `category_key` per session (URL host for a browser-tab row, exe file name otherwise) so sessions can later be grouped/categorized without re-parsing at query time; `src-tauri/src/core/store/categories.rs` is the storage side of that. This is present in the codebase but not yet wired into `commands.rs`/the frontend.
+`src-tauri/src/core/category.rs` derives two stable lookup keys per session, both computed once at write time so rule/override edits later re-categorize history without re-parsing: `category_key` (URL host for a browser-tab row, exe file name otherwise — coarse grouping) and `url_key` (host + path + whitelisted query, `NULL` for non-browser rows — lets two pages on the same domain, e.g. two Google Docs documents, resolve to different categories). `src-tauri/src/core/store/categories.rs` is the storage side.
+
+A session's category is resolved at read time via `COALESCE`, most specific tier first: a per-session pin (`sessions.category_id`), then a key-wide manual override (`category_overrides`), then the best-matching rule. Rule conflicts resolve purely by specificity (`category::rule_join_sql`) — categories have no manual ordering: a `url`-kind rule beats an `exe`/`domain`-kind rule, then match kind ranks `exact` > `prefix` > `substring` > `regex`, then the longer pattern wins.
 
 ### Frontend
 
@@ -79,5 +81,5 @@ A row left with `end_time IS NULL` after a restart means the previous run was ki
 
 - Session identity is the executable path — switching between two windows of the *same* app doesn't end the session, only switching to a different app does.
 - Locking the screen or sleep doesn't end a session by itself (Windows doesn't fire `EVENT_SYSTEM_FOREGROUND` for that) — a session left focused across a lock/sleep includes that idle time.
-- Non-`http(s)` tabs (`chrome://`, `about:`, extension pages, ...) and query strings/fragments are never recorded, by design.
+- Non-`http(s)` tabs (`chrome://`, `about:`, extension pages, ...) are never recorded, by design. The fragment never is either; the query string is stripped except for params whitelisted per domain in Settings.
 - The tray/hide-on-close behavior and the packaged app are only exercised on Windows so far, even though macOS's focus watcher is implemented.

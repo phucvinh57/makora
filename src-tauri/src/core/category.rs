@@ -1,13 +1,20 @@
 use std::path::Path;
 
-/// Which kind of pattern a session's [`category_key`] was derived from.
-/// Stored alongside the key so it can be matched against rules/overrides of
-/// the same kind without re-deriving it (and without the two kinds of
-/// pattern ever being confused for one another).
+/// Which kind of pattern a session's [`category_key`] was derived from, or
+/// (for [`Url`](KeyKind::Url)) a rule-only target matched against a
+/// session's `url_key` instead. Stored on `category_key_kind` alongside the
+/// key so it can be matched against rules/overrides of the same kind without
+/// re-deriving it (and without the different kinds of pattern ever being
+/// confused for one another).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyKind {
     Exe,
     Domain,
+    /// Rule-only: [`category_key`] never produces this kind. Matches a
+    /// session's [`url_key`] (host + path + whitelisted query) instead of
+    /// its `category_key`, so two pages on the same domain — e.g. two
+    /// Google Docs documents — can resolve to different categories.
+    Url,
 }
 
 impl KeyKind {
@@ -15,20 +22,34 @@ impl KeyKind {
         match self {
             Self::Exe => "exe",
             Self::Domain => "domain",
+            Self::Url => "url",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "exe" => Some(Self::Exe),
+            "domain" => Some(Self::Domain),
+            "url" => Some(Self::Url),
+            _ => None,
         }
     }
 }
 
 /// How a [`crate::core::store::CategoryRule`]'s `pattern` is matched against
-/// a session's `category_key`. Unlike a key-wide override (always an exact
-/// key, since it's derived from one session's own key), a rule can also
-/// match a case-insensitive substring or a case-insensitive regex — e.g. a
-/// `Substring` rule of `"steam"` also catches `steamwebhelper.exe`, and a
-/// `Regex` rule can express things like "any `*.corp.example.com` subdomain"
-/// that neither `Exact` nor `Substring` can.
+/// a session's key (`category_key`, or `url_key` for a [`KeyKind::Url`]
+/// rule). Also doubles as this system's specificity ranking, most to least
+/// specific: [`Exact`](MatchKind::Exact) > [`Prefix`](MatchKind::Prefix) >
+/// [`Substring`](MatchKind::Substring) > [`Regex`](MatchKind::Regex) — see
+/// [`rule_join_sql`]. A `Substring` rule of `"steam"` also catches
+/// `steamwebhelper.exe`; a `Prefix` rule of `"docs.google.com/document/d/ABC"`
+/// catches that one document (and its sub-paths) but not other documents on
+/// the same domain; a `Regex` rule can express things like "any
+/// `*.corp.example.com` subdomain" that none of the others can.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchKind {
     Exact,
+    Prefix,
     Substring,
     Regex,
 }
@@ -37,6 +58,7 @@ impl MatchKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Exact => "exact",
+            Self::Prefix => "prefix",
             Self::Substring => "substring",
             Self::Regex => "regex",
         }
@@ -45,6 +67,7 @@ impl MatchKind {
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "exact" => Some(Self::Exact),
+            "prefix" => Some(Self::Prefix),
             "substring" => Some(Self::Substring),
             "regex" => Some(Self::Regex),
             _ => None,
@@ -52,41 +75,60 @@ impl MatchKind {
     }
 }
 
-/// A `LEFT JOIN ... ON ...` clause resolving `sessions_alias`'s
-/// `(category_key_kind, category_key)` against `category_rules`, honoring
-/// each rule's `match_kind`: exact equality, a case-insensitive substring
-/// (via `instr`/`lower`, same convention as `ignore_rules`), or a
-/// case-insensitive regex (via the `regexp` SQLite function registered in
-/// `store::sqlite::open_connection`, backing the `REGEXP` operator).
+/// A `LEFT JOIN ... ON ...` clause resolving `sessions_alias` against
+/// `category_rules`, honoring each rule's `match_kind` (case-insensitive
+/// exact equality, prefix, substring — all via `lower`/`instr`, same
+/// convention as `ignore_rules` — or a case-insensitive regex via the
+/// `regexp` SQLite function registered in `store::sqlite::open_connection`,
+/// backing the `REGEXP` operator). A [`KeyKind::Url`] rule matches
+/// `sessions_alias.url_key`; an `Exe`/`Domain` rule matches
+/// `(category_key_kind, category_key)` as before.
 ///
-/// When more than one rule matches the same key (e.g. an `Exact` rule in one
-/// category and a broader `Substring` rule in another both apply), the
-/// subquery picks a single deterministic winner — the rule whose category
-/// has the lowest `priority`, then lowest rule id as a final tiebreak — so
-/// this join can never fan a session row out into duplicates the way a
-/// plain multi-match `ON` condition would. Category `priority` is manually
-/// ordered by the user from the Categories page (see
-/// `CategoryStore::reorder_categories`) rather than derived from
-/// `match_kind`, so a `Substring` rule can be made to win over a more
-/// specific `Exact` rule in a lower-priority category. The rule-id tiebreak
-/// only matters when two rules in the *same* category both match — which
-/// specific rule "wins" is immaterial there, since they resolve to the same
-/// category either way.
+/// When more than one rule matches the same session (e.g. a `url` rule for
+/// one Google Docs document and a broader `domain` rule for
+/// `docs.google.com` both apply), the subquery picks a single deterministic
+/// winner by **specificity** — there is no user-managed ordering (categories
+/// have no priority) — so this join can never fan a session row out into
+/// duplicates the way a plain multi-match `ON` condition would:
+///
+/// 1. Target: a `url` rule beats an `exe`/`domain` rule.
+/// 2. Match kind, most to least specific: `exact` > `prefix` > `substring` >
+///    `regex` (see [`MatchKind`]'s doc comment).
+/// 3. Longer pattern wins (a rough proxy for "more specific").
+/// 4. Lowest rule id, as a final tiebreak — only matters when two rules in
+///    the *same* category both match, where the winner is immaterial since
+///    they resolve to the same category either way.
 ///
 /// `rule_alias` names the joined `category_rules` row; `sessions_alias`
 /// names the table/subquery being joined against (must expose
-/// `category_key_kind`/`category_key` columns).
+/// `category_key_kind`/`category_key`/`url_key` columns).
 pub fn rule_join_sql(rule_alias: &str, sessions_alias: &str) -> String {
     format!(
         "LEFT JOIN category_rules {rule_alias} ON {rule_alias}.id = (
             SELECT r2.id FROM category_rules r2
-            JOIN categories c2 ON c2.id = r2.category_id
-            WHERE r2.key_kind = {sessions_alias}.category_key_kind AND (
-                (r2.match_kind = 'exact' AND r2.pattern = {sessions_alias}.category_key)
-                OR (r2.match_kind = 'substring' AND instr(lower({sessions_alias}.category_key), lower(r2.pattern)) > 0)
-                OR (r2.match_kind = 'regex' AND {sessions_alias}.category_key REGEXP r2.pattern)
-            )
-            ORDER BY c2.priority, r2.id
+            WHERE
+                (r2.key_kind = {sessions_alias}.category_key_kind AND (
+                    (r2.match_kind = 'exact' AND lower(r2.pattern) = lower({sessions_alias}.category_key))
+                    OR (r2.match_kind = 'prefix' AND instr(lower({sessions_alias}.category_key), lower(r2.pattern)) = 1)
+                    OR (r2.match_kind = 'substring' AND instr(lower({sessions_alias}.category_key), lower(r2.pattern)) > 0)
+                    OR (r2.match_kind = 'regex' AND {sessions_alias}.category_key REGEXP r2.pattern)
+                ))
+                OR (r2.key_kind = 'url' AND {sessions_alias}.url_key IS NOT NULL AND (
+                    (r2.match_kind = 'exact' AND lower(r2.pattern) = lower({sessions_alias}.url_key))
+                    OR (r2.match_kind = 'prefix' AND instr(lower({sessions_alias}.url_key), lower(r2.pattern)) = 1)
+                    OR (r2.match_kind = 'substring' AND instr(lower({sessions_alias}.url_key), lower(r2.pattern)) > 0)
+                    OR (r2.match_kind = 'regex' AND {sessions_alias}.url_key REGEXP r2.pattern)
+                ))
+            ORDER BY
+                CASE r2.key_kind WHEN 'url' THEN 0 ELSE 1 END,
+                CASE r2.match_kind
+                    WHEN 'exact' THEN 0
+                    WHEN 'prefix' THEN 1
+                    WHEN 'substring' THEN 2
+                    ELSE 3
+                END,
+                length(r2.pattern) DESC,
+                r2.id
             LIMIT 1
         )"
     )
@@ -115,6 +157,74 @@ pub fn normalized_domain(url: &str) -> Option<String> {
     })
 }
 
+/// The normalized match target for a [`KeyKind::Url`] rule: lowercased,
+/// `www.`-stripped host (same as [`normalized_domain`]) plus the path
+/// (trailing `/` trimmed) plus `?query` when the query is non-empty. `None`
+/// for anything [`domain_of`] can't extract a host from.
+///
+/// `url` is expected to already be query-filtered (see
+/// [`filter_query_params`]) — this function doesn't filter it itself, so
+/// that the same normalized form always reflects whatever was actually
+/// stored on the session.
+///
+/// Examples: `https://www.YouTube.com/watch?v=XYZ` → `youtube.com/watch?v=XYZ`;
+/// `https://docs.google.com/document/d/ABC/edit` →
+/// `docs.google.com/document/d/ABC/edit`; `https://example.com/` → `example.com`.
+pub fn url_key(url: &str) -> Option<String> {
+    let domain = normalized_domain(url)?;
+    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let after_host = after_scheme.split_once(['/', '?', '#']).map(|(_, rest)| rest);
+    let (path, query) = match after_host {
+        None => ("", ""),
+        Some(rest) if rest.starts_with('?') || rest.starts_with('#') => ("", &rest[1..]),
+        Some(rest) => match rest.split_once(['?', '#']) {
+            Some((path, query)) => (path, query),
+            None => (rest, ""),
+        },
+    };
+    let path = path.trim_end_matches('/');
+    let query = query.split('#').next().unwrap_or(query);
+
+    let mut key = domain;
+    if !path.is_empty() {
+        key.push('/');
+        key.push_str(path);
+    }
+    if !query.is_empty() {
+        key.push('?');
+        key.push_str(query);
+    }
+    Some(key)
+}
+
+/// Filters `url`'s query string down to only the params in `allowed`
+/// (matched by the raw param name, i.e. the text before `=`, case-sensitive),
+/// re-emitted sorted by name for a canonical form. The fragment is always
+/// dropped. An empty `allowed` list drops the whole query string.
+///
+/// This is the privacy boundary for query params (see
+/// `store::QueryWhitelistStore`) — everything not explicitly whitelisted for
+/// the URL's domain is stripped before the URL is ever stored.
+pub fn filter_query_params(url: &str, allowed: &[String]) -> String {
+    let url = url.split('#').next().unwrap_or(url);
+    let Some((base, query)) = url.split_once('?') else {
+        return url.to_string();
+    };
+    let mut kept: Vec<&str> = query
+        .split('&')
+        .filter(|param| {
+            let name = param.split('=').next().unwrap_or("");
+            allowed.iter().any(|a| a == name)
+        })
+        .collect();
+    kept.sort_unstable();
+    if kept.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}?{}", kept.join("&"))
+    }
+}
+
 fn exe_file_name(exe_path: &str) -> &str {
     Path::new(exe_path)
         .file_name()
@@ -122,10 +232,9 @@ fn exe_file_name(exe_path: &str) -> &str {
         .unwrap_or(exe_path)
 }
 
-/// Extracts the host from a URL that's already been normalized to
-/// origin + path (no query string or fragment) — see `TabEvent::url`. Falls
-/// back gracefully on anything else since this only ever feeds a lookup key,
-/// never a security decision.
+/// Extracts the host from a URL — see `TabEvent::url`. Falls back gracefully
+/// on anything else since this only ever feeds a lookup key, never a
+/// security decision.
 pub(crate) fn domain_of(url: &str) -> Option<&str> {
     let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
     let host = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
@@ -174,5 +283,78 @@ mod tests {
     #[test]
     fn domain_extraction_handles_missing_scheme() {
         assert_eq!(domain_of("example.com/path"), Some("example.com"));
+    }
+
+    #[test]
+    fn url_key_combines_domain_path_and_query() {
+        assert_eq!(
+            url_key("https://www.YouTube.com/watch?v=XYZ"),
+            Some("youtube.com/watch?v=XYZ".to_string())
+        );
+    }
+
+    #[test]
+    fn url_key_trims_trailing_slash_and_omits_empty_query() {
+        assert_eq!(
+            url_key("https://docs.google.com/document/d/ABC/edit"),
+            Some("docs.google.com/document/d/ABC/edit".to_string())
+        );
+        assert_eq!(url_key("https://example.com/"), Some("example.com".to_string()));
+        assert_eq!(url_key("https://example.com"), Some("example.com".to_string()));
+    }
+
+    #[test]
+    fn url_key_strips_port_and_userinfo_like_normalized_domain() {
+        assert_eq!(
+            url_key("https://user@example.com:8080/path"),
+            Some("example.com/path".to_string())
+        );
+    }
+
+    #[test]
+    fn url_key_is_none_when_no_host_can_be_extracted() {
+        assert_eq!(url_key(""), None);
+    }
+
+    #[test]
+    fn filter_query_params_keeps_only_whitelisted_names() {
+        let allowed = vec!["v".to_string()];
+        assert_eq!(
+            filter_query_params("https://youtube.com/watch?v=XYZ&list=abc", &allowed),
+            "https://youtube.com/watch?v=XYZ"
+        );
+    }
+
+    #[test]
+    fn filter_query_params_sorts_kept_params_canonically() {
+        let allowed = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(
+            filter_query_params("https://example.com/p?b=2&a=1", &allowed),
+            "https://example.com/p?a=1&b=2"
+        );
+    }
+
+    #[test]
+    fn filter_query_params_empty_allowlist_strips_entire_query() {
+        assert_eq!(
+            filter_query_params("https://example.com/p?a=1", &[]),
+            "https://example.com/p"
+        );
+    }
+
+    #[test]
+    fn filter_query_params_drops_fragment() {
+        assert_eq!(
+            filter_query_params("https://example.com/p#section", &[]),
+            "https://example.com/p"
+        );
+    }
+
+    #[test]
+    fn filter_query_params_passes_through_url_with_no_query() {
+        assert_eq!(
+            filter_query_params("https://example.com/p", &["v".to_string()]),
+            "https://example.com/p"
+        );
     }
 }

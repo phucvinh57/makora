@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use crate::core::{
     ActivityStats, CategorizePreview, Category, CategoryFilter, CategoryKeyRef, CategoryRule,
-    CategoryStore, HistoryReader, IgnoreRule, IgnoreStore, RecategorizeFilter, SessionFilter,
-    SessionRow,
+    CategoryStore, HistoryReader, IgnoreRule, IgnoreStore, QueryWhitelistEntry,
+    QueryWhitelistStore, RecategorizeFilter, SessionFilter, SessionRow,
 };
 use serde::Serialize;
 use tauri::State;
@@ -203,31 +203,19 @@ pub fn delete_category(categories: State<CategoryStore>, id: i64) -> Result<(), 
     categories.delete_category(id).map_err(|e| e.to_string())
 }
 
-/// Reorders every category after a drag-and-drop reorder on the Categories
-/// page — `ordered_ids` must be every category id, in the new order (index
-/// 0 = highest precedence). When rules in two different categories both
-/// match the same app/site, the higher-precedence category wins; see
-/// `core::category::rule_join_sql`.
-#[tauri::command]
-pub fn reorder_categories(
-    categories: State<CategoryStore>,
-    ordered_ids: Vec<i64>,
-) -> Result<(), String> {
-    categories
-        .reorder_categories(&ordered_ids)
-        .map_err(|e| e.to_string())
-}
-
-/// All built-in categorization rules (exe name / URL domain patterns), for
-/// the category management page.
+/// All built-in categorization rules (exe name / URL domain / URL path
+/// patterns), for the category management page. Conflicts between rules in
+/// different categories resolve purely by specificity — see
+/// `core::category::rule_join_sql` — so rules have no explicit ordering.
 #[tauri::command]
 pub fn list_category_rules(categories: State<CategoryStore>) -> Result<Vec<CategoryRule>, String> {
     categories.list_rules().map_err(|e| e.to_string())
 }
 
-/// Adds a new rule matching an exe file name or URL domain to a category.
-/// `match_kind` is `"exact"`, `"substring"`, or `"regex"` — see
-/// `core::category::MatchKind`.
+/// Adds a new rule matching an exe file name, URL domain, or URL path to a
+/// category. `key_kind` is `"exe"`, `"domain"`, or `"url"`; `match_kind` is
+/// `"exact"`, `"prefix"`, `"substring"`, or `"regex"` — see
+/// `core::category::KeyKind`/`MatchKind`.
 #[tauri::command]
 pub fn create_category_rule(
     categories: State<CategoryStore>,
@@ -273,4 +261,36 @@ pub fn create_ignore_rule(
 #[tauri::command]
 pub fn delete_ignore_rule(ignore: State<Arc<IgnoreStore>>, id: i64) -> Result<(), String> {
     ignore.delete_rule(id).map_err(|e| e.to_string())
+}
+
+/// Per-domain query-string params kept on stored browser-tab URLs — every
+/// other param is stripped (see `ingest::normalize_url`). For the settings
+/// page.
+#[tauri::command]
+pub fn list_query_whitelist(
+    whitelist: State<Arc<QueryWhitelistStore>>,
+) -> Result<Vec<QueryWhitelistEntry>, String> {
+    whitelist.list_entries().map_err(|e| e.to_string())
+}
+
+/// Whitelists one query param for one domain, e.g. `youtube.com` + `v` so
+/// different videos become different sessions.
+#[tauri::command]
+pub fn create_query_whitelist_entry(
+    whitelist: State<Arc<QueryWhitelistStore>>,
+    domain: String,
+    param: String,
+) -> Result<QueryWhitelistEntry, String> {
+    whitelist
+        .create_entry(&domain, &param)
+        .map_err(|e| e.to_string())
+}
+
+/// Removes a domain/param entry from the whitelist.
+#[tauri::command]
+pub fn delete_query_whitelist_entry(
+    whitelist: State<Arc<QueryWhitelistStore>>,
+    id: i64,
+) -> Result<(), String> {
+    whitelist.delete_entry(id).map_err(|e| e.to_string())
 }

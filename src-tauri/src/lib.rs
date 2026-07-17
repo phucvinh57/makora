@@ -13,7 +13,7 @@ use tauri::{Manager, WindowEvent};
 
 use crate::core::{
     open_connection, CategoryStore, FocusEvent, FocusWatcher, HistoryReader, IgnoreStore,
-    PlatformFocusWatcher, SessionTracker, SqliteStore,
+    PlatformFocusWatcher, QueryWhitelistStore, SessionTracker, SqliteStore,
 };
 
 /// Shared by the focus-watcher thread, the tab-ingest server, and the
@@ -31,6 +31,7 @@ pub fn run() {
     // when two of them write at once, not any real concurrency.
     let conn = open_connection(&db_path).expect("opening database");
     let ignore = Arc::new(IgnoreStore::new(conn.clone()));
+    let whitelist = Arc::new(QueryWhitelistStore::new(conn.clone()));
     let store = SqliteStore::new(conn.clone());
     let tracker: SharedTracker = Arc::new(Mutex::new(
         SessionTracker::with_ignore_policy(store, ignore.clone())
@@ -40,6 +41,7 @@ pub fn run() {
     let categories = CategoryStore::new(conn);
 
     let setup_tracker = tracker.clone();
+    let setup_whitelist = whitelist.clone();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
@@ -50,6 +52,7 @@ pub fn run() {
         .manage(reader)
         .manage(categories)
         .manage(ignore)
+        .manage(whitelist)
         .invoke_handler(tauri::generate_handler![
             commands::list_sessions,
             commands::activity_stats,
@@ -63,13 +66,15 @@ pub fn run() {
             commands::create_category,
             commands::update_category,
             commands::delete_category,
-            commands::reorder_categories,
             commands::list_category_rules,
             commands::create_category_rule,
             commands::delete_category_rule,
             commands::list_ignore_rules,
             commands::create_ignore_rule,
             commands::delete_ignore_rule,
+            commands::list_query_whitelist,
+            commands::create_query_whitelist_entry,
+            commands::delete_query_whitelist_entry,
         ])
         .setup(move |app| {
             let (tx, rx) = mpsc::channel::<FocusEvent>();
@@ -88,7 +93,8 @@ pub fn run() {
                 })
                 .context("spawning focus-tracker thread")?;
 
-            ingest::spawn(setup_tracker.clone()).context("starting tab-ingest server")?;
+            ingest::spawn(setup_tracker.clone(), setup_whitelist.clone())
+                .context("starting tab-ingest server")?;
             eprintln!(
                 "makora: listening for tab events on http://127.0.0.1:{}",
                 ingest::PORT

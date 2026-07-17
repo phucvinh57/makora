@@ -21,14 +21,11 @@ export interface Category {
   id: number;
   name: string;
   color: string;
-  /** Manual precedence when rules in different categories both match the
-   * same app/site, lowest wins. */
-  priority: number;
 }
 
-export type KeyKind = "exe" | "domain";
+export type KeyKind = "exe" | "domain" | "url";
 
-export type MatchKind = "exact" | "substring" | "regex";
+export type MatchKind = "exact" | "prefix" | "substring" | "regex";
 
 export interface CategoryRule {
   id: number;
@@ -85,4 +82,12 @@ export interface ActivityStats {
   categories: CategoryStat[];
   apps: AppStat[];
   daily: DailyStat[];
+}
+
+/** A query-string param kept on stored URLs for a given domain — every
+ * other param is stripped before a browser-tab session is ever recorded. */
+export interface QueryWhitelistEntry {
+  id: number;
+  domain: string;
+  param: string;
 }

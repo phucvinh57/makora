@@ -32,13 +32,16 @@ async function detectBrowser() {
   return cachedBrowser;
 }
 
-// Strips query string and fragment before the URL ever leaves the browser —
-// query params can carry tokens/PII, and the collector only needs origin +
-// path to break usage down per site.
+// Strips the fragment before the URL ever leaves the browser. The query
+// string is kept — the app (see src-tauri/src/ingest.rs) is the actual
+// privacy boundary for it, filtering it down to whatever params are
+// whitelisted for that domain (e.g. YouTube's video id) before anything is
+// stored, so a compromised or misbehaving build of this script can't leak
+// more than the whitelist allows.
 function normalizeUrl(rawUrl) {
   try {
     const parsed = new URL(rawUrl);
-    return `${parsed.origin}${parsed.pathname}`;
+    return `${parsed.origin}${parsed.pathname}${parsed.search}`;
   } catch {
     return null;
   }

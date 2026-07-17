@@ -14,33 +14,24 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import CategoriesPage from "./CategoriesPage";
-import HistoryPage from "./HistoryPage";
-import SettingsPage from "./SettingsPage";
-import StatisticsPage from "./StatisticsPage";
+import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
 
-type Tab = "history" | "statistics" | "categories" | "settings";
+type NavItem = { to: string; label: string; icon: typeof History };
 
-const NAV_ITEMS: { tab: Tab; label: string; icon: typeof History }[] = [
-  { tab: "history", label: "History", icon: History },
-  { tab: "statistics", label: "Statistics", icon: BarChart3 },
-  { tab: "categories", label: "Categories", icon: Tags },
-  { tab: "settings", label: "Settings", icon: SettingsIcon },
+const NAV_ITEMS: NavItem[] = [
+  { to: "/history", label: "History", icon: History },
+  { to: "/statistics", label: "Statistics", icon: BarChart3 },
+  { to: "/labelling", label: "Labelling", icon: Tags },
+  { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
-
-// A 4th tab makes a nested `? :` ternary hard to read, so the render branch
-// below looks the active tab up in this map instead.
-const TAB_PAGES: Record<Tab, React.ReactNode> = {
-  history: <HistoryPage />,
-  statistics: <StatisticsPage />,
-  categories: <CategoriesPage />,
-  settings: <SettingsPage />,
-};
 
 const COLLAPSE_STORAGE_KEY = "makora-sidebar-collapsed";
 
-export default function App() {
-  const [tab, setTab] = useState<Tab>("history");
+export const Route = createRootRoute({
+  component: RootLayout,
+});
+
+function RootLayout() {
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(COLLAPSE_STORAGE_KEY) === "1",
   );
@@ -91,38 +82,46 @@ export default function App() {
           </button>
         </div>
         <nav className="flex flex-1 flex-col gap-1 px-2">
-          {NAV_ITEMS.map(({ tab: itemTab, label, icon: Icon }) => {
+          {NAV_ITEMS.map(({ to, label, icon: Icon }) => {
             const itemClassName = cn(
               "flex items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm font-medium transition-colors",
               collapsed && "justify-center px-0",
-              tab === itemTab
-                ? "bg-sidebar-primary/10 text-sidebar-primary"
-                : "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground",
             );
+            const inactiveClassName =
+              "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground";
+            const activeClassName =
+              "bg-sidebar-primary/10 text-sidebar-primary";
 
             if (!collapsed) {
               return (
-                <button
-                  key={itemTab}
-                  type="button"
-                  onClick={() => setTab(itemTab)}
+                <Link
+                  key={to}
+                  to={to}
                   className={itemClassName}
+                  activeProps={{ className: activeClassName }}
+                  inactiveProps={{ className: inactiveClassName }}
                 >
                   <Icon className="size-4 shrink-0" />
                   {label}
-                </button>
+                </Link>
               );
             }
 
             return (
-              <Tooltip key={itemTab}>
+              <Tooltip key={to}>
                 <TooltipTrigger
-                  className={itemClassName}
-                  onClick={() => setTab(itemTab)}
-                  aria-label={label}
-                >
-                  <Icon className="size-4 shrink-0" />
-                </TooltipTrigger>
+                  render={
+                    <Link
+                      to={to}
+                      className={itemClassName}
+                      activeProps={{ className: activeClassName }}
+                      inactiveProps={{ className: inactiveClassName }}
+                      aria-label={label}
+                    >
+                      <Icon className="size-4 shrink-0" />
+                    </Link>
+                  }
+                />
                 <TooltipContent side="right">{label}</TooltipContent>
               </Tooltip>
             );
@@ -130,7 +129,7 @@ export default function App() {
         </nav>
       </aside>
       <div className="@container/main min-w-0 flex-1 overflow-y-auto p-6">
-        {TAB_PAGES[tab]}
+        <Outlet />
       </div>
     </div>
   );

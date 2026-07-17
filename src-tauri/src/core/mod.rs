@@ -21,8 +21,8 @@ pub use model::{BrowserKind, FocusEvent, TabEvent};
 pub use platform::PlatformFocusWatcher;
 pub use store::{
     open_connection, ActivityStats, CategorizePreview, Category, CategoryFilter, CategoryKeyRef,
-    CategoryRule, CategoryStore, HistoryReader, IgnoreRule, IgnoreStore, RecategorizeFilter,
-    SessionFilter, SessionRow, SessionStore, SqliteStore,
+    CategoryRule, CategoryStore, HistoryReader, IgnoreRule, IgnoreStore, QueryWhitelistEntry,
+    QueryWhitelistStore, RecategorizeFilter, SessionFilter, SessionRow, SessionStore, SqliteStore,
 };
 pub use tracker::SessionTracker;
 pub use watcher::FocusWatcher;

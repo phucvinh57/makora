@@ -14,6 +14,7 @@ import type {
   IgnoreRule,
   KeyKind,
   MatchKind,
+  QueryWhitelistEntry,
   SessionsPage,
 } from "./types";
 
@@ -100,12 +101,6 @@ export function deleteCategory(id: number): Promise<void> {
   return invoke("delete_category", { id });
 }
 
-/** `orderedIds` must be every category id, in the new order (index 0 =
- * highest precedence). */
-export function reorderCategories(orderedIds: number[]): Promise<void> {
-  return invoke("reorder_categories", { orderedIds });
-}
-
 export function listCategoryRules(): Promise<CategoryRule[]> {
   return invoke("list_category_rules");
 }
@@ -142,6 +137,21 @@ export function createIgnoreRule(
 
 export function deleteIgnoreRule(id: number): Promise<void> {
   return invoke("delete_ignore_rule", { id });
+}
+
+export function listQueryWhitelist(): Promise<QueryWhitelistEntry[]> {
+  return invoke("list_query_whitelist");
+}
+
+export function createQueryWhitelistEntry(
+  domain: string,
+  param: string,
+): Promise<QueryWhitelistEntry> {
+  return invoke("create_query_whitelist_entry", { domain, param });
+}
+
+export function deleteQueryWhitelistEntry(id: number): Promise<void> {
+  return invoke("delete_query_whitelist_entry", { id });
 }
 
 export function isAutostartEnabled(): Promise<boolean> {

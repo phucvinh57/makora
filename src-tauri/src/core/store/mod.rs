@@ -7,6 +7,7 @@ use crate::core::model::AppInfo;
 pub mod categories;
 pub mod ignore;
 pub mod queries;
+pub mod query_whitelist;
 pub mod sqlite;
 
 pub use categories::{
@@ -14,6 +15,7 @@ pub use categories::{
 };
 pub use ignore::{IgnoreRule, IgnoreStore};
 pub use queries::{ActivityStats, CategoryFilter, HistoryReader, SessionFilter, SessionRow};
+pub use query_whitelist::{QueryWhitelistEntry, QueryWhitelistStore};
 pub use sqlite::{open_connection, SqliteStore};
 
 /// Persistence for app-usage sessions.

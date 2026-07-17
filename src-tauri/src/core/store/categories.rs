@@ -3,26 +3,23 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 use super::sqlite::SharedConnection;
-use crate::core::category::MatchKind;
+use crate::core::category::{KeyKind, MatchKind};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Category {
     pub id: i64,
     pub name: String,
     pub color: String,
-    /// Manual precedence when rules in different categories both match the
-    /// same session key, lowest wins — see [`CategoryStore::reorder_categories`]
-    /// and `category::rule_join_sql`.
-    pub priority: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CategoryRule {
     pub id: i64,
+    /// `"exe"`, `"domain"`, or `"url"` — see [`KeyKind`].
     pub key_kind: String,
     pub pattern: String,
-    /// `"exact"`, `"substring"`, or `"regex"` — see [`MatchKind`] and
-    /// `category::rule_join_sql`.
+    /// `"exact"`, `"prefix"`, `"substring"`, or `"regex"` — see [`MatchKind`]
+    /// and `category::rule_join_sql`.
     pub match_kind: String,
     pub category_id: i64,
 }
@@ -82,63 +79,36 @@ impl CategoryStore {
         Self { conn }
     }
 
-    /// Ordered by `priority` (the same order the Categories page's
-    /// drag-and-drop reordering controls) rather than name, so every list of
-    /// categories in the UI reflects the user's chosen precedence.
+    /// Ordered by name — categories no longer have a user-managed
+    /// precedence, since rule conflicts resolve by specificity instead (see
+    /// `category::rule_join_sql`).
     pub fn list_categories(&self) -> Result<Vec<Category>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare("SELECT id, name, color, priority FROM categories ORDER BY priority, id")?;
+        let mut stmt =
+            conn.prepare("SELECT id, name, color FROM categories ORDER BY name COLLATE NOCASE, id")?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(Category {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     color: row.get(2)?,
-                    priority: row.get(3)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
-    /// The new category is appended after every existing one (lowest
-    /// precedence) — see [`Self::reorder_categories`] to move it up.
     pub fn create_category(&self, name: &str, color: &str) -> Result<Category> {
         let conn = self.conn.lock().unwrap();
-        let priority: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(priority), -1) + 1 FROM categories",
-            [],
-            |row| row.get(0),
-        )?;
         conn.execute(
-            "INSERT INTO categories (name, color, priority) VALUES (?1, ?2, ?3)",
-            params![name, color, priority],
+            "INSERT INTO categories (name, color) VALUES (?1, ?2)",
+            params![name, color],
         )?;
         Ok(Category {
             id: conn.last_insert_rowid(),
             name: name.to_string(),
             color: color.to_string(),
-            priority,
         })
-    }
-
-    /// Reassigns priority for every category to match the given order
-    /// (index 0 = highest precedence) — how the Categories page's
-    /// drag-and-drop reordering is persisted. `ordered_ids` must be every
-    /// category id; see `category::rule_join_sql` for how this resolves a
-    /// session key matched by rules in more than one category.
-    pub fn reorder_categories(&self, ordered_ids: &[i64]) -> Result<()> {
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        for (index, id) in ordered_ids.iter().enumerate() {
-            tx.execute(
-                "UPDATE categories SET priority = ?1 WHERE id = ?2",
-                params![index as i64, id],
-            )?;
-        }
-        tx.commit()?;
-        Ok(())
     }
 
     pub fn update_category(&self, id: i64, name: &str, color: &str) -> Result<()> {
@@ -187,8 +157,9 @@ impl CategoryStore {
         Ok(rows)
     }
 
-    /// `match_kind` is `"exact"`, `"substring"`, or `"regex"` (see
-    /// [`MatchKind`]); a `"regex"` pattern is compiled up front so an
+    /// `key_kind` is `"exe"`, `"domain"`, or `"url"` (see [`KeyKind`]);
+    /// `match_kind` is `"exact"`, `"prefix"`, `"substring"`, or `"regex"`
+    /// (see [`MatchKind`]); a `"regex"` pattern is compiled up front so an
     /// invalid one is rejected here rather than silently never matching at
     /// query time.
     pub fn create_rule(
@@ -202,6 +173,7 @@ impl CategoryStore {
         if pattern.is_empty() {
             bail!("rule pattern must not be empty");
         }
+        KeyKind::parse(key_kind).ok_or_else(|| anyhow!("invalid key kind: {key_kind}"))?;
         let kind = MatchKind::parse(match_kind)
             .ok_or_else(|| anyhow!("invalid match kind: {match_kind}"))?;
         if kind == MatchKind::Regex {
@@ -498,6 +470,22 @@ mod tests {
             "INSERT INTO sessions (app_name, exe_path, window_title, category_key, category_key_kind, start_time)
              VALUES (?1, ?1, 'title', ?1, 'exe', ?2)",
             params![exe, start_time],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    /// Inserts a browser-tab session with `url` and its derived `url_key`
+    /// (see `category::url_key`) filled in, alongside the usual `domain`
+    /// `category_key`, so tests can exercise `url`-kind rules.
+    fn insert_browser_session(conn: &SharedConnection, url: &str, start_time: &str) -> i64 {
+        let (key_kind, key) = crate::core::category::category_key("chrome.exe", Some(url));
+        let url_key = crate::core::category::url_key(url);
+        let conn = conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO sessions (app_name, exe_path, window_title, url, category_key, category_key_kind, url_key, start_time)
+             VALUES ('chrome.exe', 'chrome.exe', 'title', ?1, ?2, ?3, ?4, ?5)",
+            params![url, key, key_kind.as_str(), url_key, start_time],
         )
         .unwrap();
         conn.last_insert_rowid()
@@ -808,13 +796,15 @@ mod tests {
     }
 
     #[test]
-    fn rules_in_different_categories_resolve_by_category_priority_and_reordering_changes_the_winner()
-    {
+    fn exact_rule_beats_substring_rule_regardless_of_category_creation_order() {
         let (store, path) = temp_store();
         let conn = store.conn.clone();
         let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
         let filter = crate::core::store::queries::SessionFilter::default();
 
+        // "Broad" is created (and thus would have won under the old
+        // category-priority scheme) before "Specific", yet its rule is less
+        // specific — specificity alone must decide the winner.
         let broad = store.create_category("Broad", "#444444").unwrap();
         let specific = store.create_category("Specific", "#555555").unwrap();
         store
@@ -825,36 +815,186 @@ mod tests {
             .unwrap();
 
         let a = insert_session(&conn, "steamwebhelper.exe", "2024-06-15T00:00:00Z");
-        let category_of = |rows: &[crate::core::store::queries::SessionRow]| {
-            rows.iter().find(|r| r.id == a).unwrap().category_id
-        };
-
-        // "Broad" was created first, so it defaults to the higher
-        // precedence category — even though its rule is less specific.
         let rows = reader.list_sessions(10, 0, &filter).unwrap();
-        assert_eq!(category_of(&rows), Some(broad.id));
-
-        // Dragging "Specific" above "Broad" flips the winner, even though
-        // neither rule changed.
-        store
-            .reorder_categories(&[specific.id, broad.id])
-            .unwrap();
-        let rows = reader.list_sessions(10, 0, &filter).unwrap();
-        assert_eq!(category_of(&rows), Some(specific.id));
+        let category_of = |id: i64| rows.iter().find(|r| r.id == id).unwrap().category_id;
+        assert_eq!(category_of(a), Some(specific.id));
 
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
-    fn create_category_appends_to_the_bottom_of_priority_order() {
+    fn prefix_rule_beats_substring_and_loses_to_exact() {
         let (store, path) = temp_store();
+        let conn = store.conn.clone();
+        let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
+        let filter = crate::core::store::queries::SessionFilter::default();
 
-        // Default categories are seeded already, so assert relative
-        // ordering rather than an absolute priority value.
-        let first = store.create_category("First", "#111111").unwrap();
-        let second = store.create_category("Second", "#222222").unwrap();
-        assert_eq!(second.priority, first.priority + 1);
+        let substring_cat = store.create_category("Substring", "#111111").unwrap();
+        let prefix_cat = store.create_category("Prefix", "#222222").unwrap();
+        let exact_cat = store.create_category("Exact", "#333333").unwrap();
+        store
+            .create_rule("exe", "editor", "substring", substring_cat.id)
+            .unwrap();
+        store
+            .create_rule("exe", "myeditor", "prefix", prefix_cat.id)
+            .unwrap();
+        store
+            .create_rule("exe", "myeditor.exe", "exact", exact_cat.id)
+            .unwrap();
 
+        let a = insert_session(&conn, "myeditor.exe", "2024-06-15T00:00:00Z");
+        let rows = reader.list_sessions(10, 0, &filter).unwrap();
+        assert_eq!(
+            rows.iter().find(|r| r.id == a).unwrap().category_id,
+            Some(exact_cat.id)
+        );
+
+        store.delete_rule(
+            store
+                .list_rules()
+                .unwrap()
+                .into_iter()
+                .find(|r| r.category_id == exact_cat.id)
+                .unwrap()
+                .id,
+        )
+        .unwrap();
+        let rows = reader.list_sessions(10, 0, &filter).unwrap();
+        assert_eq!(
+            rows.iter().find(|r| r.id == a).unwrap().category_id,
+            Some(prefix_cat.id),
+            "with the exact rule gone, the prefix rule should win over the substring rule"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn longer_pattern_wins_within_the_same_match_kind() {
+        let (store, path) = temp_store();
+        let conn = store.conn.clone();
+        let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
+        let filter = crate::core::store::queries::SessionFilter::default();
+
+        // Neither pattern collides with any seeded default rule (see
+        // `sqlite::seed_default_categories`), so the only thing deciding the
+        // winner here is pattern length.
+        let short_cat = store.create_category("Short", "#111111").unwrap();
+        let long_cat = store.create_category("Long", "#222222").unwrap();
+        store
+            .create_rule("domain", "example.net", "substring", short_cat.id)
+            .unwrap();
+        store
+            .create_rule("domain", "corp.example.net", "substring", long_cat.id)
+            .unwrap();
+
+        let a = insert_browser_session(&conn, "https://wiki.corp.example.net/page", "2024-06-15T00:00:00Z");
+        let rows = reader.list_sessions(10, 0, &filter).unwrap();
+        assert_eq!(
+            rows.iter().find(|r| r.id == a).unwrap().category_id,
+            Some(long_cat.id)
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn regex_rule_loses_to_any_non_regex_match() {
+        let (store, path) = temp_store();
+        let conn = store.conn.clone();
+        let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
+        let filter = crate::core::store::queries::SessionFilter::default();
+
+        let regex_cat = store.create_category("Regex", "#111111").unwrap();
+        let substring_cat = store.create_category("Substring", "#222222").unwrap();
+        store
+            .create_rule("exe", r"^my.*\.exe$", "regex", regex_cat.id)
+            .unwrap();
+        store
+            .create_rule("exe", "myeditor", "substring", substring_cat.id)
+            .unwrap();
+
+        let a = insert_session(&conn, "myeditor.exe", "2024-06-15T00:00:00Z");
+        let rows = reader.list_sessions(10, 0, &filter).unwrap();
+        assert_eq!(
+            rows.iter().find(|r| r.id == a).unwrap().category_id,
+            Some(substring_cat.id)
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn url_rule_beats_domain_rule_for_the_same_session_and_lets_two_documents_diverge() {
+        let (store, path) = temp_store();
+        let conn = store.conn.clone();
+        let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
+        let filter = crate::core::store::queries::SessionFilter::default();
+
+        // "docs.example.org" is not one of the seeded default domain
+        // patterns (see `sqlite::seed_default_categories`), so the only
+        // rules in play are the ones this test creates.
+        let work = store.create_category("Work", "#111111").unwrap();
+        let english = store.create_category("English study", "#222222").unwrap();
+        store
+            .create_rule("domain", "docs.example.org", "exact", work.id)
+            .unwrap();
+        store
+            .create_rule(
+                "url",
+                "docs.example.org/document/d/ABC",
+                "prefix",
+                english.id,
+            )
+            .unwrap();
+
+        let english_doc = insert_browser_session(
+            &conn,
+            "https://docs.example.org/document/d/ABC/edit",
+            "2024-06-15T00:00:00Z",
+        );
+        let other_doc = insert_browser_session(
+            &conn,
+            "https://docs.example.org/document/d/XYZ/edit",
+            "2024-06-15T00:01:00Z",
+        );
+
+        let rows = reader.list_sessions(10, 0, &filter).unwrap();
+        let category_of = |id: i64| rows.iter().find(|r| r.id == id).unwrap().category_id;
+        assert_eq!(category_of(english_doc), Some(english.id));
+        assert_eq!(
+            category_of(other_doc),
+            Some(work.id),
+            "a document not covered by the url rule should fall back to the domain rule"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn url_rules_never_match_sessions_without_a_url_key() {
+        let (store, path) = temp_store();
+        let conn = store.conn.clone();
+        let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
+        let filter = crate::core::store::queries::SessionFilter::default();
+
+        let cat = store.create_category("Docs", "#111111").unwrap();
+        store
+            .create_rule("url", "myeditor.exe", "substring", cat.id)
+            .unwrap();
+
+        let a = insert_session(&conn, "myeditor.exe", "2024-06-15T00:00:00Z");
+        let rows = reader.list_sessions(10, 0, &filter).unwrap();
+        assert_eq!(rows.iter().find(|r| r.id == a).unwrap().category_id, None);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn create_rule_rejects_invalid_key_kind() {
+        let (store, path) = temp_store();
+        let cat = store.create_category("Cat", "#111111").unwrap();
+        assert!(store.create_rule("bogus", "x", "exact", cat.id).is_err());
         let _ = std::fs::remove_file(&path);
     }
 }
