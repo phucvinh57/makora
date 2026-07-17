@@ -61,6 +61,18 @@ const MATCH_KIND_SELECT_LABEL: Record<MatchKind, string> = {
   regex: "matches (regex)",
 };
 
+// Strips a leading `scheme://` and, if still present at the very start, a
+// `www.` prefix from a pasted `domain`/`url` pattern -- so pasting a full URL
+// straight from the address bar still matches `category_key`/`url_key`,
+// neither of which ever contains a scheme or `www.`.
+function stripSchemeAndWww(pattern: string): string {
+  const schemeIndex = pattern.indexOf("://");
+  const afterScheme = schemeIndex === -1 ? pattern : pattern.slice(schemeIndex + 3);
+  return afterScheme.toLowerCase().startsWith("www.")
+    ? afterScheme.slice(4)
+    : afterScheme;
+}
+
 function matchKindPlaceholder(keyKind: KeyKind, matchKind: MatchKind): string {
   if (matchKind === "regex") {
     if (keyKind === "exe") return "^game\\d*\\.exe$";
@@ -137,14 +149,21 @@ export function RulesTab({
       pattern: string;
       matchKind: MatchKind;
     }) => {
+      // Strip a pasted full URL down to the scheme-less form
+      // `category_key`/`url_key` are matched against, before any other
+      // normalization below.
+      const stripped =
+        matchKind !== "regex" && (keyKind === "domain" || keyKind === "url")
+          ? stripSchemeAndWww(pattern.trim())
+          : pattern.trim();
       // Lowercasing canonicalizes exe/domain exact/prefix/substring patterns
       // (matching is case-insensitive either way), but would corrupt
       // case-sensitive regex escapes like `\D`/`\S`/`\W` and misrender a
       // URL path's casing, so regex and url patterns are sent as-is.
       const normalized =
         matchKind === "regex" || keyKind === "url"
-          ? pattern.trim()
-          : pattern.trim().toLowerCase();
+          ? stripped
+          : stripped.toLowerCase();
       return createCategoryRule(keyKind, normalized, matchKind, categoryId);
     },
     onSuccess: () => {
