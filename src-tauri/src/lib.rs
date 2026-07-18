@@ -43,11 +43,19 @@ pub fn run() {
     let setup_tracker = tracker.clone();
     let setup_whitelist = whitelist.clone();
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_autostart::init(
+    let mut builder = tauri::Builder::default();
+    // Dev builds load their UI from `devUrl` (the Vite dev server) rather
+    // than the bundled frontend, so registering one for autostart would
+    // point the OS at a binary that only works while `bun tauri dev` is
+    // running. Only production builds may register for autostart.
+    if !cfg!(debug_assertions) {
+        builder = builder.plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
-        ))
+        ));
+    }
+
+    builder
         .manage(tracker)
         .manage(reader)
         .manage(categories)

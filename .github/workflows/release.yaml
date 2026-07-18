@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+  workflow_dispatch:
+    inputs:
+      release_name:
+        description: "Name of the release"
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      release_name:
+        description: "Name of the release"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: "windows-latest"
+            arch: x64
+            args: ""
+          - platform: "macos-latest"
+            arch: aarch64
+            args: "--target aarch64-apple-darwin"
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Extract version
+        id: get_version
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.release_name }}" ]; then
+            VERSION="${{ inputs.release_name }}"
+          else
+            VERSION="${{ github.ref_name }}"
+          fi
+          echo "version=${VERSION#v}" >> "$GITHUB_OUTPUT"
+          echo "tag=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Update app version
+        shell: bash
+        run: |
+          VERSION="${{ steps.get_version.outputs.version }}"
+          echo "Updating version to $VERSION"
+          sed -i -e "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
+          node -e "const fs=require('fs');const p='src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(p));c.version='$VERSION';fs.writeFileSync(p, JSON.stringify(c, null, 2) + '\n');"
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
+
+      - name: Cache Cargo registry and build artifacts
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ matrix.platform }}-${{ matrix.arch }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.platform }}-${{ matrix.arch }}-cargo-
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build & release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ steps.get_version.outputs.tag }}
+          releaseName: ${{ steps.get_version.outputs.tag }}
+          releaseBody: "See the assets below to download and install this version."
+          releaseDraft: true
+          prerelease: ${{ contains(steps.get_version.outputs.version, 'rc') || contains(steps.get_version.outputs.version, 'beta') }}
+          args: ${{ matrix.args }}

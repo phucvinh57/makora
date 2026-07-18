@@ -13,6 +13,7 @@ export function GeneralSection() {
   const autostartQuery = useQuery({
     queryKey: ["autostartEnabled"],
     queryFn: isAutostartEnabled,
+    enabled: !import.meta.env.DEV,
   });
 
   const toggleMutation = useMutation({
@@ -58,10 +59,19 @@ export function GeneralSection() {
           <Switch
             id="autostart-checkbox"
             checked={autostartEnabled}
-            disabled={autostartQuery.isLoading || toggleMutation.isPending}
+            disabled={
+              import.meta.env.DEV ||
+              autostartQuery.isLoading ||
+              toggleMutation.isPending
+            }
             onCheckedChange={(checked) => toggleMutation.mutate(checked)}
           />
         </div>
+        {import.meta.env.DEV && (
+          <p className="text-xs text-muted-foreground">
+            Autostart is disabled in dev builds.
+          </p>
+        )}
         {toggleMutation.isError && (
           <p className="text-xs text-destructive">
             {String(toggleMutation.error)}
