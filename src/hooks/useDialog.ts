@@ -4,7 +4,9 @@ export type DialogName =
   | "add-category"
   | "add-rule"
   | "add-ignore-rule"
-  | "add-query-whitelist";
+  | "add-query-whitelist"
+  | "start-work-session"
+  | "edit-work-session";
 
 function eventName(name: DialogName) {
   return `makora:${name}`;

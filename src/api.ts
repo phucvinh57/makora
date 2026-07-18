@@ -16,6 +16,9 @@ import type {
   MatchKind,
   QueryWhitelistEntry,
   SessionsPage,
+  WorkSession,
+  WorkSessionStats,
+  WorkSessionUpdate,
 } from "./types";
 
 export function listSessions(
@@ -152,6 +155,45 @@ export function createQueryWhitelistEntry(
 
 export function deleteQueryWhitelistEntry(id: number): Promise<void> {
   return invoke("delete_query_whitelist_entry", { id });
+}
+
+/** `startTime` (RFC 3339 UTC) omitted means "start now"; the end is derived
+ * as start + target and reaching it is the auto-end. */
+export function createWorkSession(
+  name: string,
+  note: string | null,
+  targetSeconds: number,
+  categoryIds: number[],
+  startTime?: string,
+): Promise<WorkSession> {
+  return invoke("create_work_session", {
+    name,
+    note,
+    targetSeconds,
+    categoryIds,
+    startTime,
+  });
+}
+
+export function listWorkSessions(): Promise<WorkSession[]> {
+  return invoke("list_work_sessions");
+}
+
+export function updateWorkSession(update: WorkSessionUpdate): Promise<void> {
+  return invoke("update_work_session", { update });
+}
+
+/** Ends an in-progress work session now; past sessions are left untouched. */
+export function stopWorkSession(id: number): Promise<void> {
+  return invoke("stop_work_session", { id });
+}
+
+export function deleteWorkSession(id: number): Promise<void> {
+  return invoke("delete_work_session", { id });
+}
+
+export function workSessionStats(id: number): Promise<WorkSessionStats> {
+  return invoke("work_session_stats", { id });
 }
 
 export function isAutostartEnabled(): Promise<boolean> {

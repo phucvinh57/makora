@@ -23,6 +23,7 @@ pub use store::{
     open_connection, ActivityStats, CategorizePreview, Category, CategoryFilter, CategoryKeyRef,
     CategoryRule, CategoryStore, HistoryReader, IgnoreRule, IgnoreStore, QueryWhitelistEntry,
     QueryWhitelistStore, RecategorizeFilter, SessionFilter, SessionRow, SessionStore, SqliteStore,
+    WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
 };
 pub use tracker::SessionTracker;
 pub use watcher::FocusWatcher;

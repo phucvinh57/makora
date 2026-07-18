@@ -180,6 +180,32 @@ fn migrations() -> Migrations<'static> {
             CREATE UNIQUE INDEX IF NOT EXISTS idx_url_query_whitelist ON url_query_whitelist(domain, param);
             INSERT INTO url_query_whitelist (domain, param) VALUES ('youtube.com', 'v');",
         ),
+        // User-created focus blocks (see `store::WorkSessionStore`), evaluated
+        // after the fact against tracked `sessions` rows overlapping
+        // [start_time, end_time). `end_time` is always set — computed as
+        // start + target at creation (the session "auto-ends" by simply
+        // reaching it) and rewritten on an early stop or a manual edit.
+        // `target_seconds` stays as the original plan for comparing planned
+        // vs. actual. The join table lists which categories count as
+        // "on-task"; rows are cascaded manually in `WorkSessionStore` /
+        // `CategoryStore::delete_category` since the connection doesn't
+        // enable SQLite foreign-key enforcement.
+        M::up("CREATE TABLE IF NOT EXISTS work_sessions (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                name           TEXT NOT NULL,
+                note           TEXT,
+                target_seconds INTEGER NOT NULL,
+                start_time     TEXT NOT NULL,
+                end_time       TEXT NOT NULL,
+                created_at     TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_work_sessions_start_time ON work_sessions(start_time);
+            CREATE TABLE IF NOT EXISTS work_session_categories (
+                work_session_id INTEGER NOT NULL REFERENCES work_sessions(id),
+                category_id     INTEGER NOT NULL REFERENCES categories(id),
+                PRIMARY KEY (work_session_id, category_id)
+            );",
+        ),
     ])
 }
 

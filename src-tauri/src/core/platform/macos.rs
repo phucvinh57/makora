@@ -83,7 +83,7 @@ fn run_watcher(tx: Sender<FocusEvent>) {
             // NSString/NSURL churn in `focus_event_from_notification`) would
             // otherwise leak for the lifetime of the process.
             autoreleasepool(|_pool| {
-                let event = unsafe { focus_event_from_notification(notification) };
+                let event = focus_event_from_notification(notification);
                 if let Some(event) = event {
                     let _ = tx.send(event);
                 }

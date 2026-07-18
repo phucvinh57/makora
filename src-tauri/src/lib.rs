@@ -13,7 +13,7 @@ use tauri::Manager;
 
 use crate::core::{
     open_connection, CategoryStore, FocusEvent, FocusWatcher, HistoryReader, IgnoreStore,
-    PlatformFocusWatcher, QueryWhitelistStore, SessionTracker, SqliteStore,
+    PlatformFocusWatcher, QueryWhitelistStore, SessionTracker, SqliteStore, WorkSessionStore,
 };
 
 /// Shared by the focus-watcher thread, the tab-ingest server, and the
@@ -38,6 +38,7 @@ pub fn run() {
             .expect("initializing session tracker"),
     ));
     let reader = HistoryReader::new(conn.clone());
+    let work_sessions = WorkSessionStore::new(conn.clone());
     let categories = CategoryStore::new(conn);
 
     let setup_tracker = tracker.clone();
@@ -61,6 +62,7 @@ pub fn run() {
         .manage(categories)
         .manage(ignore)
         .manage(whitelist)
+        .manage(work_sessions)
         .invoke_handler(tauri::generate_handler![
             commands::list_sessions,
             commands::activity_stats,
@@ -83,6 +85,12 @@ pub fn run() {
             commands::list_query_whitelist,
             commands::create_query_whitelist_entry,
             commands::delete_query_whitelist_entry,
+            commands::create_work_session,
+            commands::list_work_sessions,
+            commands::update_work_session,
+            commands::stop_work_session,
+            commands::delete_work_session,
+            commands::work_session_stats,
         ])
         .setup(move |app| {
             let (tx, rx) = mpsc::channel::<FocusEvent>();

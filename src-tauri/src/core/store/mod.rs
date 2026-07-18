@@ -9,6 +9,7 @@ pub mod ignore;
 pub mod queries;
 pub mod query_whitelist;
 pub mod sqlite;
+pub mod work_sessions;
 
 pub use categories::{
     CategorizePreview, Category, CategoryKeyRef, CategoryRule, CategoryStore, RecategorizeFilter,
@@ -17,6 +18,7 @@ pub use ignore::{IgnoreRule, IgnoreStore};
 pub use queries::{ActivityStats, CategoryFilter, HistoryReader, SessionFilter, SessionRow};
 pub use query_whitelist::{QueryWhitelistEntry, QueryWhitelistStore};
 pub use sqlite::{open_connection, SqliteStore};
+pub use work_sessions::{WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate};
 
 /// Persistence for app-usage sessions.
 ///

@@ -3,8 +3,10 @@ use std::sync::Arc;
 use crate::core::{
     ActivityStats, CategorizePreview, Category, CategoryFilter, CategoryKeyRef, CategoryRule,
     CategoryStore, HistoryReader, IgnoreRule, IgnoreStore, QueryWhitelistEntry,
-    QueryWhitelistStore, RecategorizeFilter, SessionFilter, SessionRow,
+    QueryWhitelistStore, RecategorizeFilter, SessionFilter, SessionRow, WorkSession,
+    WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
 };
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tauri::State;
 
@@ -293,4 +295,96 @@ pub fn delete_query_whitelist_entry(
     id: i64,
 ) -> Result<(), String> {
     whitelist.delete_entry(id).map_err(|e| e.to_string())
+}
+
+fn parse_rfc3339(value: &str) -> Result<DateTime<Utc>, String> {
+    DateTime::parse_from_rfc3339(value)
+        .map(|t| t.with_timezone(&Utc))
+        .map_err(|_| format!("invalid timestamp: {value}"))
+}
+
+fn validate_work_session(name: &str, target_seconds: i64) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("work session name must not be empty".to_string());
+    }
+    if target_seconds <= 0 {
+        return Err("target duration must be positive".to_string());
+    }
+    Ok(())
+}
+
+/// Creates a planned focus block. `start_time` (RFC 3339) is optional —
+/// omitted means "start now". The end is derived as start + target; there is
+/// no timer anywhere, reaching that instant *is* the auto-end.
+#[tauri::command]
+pub fn create_work_session(
+    work_sessions: State<WorkSessionStore>,
+    name: String,
+    note: Option<String>,
+    target_seconds: i64,
+    start_time: Option<String>,
+    category_ids: Vec<i64>,
+) -> Result<WorkSession, String> {
+    validate_work_session(&name, target_seconds)?;
+    let start = start_time.as_deref().map(parse_rfc3339).transpose()?;
+    work_sessions
+        .create(name.trim(), note.as_deref(), target_seconds, start, &category_ids)
+        .map_err(|e| e.to_string())
+}
+
+/// All work sessions, newest first.
+#[tauri::command]
+pub fn list_work_sessions(
+    work_sessions: State<WorkSessionStore>,
+) -> Result<Vec<WorkSession>, String> {
+    work_sessions.list().map_err(|e| e.to_string())
+}
+
+/// Rewrites every field of a work session, including its time window —
+/// editing is unrestricted by design, the user owns their own plan.
+#[tauri::command]
+pub fn update_work_session(
+    work_sessions: State<WorkSessionStore>,
+    update: WorkSessionUpdate,
+) -> Result<(), String> {
+    validate_work_session(&update.name, update.target_seconds)?;
+    let start = parse_rfc3339(&update.start_time)?;
+    let end = parse_rfc3339(&update.end_time)?;
+    if end <= start {
+        return Err("end time must be after start time".to_string());
+    }
+    let update = WorkSessionUpdate {
+        name: update.name.trim().to_string(),
+        start_time: start.to_rfc3339(),
+        end_time: end.to_rfc3339(),
+        ..update
+    };
+    work_sessions.update(&update).map_err(|e| e.to_string())
+}
+
+/// Ends an in-progress work session now; a session whose window has already
+/// passed is left untouched.
+#[tauri::command]
+pub fn stop_work_session(work_sessions: State<WorkSessionStore>, id: i64) -> Result<(), String> {
+    work_sessions.stop(id).map_err(|e| e.to_string())
+}
+
+/// Deletes a work session and its target-category links. Tracked history is
+/// untouched — a work session only ever reads it.
+#[tauri::command]
+pub fn delete_work_session(work_sessions: State<WorkSessionStore>, id: i64) -> Result<(), String> {
+    work_sessions.delete(id).map_err(|e| e.to_string())
+}
+
+/// Evaluates the tracked history overlapping a work session's window against
+/// its target categories: on/off-task totals, focus percentage, switch
+/// count, per-app breakdown, and a timeline of focus/distraction/idle
+/// blocks. For an in-progress session the window is clamped to now, so this
+/// doubles as the live view.
+#[tauri::command]
+pub fn work_session_stats(
+    work_sessions: State<WorkSessionStore>,
+    id: i64,
+) -> Result<WorkSessionStats, String> {
+    work_sessions.stats(id).map_err(|e| e.to_string())
 }

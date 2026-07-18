@@ -133,6 +133,10 @@ impl CategoryStore {
             "DELETE FROM category_overrides WHERE category_id = ?1",
             params![id],
         )?;
+        tx.execute(
+            "DELETE FROM work_session_categories WHERE category_id = ?1",
+            params![id],
+        )?;
         tx.execute("DELETE FROM categories WHERE id = ?1", params![id])?;
         tx.commit()?;
         Ok(())
