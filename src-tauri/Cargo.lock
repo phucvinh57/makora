@@ -1791,6 +1791,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-autostart",
  "tiny_http",
+ "url",
  "windows-sys 0.61.2",
 ]
 

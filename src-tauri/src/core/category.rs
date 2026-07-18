@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use url::Url;
+
 /// Which kind of pattern a session's [`category_key`] was derived from, or
 /// (for [`Url`](KeyKind::Url)) a rule-only target matched against a
 /// session's `url_key` instead. Stored on `category_key_kind` alongside the
@@ -151,10 +153,8 @@ pub fn category_key(exe_path: &str, url: Option<&str>) -> (KeyKind, String) {
 /// other lookups against a URL (e.g. [`crate::core::store::IgnoreStore`]) key
 /// on it identically instead of re-deriving their own notion of "domain".
 pub fn normalized_domain(url: &str) -> Option<String> {
-    domain_of(url).map(|domain| {
-        let domain = domain.to_ascii_lowercase();
-        domain.strip_prefix("www.").unwrap_or(&domain).to_string()
-    })
+    let host = domain_of(url)?.to_ascii_lowercase();
+    Some(host.strip_prefix("www.").map(str::to_string).unwrap_or(host))
 }
 
 /// The normalized match target for a [`KeyKind::Url`] rule: lowercased,
@@ -172,18 +172,14 @@ pub fn normalized_domain(url: &str) -> Option<String> {
 /// `docs.google.com/document/d/ABC/edit`; `https://example.com/` → `example.com`.
 pub fn url_key(url: &str) -> Option<String> {
     let domain = normalized_domain(url)?;
-    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
-    let after_host = after_scheme.split_once(['/', '?', '#']).map(|(_, rest)| rest);
-    let (path, query) = match after_host {
-        None => ("", ""),
-        Some(rest) if rest.starts_with('?') || rest.starts_with('#') => ("", &rest[1..]),
-        Some(rest) => match rest.split_once(['?', '#']) {
-            Some((path, query)) => (path, query),
-            None => (rest, ""),
-        },
-    };
-    let path = path.trim_end_matches('/');
-    let query = query.split('#').next().unwrap_or(query);
+    let parsed = parse_lenient(url);
+    let path = parsed
+        .as_ref()
+        .map(|p| p.path())
+        .unwrap_or("/")
+        .trim_start_matches('/')
+        .trim_end_matches('/');
+    let query = parsed.as_ref().and_then(|p| p.query()).unwrap_or("");
 
     let mut key = domain;
     if !path.is_empty() {
@@ -206,23 +202,23 @@ pub fn url_key(url: &str) -> Option<String> {
 /// `store::QueryWhitelistStore`) — everything not explicitly whitelisted for
 /// the URL's domain is stripped before the URL is ever stored.
 pub fn filter_query_params(url: &str, allowed: &[String]) -> String {
-    let url = url.split('#').next().unwrap_or(url);
-    let Some((base, query)) = url.split_once('?') else {
-        return url.to_string();
+    let Some(mut parsed) = parse_lenient(url) else {
+        return url.split('#').next().unwrap_or(url).to_string();
     };
-    let mut kept: Vec<&str> = query
-        .split('&')
-        .filter(|param| {
-            let name = param.split('=').next().unwrap_or("");
-            allowed.iter().any(|a| a == name)
-        })
-        .collect();
-    kept.sort_unstable();
-    if kept.is_empty() {
-        base.to_string()
-    } else {
-        format!("{base}?{}", kept.join("&"))
-    }
+    parsed.set_fragment(None);
+    let kept = parsed.query().map(|query| {
+        let mut kept: Vec<&str> = query
+            .split('&')
+            .filter(|param| {
+                let name = param.split('=').next().unwrap_or("");
+                allowed.iter().any(|a| a == name)
+            })
+            .collect();
+        kept.sort_unstable();
+        kept.join("&")
+    });
+    parsed.set_query(kept.as_deref().filter(|q| !q.is_empty()));
+    parsed.to_string()
 }
 
 fn exe_file_name(exe_path: &str) -> &str {
@@ -232,14 +228,22 @@ fn exe_file_name(exe_path: &str) -> &str {
         .unwrap_or(exe_path)
 }
 
+/// Parses `input` as an absolute URL via the `url` crate, retrying with an
+/// assumed `http://` scheme when it has none — covers a bare domain
+/// (`example.com`) or a rule pattern pasted without a scheme
+/// (`docs.google.com/document/d/ABC`), neither of which `Url::parse` accepts
+/// on its own.
+fn parse_lenient(input: &str) -> Option<Url> {
+    Url::parse(input)
+        .or_else(|_| Url::parse(&format!("http://{input}")))
+        .ok()
+}
+
 /// Extracts the host from a URL — see `TabEvent::url`. Falls back gracefully
 /// on anything else since this only ever feeds a lookup key, never a
 /// security decision.
-pub(crate) fn domain_of(url: &str) -> Option<&str> {
-    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
-    let host = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
-    let host = host.rsplit_once('@').map_or(host, |(_, rest)| rest);
-    let host = host.split(':').next().unwrap_or(host);
+pub(crate) fn domain_of(url: &str) -> Option<String> {
+    let host = parse_lenient(url)?.host_str()?.to_string();
     if host.is_empty() {
         None
     } else {
@@ -276,13 +280,13 @@ mod tests {
     fn domain_extraction_strips_port_and_userinfo() {
         assert_eq!(
             domain_of("https://user@example.com:8080/path"),
-            Some("example.com")
+            Some("example.com".to_string())
         );
     }
 
     #[test]
     fn domain_extraction_handles_missing_scheme() {
-        assert_eq!(domain_of("example.com/path"), Some("example.com"));
+        assert_eq!(domain_of("example.com/path"), Some("example.com".to_string()));
     }
 
     #[test]

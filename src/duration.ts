@@ -1,10 +1,12 @@
+import { differenceInSeconds } from "date-fns";
+
 export function formatDuration(
   startTime: string,
   endTime: string | null,
 ): string {
-  const start = new Date(startTime).getTime();
-  const end = endTime ? new Date(endTime).getTime() : Date.now();
-  const totalSeconds = Math.max(0, Math.floor((end - start) / 1000));
+  const start = new Date(startTime);
+  const end = endTime ? new Date(endTime) : new Date();
+  const totalSeconds = Math.max(0, differenceInSeconds(end, start));
   return formatSeconds(totalSeconds);
 }
 

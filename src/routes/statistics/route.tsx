@@ -30,7 +30,7 @@ function StatisticsPage() {
   const error = statsQuery.error ? String(statsQuery.error) : null;
 
   return (
-    <div className="flex h-full flex-col gap-6 overflow-y-auto subtle-scrollbar box-border">
+    <div className="flex flex-col gap-6">
       <header className="flex flex-wrap items-center gap-3">
         <div className="mr-auto">
           <h1 className="m-0 text-lg font-semibold">Statistics</h1>

@@ -128,7 +128,7 @@ function RootLayout() {
           })}
         </nav>
       </aside>
-      <div className="@container/main min-w-0 flex-1 overflow-y-auto p-6">
+      <div className="@container/main min-w-0 flex-1 overflow-y-auto subtle-scrollbar p-6">
         <Outlet />
       </div>
     </div>

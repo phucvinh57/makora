@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use chrono::Utc;
 use directories::ProjectDirs;
-use tauri::{Manager, WindowEvent};
+use tauri::Manager;
 
 use crate::core::{
     open_connection, CategoryStore, FocusEvent, FocusWatcher, HistoryReader, IgnoreStore,
@@ -104,19 +104,21 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(|window, event| {
-            // Close (and minimize) hide the window instead of quitting — the
-            // watcher and ingest server keep running in the background; the
-            // tray icon is the only way back to the window from here on.
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
-            }
-        })
         .build(tauri::generate_context!())
         .expect("error while building the makora application")
         .run(|app_handle, event| {
-            if let tauri::RunEvent::ExitRequested { .. } = event {
+            // Closing the window destroys it outright (releasing the
+            // WebView2 process instead of leaving it resident) rather than
+            // hiding it. That makes the OS ask to exit the app too — Tauri
+            // reports that as `code: None` (vs. `Some(_)` for the tray's
+            // explicit "Quit"), so we veto it here and let the watcher,
+            // ingest server, and tray icon keep running headless; the tray
+            // is the only way back to a window from here on.
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+                if code.is_none() {
+                    api.prevent_exit();
+                    return;
+                }
                 let tracker = app_handle.state::<SharedTracker>();
                 let result = tracker.lock().unwrap().close_current(Utc::now());
                 if let Err(err) = result {

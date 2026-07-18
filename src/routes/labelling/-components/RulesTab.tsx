@@ -61,16 +61,23 @@ const MATCH_KIND_SELECT_LABEL: Record<MatchKind, string> = {
   regex: "matches (regex)",
 };
 
-// Strips a leading `scheme://` and, if still present at the very start, a
-// `www.` prefix from a pasted `domain`/`url` pattern -- so pasting a full URL
-// straight from the address bar still matches `category_key`/`url_key`,
-// neither of which ever contains a scheme or `www.`.
+// Strips the scheme, `www.` prefix, and port from a pasted `domain`/`url`
+// pattern -- so pasting a full URL straight from the address bar still
+// matches `category_key`/`url_key`, neither of which ever contains those.
+// Parsed via the native `URL` API rather than by hand; a pattern is only fed
+// to it as-is when it already looks absolute (contains `://`), otherwise an
+// `http://` scheme is assumed first -- feeding a bare `host:port` straight to
+// `URL` would otherwise get misparsed as `host` being the scheme.
 function stripSchemeAndWww(pattern: string): string {
-  const schemeIndex = pattern.indexOf("://");
-  const afterScheme = schemeIndex === -1 ? pattern : pattern.slice(schemeIndex + 3);
-  return afterScheme.toLowerCase().startsWith("www.")
-    ? afterScheme.slice(4)
-    : afterScheme;
+  let url: URL;
+  try {
+    url = new URL(pattern.includes("://") ? pattern : `http://${pattern}`);
+  } catch {
+    return pattern;
+  }
+  const host = url.hostname.startsWith("www.") ? url.hostname.slice(4) : url.hostname;
+  const rest = url.pathname === "/" ? "" : url.pathname;
+  return `${host}${rest}${url.search}`;
 }
 
 function matchKindPlaceholder(keyKind: KeyKind, matchKind: MatchKind): string {
