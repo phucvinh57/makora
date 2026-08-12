@@ -38,13 +38,12 @@ jobs:
             target: "aarch64-apple-darwin"
             files: |
               src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-          - platform: "ubuntu-24.04"
+          - platform: "ubuntu-26.04"
             arch: x64
             target: ""
             files: |
               src-tauri/target/release/bundle/deb/*.deb
               src-tauri/target/release/bundle/rpm/*.rpm
-              src-tauri/target/release/bundle/appimage/*.AppImage
 
     steps:
       - uses: actions/checkout@v7
