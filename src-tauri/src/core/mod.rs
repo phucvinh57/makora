@@ -17,7 +17,7 @@ pub mod store;
 pub mod tracker;
 pub mod watcher;
 
-pub use model::{BrowserKind, FocusEvent, TabEvent};
+pub use model::{BrowserKind, TabEvent, WatchEvent};
 pub use platform::PlatformFocusWatcher;
 pub use store::{
     open_connection, ActivityStats, CategorizePreview, Category, CategoryFilter, CategoryKeyRef,

@@ -2,7 +2,7 @@ use std::sync::mpsc::Sender;
 
 use anyhow::Result;
 
-use crate::core::model::FocusEvent;
+use crate::core::model::WatchEvent;
 
 /// Platform-specific source of focus-change events.
 ///
@@ -20,5 +20,5 @@ pub trait FocusWatcher {
     /// Start watching for focus changes, sending each one to `tx`.
     ///
     /// Must not block: the platform event loop runs on its own thread.
-    fn start(&mut self, tx: Sender<FocusEvent>) -> Result<()>;
+    fn start(&mut self, tx: Sender<WatchEvent>) -> Result<()>;
 }

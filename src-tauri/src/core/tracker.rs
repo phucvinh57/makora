@@ -8,7 +8,7 @@ use crate::core::category::exe_file_name;
 use crate::core::ignore::IgnorePolicy;
 #[cfg(test)]
 use crate::core::ignore::NoopIgnorePolicy;
-use crate::core::model::{AppInfo, BrowserKind, FocusEvent, TabEvent};
+use crate::core::model::{AppInfo, BrowserKind, FocusEvent, PresenceEvent, TabEvent};
 use crate::core::store::SessionStore;
 
 /// Executables whose focus events are dropped entirely: they neither end the
@@ -42,6 +42,9 @@ struct Current {
     /// events are allowed to segment it.
     browser: Option<BrowserKind>,
     url: Option<String>,
+    /// Latest window/tab title. This snapshot is retained while away so a
+    /// fresh row can begin with current metadata after unlock or wake.
+    window_title: String,
 }
 
 /// Turns a stream of raw focus events into activity rows: a row opens when
@@ -62,6 +65,10 @@ pub struct SessionTracker<S: SessionStore> {
     store: S,
     current: Option<Current>,
     ignore: Arc<dyn IgnorePolicy>,
+    /// False while the desktop session is locked or the system is asleep.
+    /// Focus and tab observations still refresh `current`, but cannot write
+    /// activity rows until a presence event marks the user present again.
+    present: bool,
 }
 
 impl<S: SessionStore> SessionTracker<S> {
@@ -79,6 +86,7 @@ impl<S: SessionStore> SessionTracker<S> {
             store,
             current: None,
             ignore,
+            present: true,
         })
     }
 
@@ -89,43 +97,28 @@ impl<S: SessionStore> SessionTracker<S> {
         }
         if let Some(current) = &self.current {
             if current.app.exe_path == event.app.exe_path {
+                if !self.present {
+                    // Focus providers can re-sync while locked/unlocked.
+                    // Keep the newest metadata for the row that will open
+                    // on return without changing same-app semantics while
+                    // the user is present.
+                    let current = self.current.as_mut().expect("checked above");
+                    current.app = event.app;
+                    current.window_title = event.window_title;
+                }
                 return Ok(()); // same app still focused (e.g. window title changed)
             }
         }
-        self.close_current(event.timestamp)?;
-        if self.ignore.is_app_ignored(&event.app.exe_path) {
-            // A user-ignored app: the previous session was already closed
-            // above, but no session opens for this one — none of its time
-            // is recorded until a non-ignored app regains focus.
-            self.current = Some(Current {
-                id: None,
-                app: event.app,
-                browser: None,
-                url: None,
-            });
-            return Ok(());
-        }
+        self.end_current_row(event.timestamp)?;
         let browser = BrowserKind::from_app_name(&event.app.app_name);
-        let id = if browser.is_some() {
-            // Browser rows are only ever created from tab events, not the
-            // focus hook — otherwise every site visit would produce both a
-            // URL-less row here and a URL-bearing row from the extension.
-            None
-        } else {
-            Some(self.store.start_session(
-                &event.app,
-                &event.window_title,
-                None,
-                event.timestamp,
-            )?)
-        };
         self.current = Some(Current {
-            id,
+            id: None,
             app: event.app,
             browser,
             url: None,
+            window_title: event.window_title,
         });
-        Ok(())
+        self.open_current_row(event.timestamp)
     }
 
     /// Feed one active-tab observation into the tracker. Ignored unless a
@@ -142,47 +135,79 @@ impl<S: SessionStore> SessionTracker<S> {
         if current.url.as_deref() == Some(event.url.as_str()) {
             return Ok(()); // same URL, e.g. only the title changed
         }
-        let current = self.current.take().expect("checked above");
-        // `id` is `None` on the very first tab event after the browser
-        // gained focus (the focus hook opened no row) — nothing to close.
-        if let Some(id) = current.id {
-            self.store.end_session(id, event.timestamp)?;
-        }
-        if self.ignore.is_site_ignored(&event.url) {
-            // A user-ignored site: the previous tab's session was already
-            // closed above, but no session opens for this one. `url` is
-            // still recorded on `current` so revisiting the same ignored
-            // site again is a no-op via the check above, same as normal.
-            self.current = Some(Current {
-                id: None,
-                app: current.app,
-                browser: current.browser,
-                url: Some(event.url),
-            });
+        self.end_current_row(event.timestamp)?;
+        let current = self.current.as_mut().expect("checked above");
+        current.url = Some(event.url);
+        current.window_title = event.title;
+        self.open_current_row(event.timestamp)
+    }
+
+    /// Feed one authoritative user-presence observation into the tracker.
+    /// A transition away closes the database row but deliberately retains
+    /// the focused app/tab snapshot. Focus and tab events can update that
+    /// snapshot while away, and a transition back opens a fresh row from it.
+    pub fn handle_presence_event(&mut self, event: PresenceEvent) -> Result<()> {
+        if self.present == event.present {
             return Ok(());
         }
-        let id = self.store.start_session(
-            &current.app,
-            &event.title,
-            Some(&event.url),
-            event.timestamp,
-        )?;
-        self.current = Some(Current {
-            id: Some(id),
-            app: current.app,
-            browser: current.browser,
-            url: Some(event.url),
-        });
-        Ok(())
+        self.present = event.present;
+        if event.present {
+            self.open_current_row(event.timestamp)
+        } else {
+            self.end_current_row(event.timestamp)
+        }
     }
 
     /// Close whatever row is open, e.g. on shutdown. No-op if none is open.
     pub fn close_current(&mut self, at: DateTime<Utc>) -> Result<()> {
-        if let Some(current) = self.current.take() {
-            if let Some(id) = current.id {
-                self.store.end_session(id, at)?;
-            }
+        self.end_current_row(at)?;
+        self.current = None;
+        Ok(())
+    }
+
+    /// Close only the persisted row, retaining the focused app/tab snapshot.
+    fn end_current_row(&mut self, at: DateTime<Utc>) -> Result<()> {
+        let id = self.current.as_ref().and_then(|current| current.id);
+        if let Some(id) = id {
+            self.store.end_session(id, at)?;
+            self.current.as_mut().expect("row came from current").id = None;
         }
+        Ok(())
+    }
+
+    /// Open a row from the retained snapshot when the user is present.
+    /// Browser focus without a tab observation, ignored apps, and ignored
+    /// sites intentionally retain a snapshot but write no row.
+    fn open_current_row(&mut self, at: DateTime<Utc>) -> Result<()> {
+        if !self.present
+            || self
+                .current
+                .as_ref()
+                .is_none_or(|current| current.id.is_some())
+        {
+            return Ok(());
+        }
+
+        let current = self.current.as_ref().expect("checked above");
+        if self.ignore.is_app_ignored(&current.app.exe_path) {
+            return Ok(());
+        }
+        if current.browser.is_some()
+            && current
+                .url
+                .as_deref()
+                .is_none_or(|url| self.ignore.is_site_ignored(url))
+        {
+            // Browsers only produce URL-bearing rows, never a duplicate
+            // plain-app row before the extension reports its active tab.
+            return Ok(());
+        }
+
+        let app = current.app.clone();
+        let title = current.window_title.clone();
+        let url = current.url.clone();
+        let id = self.store.start_session(&app, &title, url.as_deref(), at)?;
+        self.current.as_mut().expect("checked above").id = Some(id);
         Ok(())
     }
 }
@@ -290,6 +315,10 @@ mod tests {
             title: "Title".to_string(),
             timestamp: Utc::now(),
         }
+    }
+
+    fn presence_event(present: bool, timestamp: DateTime<Utc>) -> PresenceEvent {
+        PresenceEvent { present, timestamp }
     }
 
     #[test]
@@ -484,10 +513,7 @@ mod tests {
             .handle_tab_event(tab_event(BrowserKind::Edge, "https://a.example/"))
             .unwrap();
 
-        assert_eq!(
-            *log.0.borrow(),
-            vec!["start:msedge.app:https://a.example/"]
-        );
+        assert_eq!(*log.0.borrow(), vec!["start:msedge.app:https://a.example/"]);
     }
 
     #[test]
@@ -502,10 +528,7 @@ mod tests {
             .handle_tab_event(tab_event(BrowserKind::Brave, "https://a.example/"))
             .unwrap();
 
-        assert_eq!(
-            *log.0.borrow(),
-            vec!["start:brave.app:https://a.example/"]
-        );
+        assert_eq!(*log.0.borrow(), vec!["start:brave.app:https://a.example/"]);
     }
 
     #[test]
@@ -574,5 +597,209 @@ mod tests {
             .unwrap();
 
         assert_eq!(*log.0.borrow(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn lock_closes_an_app_row_and_unlock_opens_a_fresh_one() {
+        let log = RecordingStore::default();
+        let mut tracker = SessionTracker::new(log.clone()).unwrap();
+
+        tracker.handle_event(event("editor", "Draft")).unwrap();
+        tracker
+            .handle_presence_event(presence_event(false, Utc::now()))
+            .unwrap();
+        tracker
+            .handle_presence_event(presence_event(true, Utc::now()))
+            .unwrap();
+
+        assert_eq!(
+            *log.0.borrow(),
+            vec!["start:editor", "end:1", "start:editor"]
+        );
+    }
+
+    #[test]
+    fn lock_and_unlock_use_the_presence_event_timestamps() {
+        type TimedLog = Rc<RefCell<Vec<(String, DateTime<Utc>)>>>;
+
+        #[derive(Default, Clone)]
+        struct TimedStore(TimedLog);
+
+        impl SessionStore for TimedStore {
+            fn start_session(
+                &mut self,
+                app: &AppInfo,
+                _window_title: &str,
+                _url: Option<&str>,
+                at: DateTime<Utc>,
+            ) -> Result<i64> {
+                let mut log = self.0.borrow_mut();
+                log.push((format!("start:{}", app.exe_path), at));
+                Ok(log.len() as i64)
+            }
+
+            fn end_session(&mut self, id: i64, at: DateTime<Utc>) -> Result<()> {
+                self.0.borrow_mut().push((format!("end:{id}"), at));
+                Ok(())
+            }
+
+            fn close_dangling_sessions(&mut self) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let start = DateTime::from_timestamp(10, 0).unwrap();
+        let locked = DateTime::from_timestamp(20, 0).unwrap();
+        let unlocked = DateTime::from_timestamp(30, 0).unwrap();
+        let log = TimedStore::default();
+        let mut tracker = SessionTracker::new(log.clone()).unwrap();
+        let mut focus = event("editor", "Draft");
+        focus.timestamp = start;
+
+        tracker.handle_event(focus).unwrap();
+        tracker
+            .handle_presence_event(presence_event(false, locked))
+            .unwrap();
+        tracker
+            .handle_presence_event(presence_event(true, unlocked))
+            .unwrap();
+
+        assert_eq!(
+            *log.0.borrow(),
+            vec![
+                ("start:editor".into(), start),
+                ("end:1".into(), locked),
+                ("start:editor".into(), unlocked),
+            ]
+        );
+    }
+
+    #[test]
+    fn browser_tab_row_is_split_across_lock_and_unlock() {
+        let log = RecordingStore::default();
+        let mut tracker = SessionTracker::new(log.clone()).unwrap();
+
+        tracker.handle_event(browser_event("chrome.exe")).unwrap();
+        tracker
+            .handle_tab_event(tab_event(
+                BrowserKind::Chrome,
+                "https://youtube.com/watch?v=one",
+            ))
+            .unwrap();
+        tracker
+            .handle_presence_event(presence_event(false, Utc::now()))
+            .unwrap();
+        tracker
+            .handle_presence_event(presence_event(true, Utc::now()))
+            .unwrap();
+
+        assert_eq!(
+            *log.0.borrow(),
+            vec![
+                "start:chrome.exe:https://youtube.com/watch?v=one",
+                "end:1",
+                "start:chrome.exe:https://youtube.com/watch?v=one",
+            ]
+        );
+    }
+
+    #[test]
+    fn focus_and_tab_changes_while_away_only_update_the_resume_snapshot() {
+        let log = RecordingStore::default();
+        let mut tracker = SessionTracker::new(log.clone()).unwrap();
+
+        tracker.handle_event(event("editor", "Draft")).unwrap();
+        tracker
+            .handle_presence_event(presence_event(false, Utc::now()))
+            .unwrap();
+        tracker.handle_event(browser_event("chrome.exe")).unwrap();
+        tracker
+            .handle_tab_event(tab_event(BrowserKind::Chrome, "https://b.example/"))
+            .unwrap();
+
+        assert_eq!(*log.0.borrow(), vec!["start:editor", "end:1"]);
+
+        tracker
+            .handle_presence_event(presence_event(true, Utc::now()))
+            .unwrap();
+        assert_eq!(
+            *log.0.borrow(),
+            vec![
+                "start:editor",
+                "end:1",
+                "start:chrome.exe:https://b.example/",
+            ]
+        );
+    }
+
+    #[test]
+    fn startup_focus_observation_while_locked_writes_nothing_until_unlock() {
+        let log = RecordingStore::default();
+        let mut tracker = SessionTracker::new(log.clone()).unwrap();
+
+        tracker
+            .handle_presence_event(presence_event(false, Utc::now()))
+            .unwrap();
+        tracker.handle_event(event("editor", "Draft")).unwrap();
+        assert_eq!(*log.0.borrow(), Vec::<String>::new());
+
+        tracker
+            .handle_presence_event(presence_event(true, Utc::now()))
+            .unwrap();
+        assert_eq!(*log.0.borrow(), vec!["start:editor"]);
+    }
+
+    #[test]
+    fn duplicate_presence_events_do_not_duplicate_row_boundaries() {
+        let log = RecordingStore::default();
+        let mut tracker = SessionTracker::new(log.clone()).unwrap();
+
+        tracker.handle_event(event("editor", "Draft")).unwrap();
+        tracker
+            .handle_presence_event(presence_event(false, Utc::now()))
+            .unwrap();
+        tracker
+            .handle_presence_event(presence_event(false, Utc::now()))
+            .unwrap();
+        tracker
+            .handle_presence_event(presence_event(true, Utc::now()))
+            .unwrap();
+        tracker
+            .handle_presence_event(presence_event(true, Utc::now()))
+            .unwrap();
+
+        assert_eq!(
+            *log.0.borrow(),
+            vec!["start:editor", "end:1", "start:editor"]
+        );
+    }
+
+    #[test]
+    fn ignored_site_selected_while_away_does_not_resume_a_row() {
+        let log = RecordingStore::default();
+        let ignore = Arc::new(FakeIgnorePolicy {
+            apps: &[],
+            sites: &["youtube.com"],
+        });
+        let mut tracker = SessionTracker::with_ignore_policy(log.clone(), ignore).unwrap();
+
+        tracker.handle_event(browser_event("chrome.exe")).unwrap();
+        tracker
+            .handle_tab_event(tab_event(BrowserKind::Chrome, "https://a.example/"))
+            .unwrap();
+        tracker
+            .handle_presence_event(presence_event(false, Utc::now()))
+            .unwrap();
+        tracker
+            .handle_tab_event(tab_event(BrowserKind::Chrome, "https://youtube.com/watch"))
+            .unwrap();
+        tracker
+            .handle_presence_event(presence_event(true, Utc::now()))
+            .unwrap();
+
+        assert_eq!(
+            *log.0.borrow(),
+            vec!["start:chrome.exe:https://a.example/", "end:1"]
+        );
     }
 }

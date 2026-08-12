@@ -16,7 +16,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     MSG, OBJID_WINDOW, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
 };
 
-use crate::core::model::{AppInfo, FocusEvent};
+use crate::core::model::{AppInfo, FocusEvent, WatchEvent};
 use crate::core::watcher::FocusWatcher;
 
 // The WinEvent callback is a plain `extern "system" fn`, not a closure, so it
@@ -24,7 +24,7 @@ use crate::core::watcher::FocusWatcher;
 // the thread that registered them, so a thread-local set right before the
 // message loop starts is a safe way to hand it the sender.
 thread_local! {
-    static EVENT_TX: RefCell<Option<Sender<FocusEvent>>> = RefCell::new(None);
+    static EVENT_TX: RefCell<Option<Sender<WatchEvent>>> = RefCell::new(None);
 }
 
 /// Watches the Windows foreground window via `SetWinEventHook`
@@ -45,7 +45,7 @@ impl WindowsFocusWatcher {
 }
 
 impl FocusWatcher for WindowsFocusWatcher {
-    fn start(&mut self, tx: Sender<FocusEvent>) -> Result<()> {
+    fn start(&mut self, tx: Sender<WatchEvent>) -> Result<()> {
         let handle = thread::Builder::new()
             .name("makora-focus-watcher".into())
             .spawn(move || run_event_loop(tx))
@@ -58,7 +58,7 @@ impl FocusWatcher for WindowsFocusWatcher {
 /// Registers the hook and pumps messages for its lifetime. WinEvent hooks
 /// require the registering thread to run a Win32 message loop even though
 /// no window is created — the OS delivers callbacks through that queue.
-fn run_event_loop(tx: Sender<FocusEvent>) {
+fn run_event_loop(tx: Sender<WatchEvent>) {
     EVENT_TX.with(|cell| *cell.borrow_mut() = Some(tx));
 
     unsafe {
@@ -118,7 +118,7 @@ unsafe extern "system" fn win_event_proc(
 
     EVENT_TX.with(|cell| {
         if let Some(tx) = cell.borrow().as_ref() {
-            let _ = tx.send(focus_event);
+            let _ = tx.send(focus_event.into());
         }
     });
 }

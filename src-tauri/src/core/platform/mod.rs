@@ -23,6 +23,8 @@ pub use macos::MacFocusWatcher as PlatformFocusWatcher;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
+pub use linux::start_presence_watcher;
+#[cfg(target_os = "linux")]
 pub use linux::LinuxFocusWatcher as PlatformFocusWatcher;
 
 #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]

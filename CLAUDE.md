@@ -35,12 +35,12 @@ The database is written to the per-user app-data directory (on Windows, `%APPDAT
 
 Everything platform-specific or storage-specific is isolated behind two traits, so business logic (session semantics) doesn't depend on either:
 
-- **[`FocusWatcher`](src-tauri/src/core/watcher.rs)** — trait a platform implements to report focus changes. Owns its own event-loop thread, streams `FocusEvent`s over a channel; has no opinion on sessions.
+- **[`FocusWatcher`](src-tauri/src/core/watcher.rs)** — trait a platform implements to report focus changes. Owns its own event-loop thread and streams `WatchEvent::Focus` observations over the same channel Linux presence events use; it has no opinion on sessions.
   - Windows (`src-tauri/src/core/platform/windows.rs`): event-driven via `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` — no polling, session boundaries line up exactly with focus changes.
   - macOS (`src-tauri/src/core/platform/macos.rs`): `NSWorkspace` activation notifications + Accessibility API for window titles. Implemented but not yet exercised end-to-end the way Windows is.
   - Linux (`src-tauri/src/core/platform/linux/`): a directory, not a file — see below.
 - **[`SessionStore`](src-tauri/src/core/store/mod.rs)** — trait a storage backend implements to open/close sessions. `SqliteStore` (`src-tauri/src/core/store/sqlite.rs`) is the only implementation. `HistoryReader` (`src-tauri/src/core/store/queries.rs`) is a *separate, read-only* connection to the same database used by the UI-facing query API — it never contends with the write path's lock.
-- **[`SessionTracker`](src-tauri/src/core/tracker.rs)** — the only place session semantics live (same exe = same session; different exe = close old, open new). Every `FocusWatcher` impl and every `SessionStore` impl gets identical behavior for free.
+- **[`SessionTracker`](src-tauri/src/core/tracker.rs)** — the only place session semantics live (same exe = same session; different exe = close old, open new; away = close the row but retain the latest app/tab snapshot; return = open a fresh row). Every `FocusWatcher` impl and every `SessionStore` impl gets identical behavior for free.
 
 `src-tauri/src/lib.rs` wires it all together in the Tauri `setup` hook: starts the focus watcher on its own thread, spawns the tab-ingest HTTP server, builds the tray icon — all inside the single Tauri process. `src-tauri/src/commands.rs` exposes Tauri commands (currently `list_sessions`) that the frontend calls via `invoke`.
 
@@ -56,6 +56,8 @@ So there is no single Linux watcher, only one per desktop stack behind `Toplevel
 - `wlr.rs` — `wlr-foreign-toplevel-management-v1` for sway/Hyprland/river. Its `state` event carries the `activated` flag Mutter's protocol lacks. Implemented but not exercised end-to-end.
 
 A provider only reports *what is focused*; `proc.rs` turns that into `AppInfo`. That split matters because `exe_path` is the session identity and has to stay stable: snap revisions (`/snap/firefox/<rev>/…`) are rewritten to `current` so an update doesn't split an app's history in two, flatpaks (whose `/proc/<pid>/exe` is `/app/bin/…` inside every sandbox) are keyed on their application id, and windows with no pid at all — wlr reports none — fall back to `wayland-app-id://<app_id>`. GNOME reports a *null* focus window whenever the Activities overview opens; that's dropped rather than treated as a focus change, so the open session survives it.
+
+`presence.rs` is separate from those focus providers and works across Linux desktops through systemd-logind. It resolves the app's graphical login session (falling back to the user's `Display` session for systemd-user/autostart launches), composes the session's `LockedHint` with the manager's `PrepareForSleep` state, and emits one `WatchEvent::Presence` only when effective presence changes. Lock or suspend closes the activity row; focus/tab observations received while away only update the retained snapshot; unlock/wake opens a fresh row. Input inactivity is deliberately not a presence signal because it cannot distinguish watching a video from leaving the computer. Custom wlroots lockers must maintain logind's `LockedHint` for lock detection to work.
 
 ### Per-site browser tracking
 
@@ -92,7 +94,7 @@ A session's category is resolved at read time via `COALESCE`, most specific tier
 ## Known limitations
 
 - Session identity is the executable path — switching between two windows of the *same* app doesn't end the session, only switching to a different app does.
-- Locking the screen or sleep doesn't end a session by itself — a session left focused across a lock/sleep includes that idle time. No platform reports it: Windows doesn't fire `EVENT_SYSTEM_FOREGROUND`, and GNOME's focus window is unchanged by a lock. (`org.gnome.Mutter.IdleMonitor` and `ext-idle-notify` could fix this on Linux, and the extension's wire format already carries a `present` flag for it, but idle handling belongs in `SessionTracker` as a cross-platform feature rather than in one provider.)
+- Locking the screen or sleeping ends the current activity row on Linux through systemd-logind. Windows and macOS still keep the focused row open across lock/sleep until native presence watchers are added there.
 - Non-`http(s)` tabs (`chrome://`, `about:`, extension pages, ...) are never recorded, by design. The fragment never is either; the query string is stripped except for params whitelisted per domain in Settings.
 - The tray/hide-on-close behavior and the packaged app are exercised on Windows and Linux (GNOME); macOS's focus watcher is implemented but not exercised end-to-end.
 - On GNOME the tray depends on a StatusNotifierItem host, which vanilla GNOME does not provide (Ubuntu does, via its bundled AppIndicator extension). Left-clicking the tray icon to show the window does *not* work under libappindicator — only the tray menu's items do.

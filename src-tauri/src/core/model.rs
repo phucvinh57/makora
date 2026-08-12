@@ -21,6 +21,37 @@ pub struct FocusEvent {
     pub timestamp: DateTime<Utc>,
 }
 
+/// A raw observation of whether the user can currently interact with this
+/// desktop session. Linux emits `present: false` for either a screen lock or
+/// system sleep and does not infer presence from keyboard/mouse activity.
+#[derive(Debug, Clone)]
+pub struct PresenceEvent {
+    pub present: bool,
+    pub timestamp: DateTime<Utc>,
+}
+
+/// Events produced by platform watchers and serialized through one channel
+/// before they reach [`SessionTracker`](crate::core::tracker::SessionTracker).
+/// Keeping focus and presence observations in the same stream prevents a
+/// lock boundary from racing a focus observation on separate tracker threads.
+#[derive(Debug, Clone)]
+pub enum WatchEvent {
+    Focus(FocusEvent),
+    Presence(PresenceEvent),
+}
+
+impl From<FocusEvent> for WatchEvent {
+    fn from(event: FocusEvent) -> Self {
+        Self::Focus(event)
+    }
+}
+
+impl From<PresenceEvent> for WatchEvent {
+    fn from(event: PresenceEvent) -> Self {
+        Self::Presence(event)
+    }
+}
+
 /// Which browser reported a [`TabEvent`].
 ///
 /// Used to confirm a tab event belongs to the browser that's *currently
@@ -47,7 +78,11 @@ impl BrowserKind {
     /// `app_id`-derived names used when a compositor reports no process id.
     pub fn from_app_name(app_name: &str) -> Option<Self> {
         match app_name.to_ascii_lowercase().as_str() {
-            "chrome" | "google chrome" | "google-chrome" | "google-chrome-stable" | "chromium"
+            "chrome"
+            | "google chrome"
+            | "google-chrome"
+            | "google-chrome-stable"
+            | "chromium"
             | "chromium-browser" => Some(Self::Chrome),
             "msedge" | "microsoft edge" | "microsoft-edge" | "microsoft-edge-stable" => {
                 Some(Self::Edge)

@@ -22,6 +22,7 @@
 //! runs changes nothing about how sessions are recorded.
 
 mod gnome;
+mod presence;
 mod proc;
 mod provider;
 mod wlr;
@@ -32,9 +33,10 @@ use std::thread;
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 
-use crate::core::model::FocusEvent;
+use crate::core::model::{FocusEvent, WatchEvent};
 use crate::core::watcher::FocusWatcher;
 
+pub use presence::start_presence_watcher;
 pub use provider::{ToplevelProvider, WindowObservation};
 
 /// Reports focus changes on Linux by delegating to whichever
@@ -55,7 +57,7 @@ impl LinuxFocusWatcher {
 }
 
 impl FocusWatcher for LinuxFocusWatcher {
-    fn start(&mut self, tx: Sender<FocusEvent>) -> Result<()> {
+    fn start(&mut self, tx: Sender<WatchEvent>) -> Result<()> {
         let handle = thread::Builder::new()
             .name("makora-focus-watcher".into())
             .spawn(move || select_and_run(tx))
@@ -72,7 +74,7 @@ impl FocusWatcher for LinuxFocusWatcher {
 /// UI, the browser-tab ingest and the stored history all still work), it
 /// just records nothing new. That's the right failure mode for a desktop
 /// nobody has written a provider for yet.
-fn select_and_run(tx: Sender<FocusEvent>) {
+fn select_and_run(tx: Sender<WatchEvent>) {
     let mut emit = move |observation: WindowObservation| {
         // Makora's own window is not app usage. Windows gets this from
         // `WINEVENT_SKIPOWNPROCESS` and macOS checks the pid explicitly;
@@ -91,7 +93,7 @@ fn select_and_run(tx: Sender<FocusEvent>) {
         };
         // A send error means the tracker thread is gone, i.e. the process is
         // shutting down — nothing useful to do about it here.
-        let _ = tx.send(event);
+        let _ = tx.send(event.into());
     };
 
     if let Some(provider) = gnome::GnomeProvider::probe() {

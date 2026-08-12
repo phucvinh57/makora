@@ -15,7 +15,7 @@ use objc2::rc::autoreleasepool;
 use objc2::runtime::AnyObject;
 use objc2::{class, msg_send};
 
-use crate::core::model::{AppInfo, FocusEvent};
+use crate::core::model::{AppInfo, FocusEvent, WatchEvent};
 use crate::core::watcher::FocusWatcher;
 
 // `class!(NSWorkspace)` and friends resolve at link time, not through any
@@ -50,7 +50,7 @@ impl MacFocusWatcher {
 }
 
 impl FocusWatcher for MacFocusWatcher {
-    fn start(&mut self, tx: Sender<FocusEvent>) -> Result<()> {
+    fn start(&mut self, tx: Sender<WatchEvent>) -> Result<()> {
         let handle = thread::Builder::new()
             .name("makora-focus-watcher".into())
             .spawn(move || run_watcher(tx))
@@ -65,7 +65,7 @@ impl FocusWatcher for MacFocusWatcher {
 /// this thread, so this thread's only remaining job is to stay alive for the
 /// process's lifetime — dropping it would drop the block (and the `tx` it
 /// owns) along with it.
-fn run_watcher(tx: Sender<FocusEvent>) {
+fn run_watcher(tx: Sender<WatchEvent>) {
     unsafe {
         let workspace: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
         let center: *mut AnyObject = msg_send![workspace, notificationCenter];
@@ -85,7 +85,7 @@ fn run_watcher(tx: Sender<FocusEvent>) {
             autoreleasepool(|_pool| {
                 let event = focus_event_from_notification(notification);
                 if let Some(event) = event {
-                    let _ = tx.send(event);
+                    let _ = tx.send(event.into());
                 }
             });
         });

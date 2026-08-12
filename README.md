@@ -20,6 +20,14 @@ focus by itself — Wayland forbids it — so a small [GNOME Shell
 extension](gnome-extension) is required there; see
 [gnome-extension/README.md](gnome-extension/README.md).
 
+On Linux, an explicit screen lock or system suspend ends the current
+activity row. Unlocking or waking starts a fresh row for the app/site that
+is still focused, so time spent locked or asleep is not attributed to it.
+Ordinary keyboard/mouse inactivity does not stop tracking: an unlocked
+video remains valid activity even when the user is not providing input.
+Lock detection uses systemd-logind's `LockedHint`; custom wlroots lock-screen
+setups must keep that standard property updated.
+
 ## Prerequisites
 
 - [Bun](https://bun.sh)

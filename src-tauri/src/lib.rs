@@ -12,11 +12,11 @@ use directories::ProjectDirs;
 use tauri::Manager;
 
 use crate::core::{
-    open_connection, CategoryStore, FocusEvent, FocusWatcher, HistoryReader, IgnoreStore,
-    PlatformFocusWatcher, QueryWhitelistStore, SessionTracker, SqliteStore, WorkSessionStore,
+    open_connection, CategoryStore, FocusWatcher, HistoryReader, IgnoreStore, PlatformFocusWatcher,
+    QueryWhitelistStore, SessionTracker, SqliteStore, WatchEvent, WorkSessionStore,
 };
 
-/// Shared by the focus-watcher thread, the tab-ingest server, and the
+/// Shared by the platform-event thread, the tab-ingest server, and the
 /// shutdown handler.
 type SharedTracker = Arc<Mutex<SessionTracker<SqliteStore>>>;
 
@@ -93,21 +93,38 @@ pub fn run() {
             commands::work_session_stats,
         ])
         .setup(move |app| {
-            let (tx, rx) = mpsc::channel::<FocusEvent>();
+            let (tx, rx) = mpsc::channel::<WatchEvent>();
+
+            // Query Linux presence before the focus watcher starts. When
+            // Makora itself starts while the screen is locked, this queues
+            // the initial away event ahead of the focus provider's initial
+            // focused-window sync, so no transient activity row is opened.
+            #[cfg(target_os = "linux")]
+            crate::core::platform::start_presence_watcher(tx.clone())
+                .context("starting presence watcher")?;
+
             let mut watcher = PlatformFocusWatcher::new();
             watcher.start(tx).context("starting focus watcher")?;
 
             let event_tracker = setup_tracker.clone();
             std::thread::Builder::new()
-                .name("makora-focus-tracker".into())
+                .name("makora-activity-tracker".into())
                 .spawn(move || {
                     for event in rx {
-                        if let Err(err) = event_tracker.lock().unwrap().handle_event(event) {
+                        let result = match event {
+                            WatchEvent::Focus(event) => {
+                                event_tracker.lock().unwrap().handle_event(event)
+                            }
+                            WatchEvent::Presence(event) => {
+                                event_tracker.lock().unwrap().handle_presence_event(event)
+                            }
+                        };
+                        if let Err(err) = result {
                             eprintln!("makora: failed to record session: {err:#}");
                         }
                     }
                 })
-                .context("spawning focus-tracker thread")?;
+                .context("spawning activity-tracker thread")?;
 
             ingest::spawn(setup_tracker.clone(), setup_whitelist.clone())
                 .context("starting tab-ingest server")?;
