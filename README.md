@@ -15,6 +15,11 @@ A companion browser [extension](extension) can optionally report the active
 tab's URL, so browser time is broken down per site instead of showing up as
 one opaque `chrome`/`firefox` block.
 
+Runs on Windows, macOS and Linux. On **GNOME** the app cannot see window
+focus by itself — Wayland forbids it — so a small [GNOME Shell
+extension](gnome-extension) is required there; see
+[gnome-extension/README.md](gnome-extension/README.md).
+
 ## Prerequisites
 
 - [Bun](https://bun.sh)
@@ -22,6 +27,12 @@ one opaque `chrome`/`firefox` block.
 - On Windows: MSVC C++ build tools (Visual Studio Build Tools, "Desktop
   development with C++") — `rusqlite` builds SQLite from source via its
   `bundled` feature
+- On Linux: a C compiler (for the same reason) plus Tauri's WebKitGTK stack.
+  On Debian/Ubuntu:
+  ```sh
+  sudo apt install build-essential libwebkit2gtk-4.1-dev libgtk-3-dev \
+      librsvg2-dev libayatana-appindicator3-dev libssl-dev patchelf
+  ```
 - See the [Tauri prerequisites guide](https://tauri.app/start/prerequisites/)
   for any platform-specific system dependencies
 
@@ -49,10 +60,34 @@ cargo clippy
 ```
 
 Sessions are stored in a SQLite database in the per-user app-data directory
-(on Windows: `%APPDATA%\phucvinh57\makora\data\data.db`).
+(on Windows: `%APPDATA%\phucvinh57\makora\data\data.db`; on Linux:
+`~/.local/share/makora/`).
 
 ## Browser extension
 
 The [extension](extension) is required for web URL tracking and loaded separately as an unpacked
 WebExtension — see [extension/README.md](extension/README.md) for what it
 does and how it talks to the app.
+
+## GNOME Shell extension (Linux)
+
+On Wayland a client is not allowed to ask which window has focus, and GNOME
+offers no way around it — `org.gnome.Shell.Introspect` is allowlisted to the
+desktop portal, and the `ext-foreign-toplevel-list-v1` protocol Mutter
+implements carries no focus state. So on GNOME the
+[gnome-extension](gnome-extension) is **required**, not optional: without it
+the app runs but records nothing.
+
+```sh
+./gnome-extension/install.sh
+# log out and back in, then:
+gnome-extensions enable makora@phucvinh57.dev
+```
+
+The `.deb` and `.rpm` packages ship the extension already, so only the
+`enable` step is needed there. Installing it later is fine — the app notices
+and starts tracking without a restart.
+
+On wlroots-based compositors (sway, Hyprland, river) no extension is needed:
+those advertise `wlr-foreign-toplevel-management-v1`, which reports focus
+directly, and the app uses it automatically.

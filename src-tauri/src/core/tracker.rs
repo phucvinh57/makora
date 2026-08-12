@@ -1,10 +1,10 @@
-use std::path::Path;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 
 use anyhow::Result;
 
+use crate::core::category::exe_file_name;
 use crate::core::ignore::IgnorePolicy;
 #[cfg(test)]
 use crate::core::ignore::NoopIgnorePolicy;
@@ -15,13 +15,16 @@ use crate::core::store::SessionStore;
 /// current session nor start a new one, so briefly focusing one (e.g.
 /// clicking the desktop) doesn't fragment the session on either side of it.
 /// Matched case-insensitively against the exe's file name, not the full path.
-const IGNORED_APPS: &[&str] = &["explorer.exe"];
+///
+/// One entry per desktop shell: `explorer.exe` is the Windows desktop and
+/// taskbar, `gnome-shell` owns the GNOME panel, notification popups and
+/// on-screen keyboard. (GNOME's Activities overview needs no entry — it
+/// reports *no* focused window rather than a shell-owned one, which the
+/// Linux watcher drops before the tracker ever sees it.)
+const IGNORED_APPS: &[&str] = &["explorer.exe", "gnome-shell"];
 
 fn is_ignored(exe_path: &str) -> bool {
-    let file_name = Path::new(exe_path)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or(exe_path);
+    let file_name = exe_file_name(exe_path);
     IGNORED_APPS
         .iter()
         .any(|ignored| ignored.eq_ignore_ascii_case(file_name))
@@ -53,8 +56,8 @@ struct Current {
 /// parent/child table.
 ///
 /// This is the one place session semantics live, so every `FocusWatcher`
-/// implementation (Windows today, macOS later) gets identical behavior for
-/// free.
+/// implementation (Windows, macOS, and each of the Linux desktop providers)
+/// gets identical behavior for free.
 pub struct SessionTracker<S: SessionStore> {
     store: S,
     current: Option<Current>,

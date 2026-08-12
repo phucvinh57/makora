@@ -144,9 +144,10 @@ pub fn run() {
         });
 }
 
-/// `%APPDATA%\makora\data\data.db` on Windows, `~/Library/Application
-/// Support/dev.makora.makora/data.db` once macOS support lands — resolved
-/// through `directories` so the app never hardcodes an OS-specific path.
+/// `%APPDATA%\makora\data\makora.sqlite` on Windows, `~/Library/Application
+/// Support/dev.phucvinh57.makora/makora.sqlite` on macOS,
+/// `~/.local/share/makora/makora.sqlite` on Linux — resolved through
+/// `directories` so the app never hardcodes an OS-specific path.
 fn database_path() -> anyhow::Result<std::path::PathBuf> {
     let dirs = ProjectDirs::from("dev", "phucvinh57", "makora")
         .context("could not resolve a per-user application data directory")?;

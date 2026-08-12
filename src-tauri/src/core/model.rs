@@ -39,12 +39,21 @@ impl BrowserKind {
     /// Maps an executable file stem (as captured by a `FocusWatcher`, e.g.
     /// `chrome`, `msedge` on Windows, or `Google Chrome`, `Microsoft Edge` on
     /// macOS) to the browser it belongs to.
+    ///
+    /// Linux mostly needs no special cases — the Debian and tarball builds
+    /// install to `/opt/google/chrome/chrome`, `/opt/brave.com/brave/brave`
+    /// and `/opt/microsoft/msedge/msedge`, whose stems already match. The
+    /// aliases below cover the distro-packaged names that don't, plus the
+    /// `app_id`-derived names used when a compositor reports no process id.
     pub fn from_app_name(app_name: &str) -> Option<Self> {
         match app_name.to_ascii_lowercase().as_str() {
-            "chrome" | "google chrome" => Some(Self::Chrome),
-            "msedge" | "microsoft edge" => Some(Self::Edge),
-            "firefox" => Some(Self::Firefox),
-            "brave" | "brave browser" => Some(Self::Brave),
+            "chrome" | "google chrome" | "google-chrome" | "google-chrome-stable" | "chromium"
+            | "chromium-browser" => Some(Self::Chrome),
+            "msedge" | "microsoft edge" | "microsoft-edge" | "microsoft-edge-stable" => {
+                Some(Self::Edge)
+            }
+            "firefox" | "firefox-esr" => Some(Self::Firefox),
+            "brave" | "brave browser" | "brave-browser" => Some(Self::Brave),
             _ => None,
         }
     }

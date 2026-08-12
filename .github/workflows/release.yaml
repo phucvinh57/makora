@@ -38,9 +38,31 @@ jobs:
             target: "aarch64-apple-darwin"
             files: |
               src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+          - platform: "ubuntu-24.04"
+            arch: x64
+            target: ""
+            files: |
+              src-tauri/target/release/bundle/deb/*.deb
+              src-tauri/target/release/bundle/rpm/*.rpm
+              src-tauri/target/release/bundle/appimage/*.AppImage
 
     steps:
       - uses: actions/checkout@v7
+
+      # Tauri renders its webview with WebKitGTK and its tray icon with
+      # libayatana-appindicator, neither of which the runner image carries.
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libssl-dev \
+            patchelf \
+            build-essential
 
       - name: Extract version
         id: get_version

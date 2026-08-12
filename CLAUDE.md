@@ -8,7 +8,7 @@ Makora is a desktop app (Tauri 2 + Rust backend, React/TypeScript frontend) that
 
 ## Commands
 
-Requires a Rust toolchain, Node.js, and — because `rusqlite` builds SQLite from source via the `bundled` feature — MSVC C++ build tools on Windows (Visual Studio Build Tools, "Desktop development with C++").
+Requires a Rust toolchain, Node.js, and — because `rusqlite` builds SQLite from source via the `bundled` feature — a C/C++ toolchain: MSVC build tools on Windows (Visual Studio Build Tools, "Desktop development with C++"), `build-essential` on Linux. Linux additionally needs Tauri's WebKitGTK stack (`libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libssl-dev patchelf`).
 
 ```
 bun install          # installs JS deps (bun.lock is present but bun scripts are what's wired up)
@@ -27,7 +27,7 @@ cargo clippy
 
 There is no ESLint/Prettier config in the repo; TypeScript strictness (`strict`, `noUnusedLocals`, `noUnusedParameters`) is enforced via `tsc` in `bun run build`.
 
-The database is written to the per-user app-data directory (on Windows, `%APPDATA%\phucvinh57\makora\data\data.db`).
+The database is written to the per-user app-data directory (on Windows, `%APPDATA%\phucvinh57\makora\data\data.db`; on Linux, `~/.local/share/makora/makora.sqlite`).
 
 ## Architecture
 
@@ -38,12 +38,24 @@ Everything platform-specific or storage-specific is isolated behind two traits, 
 - **[`FocusWatcher`](src-tauri/src/core/watcher.rs)** — trait a platform implements to report focus changes. Owns its own event-loop thread, streams `FocusEvent`s over a channel; has no opinion on sessions.
   - Windows (`src-tauri/src/core/platform/windows.rs`): event-driven via `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` — no polling, session boundaries line up exactly with focus changes.
   - macOS (`src-tauri/src/core/platform/macos.rs`): `NSWorkspace` activation notifications + Accessibility API for window titles. Implemented but not yet exercised end-to-end the way Windows is.
+  - Linux (`src-tauri/src/core/platform/linux/`): a directory, not a file — see below.
 - **[`SessionStore`](src-tauri/src/core/store/mod.rs)** — trait a storage backend implements to open/close sessions. `SqliteStore` (`src-tauri/src/core/store/sqlite.rs`) is the only implementation. `HistoryReader` (`src-tauri/src/core/store/queries.rs`) is a *separate, read-only* connection to the same database used by the UI-facing query API — it never contends with the write path's lock.
 - **[`SessionTracker`](src-tauri/src/core/tracker.rs)** — the only place session semantics live (same exe = same session; different exe = close old, open new). Every `FocusWatcher` impl and every `SessionStore` impl gets identical behavior for free.
 
 `src-tauri/src/lib.rs` wires it all together in the Tauri `setup` hook: starts the focus watcher on its own thread, spawns the tab-ingest HTTP server, builds the tray icon — all inside the single Tauri process. `src-tauri/src/commands.rs` exposes Tauri commands (currently `list_sessions`) that the frontend calls via `invoke`.
 
 Closing or minimizing the window hides it to the system tray instead of quitting (`on_window_event` in `lib.rs` calls `api.prevent_close()`); tracking keeps running in the background. Only "Quit" from the tray menu (`src-tauri/src/tray.rs`) actually exits, closing the currently open session with an accurate `end_time` first.
+
+### Linux: focus has to come from inside the compositor
+
+Wayland gives a client no way to ask which window is focused, and on GNOME both usual workarounds are closed: `org.gnome.Shell.Introspect` is allowlisted to xdg-desktop-portal-gnome (everyone else gets `Access denied`), and `ext-foreign-toplevel-list-v1` — which Mutter *does* implement — carries only `title`/`app_id`/`identifier` and no focus state at all. Mutter does not implement `wlr-foreign-toplevel-management-v1`.
+
+So there is no single Linux watcher, only one per desktop stack behind `ToplevelProvider` (`src-tauri/src/core/platform/linux/provider.rs`). `LinuxFocusWatcher` probes them in order at startup:
+
+- `gnome.rs` — a zbus client for the GNOME Shell extension in `gnome-extension/`, which owns `dev.phucvinh57.MakoraShell` on the session bus and exports a `FocusChanged` signal plus a `GetFocusedWindow()` method (so the app picks up what's already focused instead of waiting for the next switch). The provider tolerates the extension being absent and re-syncs via `NameOwnerChanged` when it appears, so installing/enabling it needs no app restart. **The bus name, path, interface and `PROTOCOL_VERSION` are duplicated in `gnome-extension/extension.js` — change one, change the other**, same rule as the ingest port.
+- `wlr.rs` — `wlr-foreign-toplevel-management-v1` for sway/Hyprland/river. Its `state` event carries the `activated` flag Mutter's protocol lacks. Implemented but not exercised end-to-end.
+
+A provider only reports *what is focused*; `proc.rs` turns that into `AppInfo`. That split matters because `exe_path` is the session identity and has to stay stable: snap revisions (`/snap/firefox/<rev>/…`) are rewritten to `current` so an update doesn't split an app's history in two, flatpaks (whose `/proc/<pid>/exe` is `/app/bin/…` inside every sandbox) are keyed on their application id, and windows with no pid at all — wlr reports none — fall back to `wayland-app-id://<app_id>`. GNOME reports a *null* focus window whenever the Activities overview opens; that's dropped rather than treated as a focus change, so the open session survives it.
 
 ### Per-site browser tracking
 
@@ -77,9 +89,11 @@ A session's category is resolved at read time via `COALESCE`, most specific tier
 
 `src/` is a small React + TypeScript app (Vite, Tailwind v4, shadcn-derived components in `src/components/ui/`). `src/api.ts` wraps Tauri `invoke` calls; `src/types.ts` mirrors the Rust `#[derive(Serialize)]` types returned by commands. `HistoryPage.tsx` is the main (currently only) view, paginating through `list_sessions`.
 
-## Known limitations (v1, Windows)
+## Known limitations
 
 - Session identity is the executable path — switching between two windows of the *same* app doesn't end the session, only switching to a different app does.
-- Locking the screen or sleep doesn't end a session by itself (Windows doesn't fire `EVENT_SYSTEM_FOREGROUND` for that) — a session left focused across a lock/sleep includes that idle time.
+- Locking the screen or sleep doesn't end a session by itself — a session left focused across a lock/sleep includes that idle time. No platform reports it: Windows doesn't fire `EVENT_SYSTEM_FOREGROUND`, and GNOME's focus window is unchanged by a lock. (`org.gnome.Mutter.IdleMonitor` and `ext-idle-notify` could fix this on Linux, and the extension's wire format already carries a `present` flag for it, but idle handling belongs in `SessionTracker` as a cross-platform feature rather than in one provider.)
 - Non-`http(s)` tabs (`chrome://`, `about:`, extension pages, ...) are never recorded, by design. The fragment never is either; the query string is stripped except for params whitelisted per domain in Settings.
-- The tray/hide-on-close behavior and the packaged app are only exercised on Windows so far, even though macOS's focus watcher is implemented.
+- The tray/hide-on-close behavior and the packaged app are exercised on Windows and Linux (GNOME); macOS's focus watcher is implemented but not exercised end-to-end.
+- On GNOME the tray depends on a StatusNotifierItem host, which vanilla GNOME does not provide (Ubuntu does, via its bundled AppIndicator extension). Left-clicking the tray icon to show the window does *not* work under libappindicator — only the tray menu's items do.
+- The `wlr.rs` provider (sway/Hyprland/river) is implemented but untested; that protocol reports no pid, so sessions there are keyed on `app_id` rather than an executable path.

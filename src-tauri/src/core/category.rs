@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use url::Url;
 
 /// Which kind of pattern a session's [`category_key`] was derived from, or
@@ -221,10 +219,21 @@ pub fn filter_query_params(url: &str, allowed: &[String]) -> String {
     parsed.to_string()
 }
 
-fn exe_file_name(exe_path: &str) -> &str {
-    Path::new(exe_path)
-        .file_name()
-        .and_then(|s| s.to_str())
+/// The file-name component of an executable path, split on either
+/// separator rather than only the host's.
+///
+/// `exe_path` is a lookup key here, never something that gets opened, and
+/// the same stored path has to produce the same key everywhere: `Path`
+/// treats `\` as an ordinary filename character off Windows, so
+/// `Path::file_name` would key a Windows-recorded session on its *entire*
+/// path when that database is read on Linux — silently splitting one app
+/// into two categories. Splitting on both separators is unambiguous for
+/// every path this app records, since neither platform's paths mix them.
+pub(crate) fn exe_file_name(exe_path: &str) -> &str {
+    exe_path
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|name| !name.is_empty())
         .unwrap_or(exe_path)
 }
 
@@ -260,6 +269,22 @@ mod tests {
         let (kind, key) = category_key(r"C:\Program Files\Code\Code.exe", None);
         assert_eq!(kind, KeyKind::Exe);
         assert_eq!(key, "code.exe");
+    }
+
+    #[test]
+    fn exe_keys_are_identical_whichever_platform_reads_the_database() {
+        // The same key regardless of which separator the recording platform
+        // used, and regardless of which platform is running this code —
+        // `Path::file_name` gives neither guarantee.
+        assert_eq!(exe_file_name(r"C:\Program Files\Code\Code.exe"), "Code.exe");
+        assert_eq!(exe_file_name("/opt/google/chrome/chrome"), "chrome");
+        assert_eq!(exe_file_name("chrome.exe"), "chrome.exe");
+        // The Linux watcher's fallback identity for a window with no
+        // readable process still reduces to the app id.
+        assert_eq!(
+            exe_file_name("wayland-app-id://org.gnome.Nautilus"),
+            "org.gnome.Nautilus"
+        );
     }
 
     #[test]
