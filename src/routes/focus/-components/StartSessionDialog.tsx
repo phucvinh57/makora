@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,6 +21,7 @@ const DEFAULT_MINUTES = 50;
 export function StartSessionDialog() {
   const queryClient = useQueryClient();
   const dialog = useDialog("start-work-session");
+  const fieldId = useId();
   const [name, setName] = useState("");
   const [note, setNote] = useState("");
   const [minutes, setMinutes] = useState(String(DEFAULT_MINUTES));
@@ -53,9 +54,7 @@ export function StartSessionDialog() {
 
   const minutesValue = Number(minutes);
   const valid =
-    name.trim().length > 0 &&
-    Number.isFinite(minutesValue) &&
-    minutesValue > 0;
+    name.trim().length > 0 && Number.isFinite(minutesValue) && minutesValue > 0;
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -74,18 +73,26 @@ export function StartSessionDialog() {
           </DialogDescription>
         </DialogHeader>
         <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
-          <label className="flex flex-col gap-1.5 text-sm font-medium">
+          <label
+            htmlFor={`${fieldId}-name`}
+            className="flex flex-col gap-1.5 text-sm font-medium"
+          >
             Goal
             <Input
+              id={`${fieldId}-name`}
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Finish the release notes"
               autoFocus
             />
           </label>
-          <label className="flex flex-col gap-1.5 text-sm font-medium">
+          <label
+            htmlFor={`${fieldId}-minutes`}
+            className="flex flex-col gap-1.5 text-sm font-medium"
+          >
             Duration (minutes)
             <Input
+              id={`${fieldId}-minutes`}
               type="number"
               min={1}
               value={minutes}
@@ -100,9 +107,13 @@ export function StartSessionDialog() {
               onChange={setCategoryIds}
             />
           </div>
-          <label className="flex flex-col gap-1.5 text-sm font-medium">
+          <label
+            htmlFor={`${fieldId}-note`}
+            className="flex flex-col gap-1.5 text-sm font-medium"
+          >
             Note (optional)
             <Input
+              id={`${fieldId}-note`}
               value={note}
               onChange={(e) => setNote(e.target.value)}
               placeholder="Anything to remember about this block"

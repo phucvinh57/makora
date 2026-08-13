@@ -23,7 +23,9 @@ export const Route = createFileRoute("/focus")({
 });
 
 function isActive(session: WorkSession, now: Date) {
-  return new Date(session.start_time) <= now && now < new Date(session.end_time);
+  return (
+    new Date(session.start_time) <= now && now < new Date(session.end_time)
+  );
 }
 
 function FocusPage() {
@@ -95,8 +97,8 @@ function FocusPage() {
         <Skeleton className="h-48 w-full" />
       ) : sessions.length === 0 ? (
         <div className="rounded-md border p-8 text-center text-sm text-muted-foreground">
-          No focus sessions yet. Start one to see how your time holds up
-          against your plan.
+          No focus sessions yet. Start one to see how your time holds up against
+          your plan.
         </div>
       ) : (
         <div className="grid items-start gap-6 @4xl/main:grid-cols-[2fr_3fr]">

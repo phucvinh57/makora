@@ -75,7 +75,9 @@ function stripSchemeAndWww(pattern: string): string {
   } catch {
     return pattern;
   }
-  const host = url.hostname.startsWith("www.") ? url.hostname.slice(4) : url.hostname;
+  const host = url.hostname.startsWith("www.")
+    ? url.hostname.slice(4)
+    : url.hostname;
   const rest = url.pathname === "/" ? "" : url.pathname;
   return `${host}${rest}${url.search}`;
 }

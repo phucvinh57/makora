@@ -1,7 +1,7 @@
 import { CalendarRange, Target, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { DateTimePicker } from "@/components/ui/date-time-picker";
 import {
   Popover,
   PopoverContent,
@@ -125,9 +125,9 @@ export function TimeRangeFilter({
   );
 }
 
-/** The two `datetime-local` bounds of a custom window. Held locally until
- * "Apply" so a half-typed date never fires a query; either bound may be left
- * empty for an open-ended window. */
+/** The two bounds of a custom window. Held locally until "Apply" so a
+ * half-picked window never fires a query; either bound may be left empty for
+ * an open-ended window. */
 function CustomRangeFields({
   range,
   onApply,
@@ -151,19 +151,19 @@ function CustomRangeFields({
     <div className="flex flex-col gap-2 border-t pt-3">
       <p className="m-0 text-xs font-medium text-muted-foreground">Custom</p>
       <div className="flex flex-col gap-1.5">
-        <Input
-          type="datetime-local"
+        <DateTimePicker
           aria-label="Range start"
+          placeholder="From (any time)"
+          clearable
           value={from}
-          onChange={(e) => setFrom(e.target.value)}
-          className="text-sm"
+          onValueChange={setFrom}
         />
-        <Input
-          type="datetime-local"
+        <DateTimePicker
           aria-label="Range end"
+          placeholder="To (any time)"
+          clearable
           value={to}
-          onChange={(e) => setTo(e.target.value)}
-          className="text-sm"
+          onValueChange={setTo}
         />
       </div>
       {invalid && (

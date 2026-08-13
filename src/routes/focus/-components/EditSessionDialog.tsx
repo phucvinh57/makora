@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { DateTimePicker } from "@/components/ui/date-time-picker";
 import {
   Dialog,
   DialogContent,
@@ -18,12 +19,12 @@ import type { WorkSession } from "@/types";
 import { CategoryPicker } from "./CategoryPicker";
 import { WORK_SESSIONS_KEY, workSessionStatsKey } from "./constants";
 
-/** RFC 3339 UTC → the local wall-clock value a `datetime-local` input wants. */
+/** RFC 3339 UTC → the local wall-clock value `DateTimePicker` reads. */
 function toLocalInput(value: string) {
   return format(new Date(value), "yyyy-MM-dd'T'HH:mm");
 }
 
-/** `datetime-local` value (local wall clock) → RFC 3339 UTC. */
+/** Local wall-clock picker value → RFC 3339 UTC. */
 function toUtc(value: string) {
   return new Date(value).toISOString();
 }
@@ -32,6 +33,7 @@ export function EditSessionDialog() {
   const queryClient = useQueryClient();
   const dialog = useDialog<WorkSession>("edit-work-session");
   const session = dialog.data;
+  const fieldId = useId();
   const [name, setName] = useState("");
   const [note, setNote] = useState("");
   const [minutes, setMinutes] = useState("");
@@ -107,31 +109,48 @@ export function EditSessionDialog() {
           </DialogDescription>
         </DialogHeader>
         <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
-          <label className="flex flex-col gap-1.5 text-sm font-medium">
+          <label
+            htmlFor={`${fieldId}-name`}
+            className="flex flex-col gap-1.5 text-sm font-medium"
+          >
             Goal
-            <Input value={name} onChange={(e) => setName(e.target.value)} />
+            <Input
+              id={`${fieldId}-name`}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
           </label>
           <div className="grid grid-cols-2 gap-3">
-            <label className="flex flex-col gap-1.5 text-sm font-medium">
+            <label
+              htmlFor={`${fieldId}-start`}
+              className="flex flex-col gap-1.5 text-sm font-medium"
+            >
               Start
-              <Input
-                type="datetime-local"
+              <DateTimePicker
+                id={`${fieldId}-start`}
                 value={start}
-                onChange={(e) => setStart(e.target.value)}
+                onValueChange={setStart}
               />
             </label>
-            <label className="flex flex-col gap-1.5 text-sm font-medium">
+            <label
+              htmlFor={`${fieldId}-end`}
+              className="flex flex-col gap-1.5 text-sm font-medium"
+            >
               End
-              <Input
-                type="datetime-local"
+              <DateTimePicker
+                id={`${fieldId}-end`}
                 value={end}
-                onChange={(e) => setEnd(e.target.value)}
+                onValueChange={setEnd}
               />
             </label>
           </div>
-          <label className="flex flex-col gap-1.5 text-sm font-medium">
+          <label
+            htmlFor={`${fieldId}-minutes`}
+            className="flex flex-col gap-1.5 text-sm font-medium"
+          >
             Planned duration (minutes)
             <Input
+              id={`${fieldId}-minutes`}
               type="number"
               min={1}
               value={minutes}
@@ -146,9 +165,16 @@ export function EditSessionDialog() {
               onChange={setCategoryIds}
             />
           </div>
-          <label className="flex flex-col gap-1.5 text-sm font-medium">
+          <label
+            htmlFor={`${fieldId}-note`}
+            className="flex flex-col gap-1.5 text-sm font-medium"
+          >
             Note (optional)
-            <Input value={note} onChange={(e) => setNote(e.target.value)} />
+            <Input
+              id={`${fieldId}-note`}
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+            />
           </label>
           <DialogFooter>
             <Button

@@ -6,7 +6,8 @@ import { OFF_TASK_COLOR, ON_TASK_COLOR } from "./constants";
 function blockSeconds(block: TimelineBlock) {
   return Math.max(
     0,
-    (new Date(block.end_time).getTime() - new Date(block.start_time).getTime()) /
+    (new Date(block.end_time).getTime() -
+      new Date(block.start_time).getTime()) /
       1000,
   );
 }
@@ -16,8 +17,7 @@ function blockTitle(block: TimelineBlock) {
     new Date(block.end_time),
     "HH:mm",
   )}`;
-  const label =
-    block.kind === "idle" ? "Idle (nothing tracked)" : block.label;
+  const label = block.kind === "idle" ? "Idle (nothing tracked)" : block.label;
   const verdict =
     block.kind === "on_task"
       ? "on task"

@@ -32,7 +32,10 @@ export function ActiveSessionCard({ session }: { session: WorkSession }) {
     0,
     differenceInSeconds(now, new Date(session.start_time)),
   );
-  const total = Math.max(1, differenceInSeconds(end, new Date(session.start_time)));
+  const total = Math.max(
+    1,
+    differenceInSeconds(end, new Date(session.start_time)),
+  );
 
   // The auto-end is just this instant arriving — announce it and refetch so
   // the session moves from "active" to the history list.
