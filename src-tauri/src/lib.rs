@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use chrono::Utc;
-use directories::ProjectDirs;
 use tauri::Manager;
 
 use crate::core::{
@@ -82,7 +81,8 @@ pub fn run() {
         .setup(|app| {
             // Opening the database happens here, after the single-instance
             // plugin has had its say, so a second launch never touches it.
-            let db_path = database_path().context("resolving application data directory")?;
+            let db_path =
+                database_path(app.handle()).context("resolving application data directory")?;
             eprintln!("makora: writing sessions to {}", db_path.display());
 
             // One SQLite connection shared by the tracker's write path, the
@@ -153,20 +153,11 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building the makora application")
         .run(|app_handle, event| {
-            // Closing the window destroys it outright (releasing the
-            // WebView2 process instead of leaving it resident) rather than
-            // hiding it. That makes the OS ask to exit the app too — Tauri
-            // reports that as `code: None` (vs. `Some(_)` for the tray's
-            // explicit "Quit"), so we veto it here and let the watcher,
-            // ingest server, and tray icon keep running headless; the tray
-            // is the only way back to a window from here on.
             if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
                 if code.is_none() {
                     api.prevent_exit();
                     return;
                 }
-                // Unmanaged when `setup` itself failed — there is no open
-                // session to close in that case.
                 if let Some(tracker) = app_handle.try_state::<SharedTracker>() {
                     let result = tracker.lock().unwrap().close_current(Utc::now());
                     if let Err(err) = result {
@@ -177,12 +168,10 @@ pub fn run() {
         });
 }
 
-/// `%APPDATA%\makora\data\makora.sqlite` on Windows, `~/Library/Application
-/// Support/dev.phucvinh57.makora/makora.sqlite` on macOS,
-/// `~/.local/share/makora/makora.sqlite` on Linux — resolved through
-/// `directories` so the app never hardcodes an OS-specific path.
-fn database_path() -> anyhow::Result<std::path::PathBuf> {
-    let dirs = ProjectDirs::from("dev", "phucvinh57", "makora")
+fn database_path(app: &tauri::AppHandle) -> anyhow::Result<std::path::PathBuf> {
+    let dir = app
+        .path()
+        .app_data_dir()
         .context("could not resolve a per-user application data directory")?;
-    Ok(dirs.data_dir().join("makora.sqlite"))
+    Ok(dir.join("makora.sqlite"))
 }

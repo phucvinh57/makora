@@ -27,7 +27,7 @@ cargo clippy
 
 There is no ESLint/Prettier config in the repo; TypeScript strictness (`strict`, `noUnusedLocals`, `noUnusedParameters`) is enforced via `tsc` in `bun run build`.
 
-The database is written to the per-user app-data directory (on Windows, `%APPDATA%\phucvinh57\makora\data\data.db`; on Linux, `~/.local/share/makora/makora.sqlite`).
+The database is `makora.sqlite` in Tauri's own app-data directory, which is named after `tauri.conf.json`'s `identifier` on every platform (`%APPDATA%\dev.phucvinh57.makora\` on Windows, `~/Library/Application Support/dev.phucvinh57.makora/` on macOS, `~/.local/share/dev.phucvinh57.makora/` on Linux) — the same directory the webview keeps its own state in. `database_path` in `src-tauri/src/lib.rs` resolves it through `app.path().app_data_dir()`; there is no migration code, so an install that predates this still has its database in the old `directories`-crate location (`~/.local/share/makora/` on Linux) and has to be moved by hand.
 
 ## Architecture
 

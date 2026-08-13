@@ -70,7 +70,7 @@ function ProportionBar({ stats }: { stats: WorkSessionStats }) {
       {parts.map((part) => (
         <div
           key={part.key}
-          className="rounded-[2px]"
+          className="rounded-xs"
           style={{
             flexGrow: part.seconds,
             flexBasis: 0,

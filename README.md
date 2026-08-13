@@ -67,9 +67,11 @@ cargo test        # Rust unit tests
 cargo clippy
 ```
 
-Sessions are stored in a SQLite database in the per-user app-data directory
-(on Windows: `%APPDATA%\phucvinh57\makora\data\data.db`; on Linux:
-`~/.local/share/makora/`).
+Sessions are stored in a SQLite database named `makora.sqlite`, in the
+per-user app-data directory Tauri names after the bundle identifier
+(on Windows: `%APPDATA%\dev.phucvinh57.makora\`; on macOS:
+`~/Library/Application Support/dev.phucvinh57.makora/`; on Linux:
+`~/.local/share/dev.phucvinh57.makora/`).
 
 ## Browser extension
 

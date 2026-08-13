@@ -13,7 +13,7 @@ function blockSeconds(block: TimelineBlock) {
 }
 
 function blockTitle(block: TimelineBlock) {
-  const range = `${format(new Date(block.start_time), "HH:mm")}–${format(
+  const range = `${format(new Date(block.start_time), "HH:mm")}-${format(
     new Date(block.end_time),
     "HH:mm",
   )}`;
@@ -48,7 +48,7 @@ export function TimelineStrip({ stats }: { stats: WorkSessionStats }) {
           <div
             key={block.start_time}
             title={blockTitle(block)}
-            className="min-w-px rounded-[2px]"
+            className="min-w-px rounded-xs"
             style={{
               flexGrow: blockSeconds(block),
               flexBasis: 0,
