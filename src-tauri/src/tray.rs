@@ -42,8 +42,13 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
 /// config if it was destroyed (see `lib.rs`'s `ExitRequested` handling) —
 /// closing the window frees its WebView2 process, so there's nothing to
 /// show/focus until a fresh one is built.
-fn show_main_window(app: &AppHandle) {
+///
+/// Also the single-instance handler: launching Makora again (taskbar icon,
+/// desktop entry) surfaces the running instance's window instead of starting
+/// a second process.
+pub fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
         return;
