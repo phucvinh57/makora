@@ -10,10 +10,9 @@ import { toast } from "sonner";
 import {
   getWorkSession,
   listCategories,
-  listRecategorizationKeys,
   listSessions,
   previewSessionCategory,
-  recategorizeKeys,
+  recategorizeAll,
   setSessionCategory,
   setSessionRowCategory,
   setSessionsCategory,
@@ -23,7 +22,6 @@ import { BulkActionsBar } from "./-components/BulkActionsBar";
 import {
   ALL_CATEGORIES,
   PAGE_SIZE,
-  RECATEGORIZE_CHUNK_SIZE,
   SEARCH_DEBOUNCE_MS,
   UNCATEGORIZED,
 } from "./-components/constants";
@@ -83,6 +81,15 @@ function HistoryPage() {
   const [categoryFilter, setCategoryFilter] = useState(ALL_CATEGORIES);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [bulkCategory, setBulkCategory] = useState("");
+  const [bulkApplyToAll, setBulkApplyToAll] = useState(false);
+
+  // Drops the selection *and* the bulk bar's settings, so a one-off "apply
+  // to all" tick never carries over into a later, unrelated selection.
+  function clearSelection() {
+    setSelectedIds(new Set());
+    setBulkCategory("");
+    setBulkApplyToAll(false);
+  }
 
   // Debounce the search box so typing doesn't fire a query per keystroke. A
   // change lands the user back on page 0 and clears the (now possibly
@@ -92,6 +99,8 @@ function HistoryPage() {
       setSearch(searchInput.trim());
       setPage(0);
       setSelectedIds(new Set());
+      setBulkCategory("");
+      setBulkApplyToAll(false);
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(handle);
   }, [searchInput]);
@@ -99,13 +108,13 @@ function HistoryPage() {
   function handleCategoryFilterChange(value: string) {
     setCategoryFilter(value);
     setPage(0);
-    setSelectedIds(new Set());
+    clearSelection();
   }
 
   function handleRangeChange(next: TimeRange) {
     navigate({ search: next });
     setPage(0);
-    setSelectedIds(new Set());
+    clearSelection();
   }
 
   // A session-scoped filter carries only the session's id, so its window has
@@ -228,51 +237,50 @@ function HistoryPage() {
     onError: (err) => toast.error(String(err)),
   });
 
+  // Categorizes the selected rows and only those, unless "apply to all" is
+  // ticked — a selection made under a search/time filter means "these
+  // activities" (the same site can be English study in one focus session and
+  // coding in the next), so widening it to the whole app/site, which also
+  // writes a rule covering future activity, has to be asked for.
   const bulkApplyMutation = useMutation({
     mutationFn: () =>
-      setSessionsCategory([...selectedIds], Number(bulkCategory)),
+      setSessionsCategory(
+        [...selectedIds],
+        Number(bulkCategory),
+        bulkApplyToAll,
+      ),
     onSuccess: () => {
-      setSelectedIds(new Set());
-      setBulkCategory("");
-      invalidateSessions();
-    },
-  });
-
-  // Re-evaluates every app/site key in history against the current rule
-  // set by clearing any manual categorization (key-wide override or
-  // per-session pin) — after that, the read-time join in `list_sessions`
-  // picks the category back up from the live rules (or "Uncategorized")
-  // instead of a frozen manual choice. Keys are fetched once, then cleared
-  // in chunks so the toast can show real progress instead of blocking
-  // behind one opaque round trip.
-  async function runRecategorize() {
-    const toastId = toast.loading("Finding activities to recategorize…");
-    try {
-      const keys = await listRecategorizationKeys(
-        undefined,
-        undefined,
-        false,
-        false,
-      );
-      if (keys.length === 0) {
-        toast.success("Nothing to recategorize.", { id: toastId });
-        return;
-      }
-
-      let processed = 0;
-      let changed = 0;
-      for (let i = 0; i < keys.length; i += RECATEGORIZE_CHUNK_SIZE) {
-        const chunk = keys.slice(i, i + RECATEGORIZE_CHUNK_SIZE);
-        changed += await recategorizeKeys(chunk);
-        processed += chunk.length;
-        toast.loading(`Recategorizing… ${processed} / ${keys.length}`, {
-          id: toastId,
-        });
-      }
-
+      const count = selectedIds.size;
+      clearSelection();
       invalidateSessions();
       toast.success(
-        `Recategorized ${changed} of ${keys.length} app/site groups.`,
+        bulkApplyToAll
+          ? `Categorized ${count} activities and all others from the same apps/sites`
+          : `Categorized ${count} activities`,
+      );
+    },
+    onError: (err) => toast.error(String(err)),
+  });
+
+  // Wipes every manual categorization in the database in one transaction —
+  // per-activity pins, app/site-wide overrides, and the rules those
+  // overrides minted — so the read-time join in `list_sessions` re-derives
+  // every activity from the current rules (or "Uncategorized"), including
+  // the ones that already had a category. Deliberately not scoped to the
+  // page's filters: this is "start over", and skipping already-categorized
+  // rows would spare exactly the rows worth redoing.
+  async function runRecategorize() {
+    const toastId = toast.loading("Recategorizing all activities…");
+    try {
+      const { pins_cleared, overrides_cleared } = await recategorizeAll();
+      invalidateSessions();
+      // The pass also deletes the rules those overrides minted, so the
+      // Categories page's rule list is stale now too.
+      queryClient.invalidateQueries({ queryKey: ["categoryRules"] });
+      toast.success(
+        pins_cleared + overrides_cleared === 0
+          ? "Recategorized all activities — nothing manual to erase, so your rules already decided everything."
+          : `Recategorized all activities — erased ${pins_cleared} manual activity pin${pins_cleared === 1 ? "" : "s"} and ${overrides_cleared} app/site choice${overrides_cleared === 1 ? "" : "s"}.`,
         { id: toastId },
       );
     } catch (err) {
@@ -281,10 +289,10 @@ function HistoryPage() {
   }
 
   function handleRecategorizeClick() {
-    toast("Recategorize all history with current rules?", {
+    toast("Recategorize all history from scratch?", {
       description:
-        'Clears any manual categorization (per-activity or per-app/site) so your current rules — and "Uncategorized" where none match — decide instead.',
-      action: { label: "Apply", onClick: runRecategorize },
+        'Erases every manual categorization — per-activity and per-app/site alike — so only your current rules, and "Uncategorized" where none match, decide. This cannot be undone.',
+      action: { label: "Erase and recategorize", onClick: runRecategorize },
       duration: 10000,
     });
   }
@@ -339,9 +347,11 @@ function HistoryPage() {
           categories={categories}
           bulkCategory={bulkCategory}
           onBulkCategoryChange={setBulkCategory}
+          applyToAll={bulkApplyToAll}
+          onApplyToAllChange={setBulkApplyToAll}
           onApply={() => bulkApplyMutation.mutate()}
           applyPending={bulkApplyMutation.isPending}
-          onClear={() => setSelectedIds(new Set())}
+          onClear={clearSelection}
         />
       )}
 

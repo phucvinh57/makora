@@ -89,6 +89,8 @@ A row left with `end_time IS NULL` after a restart means the previous run was ki
 
 A session's category is resolved at read time via `COALESCE`, most specific tier first: a per-session pin (`sessions.category_id`), then a key-wide manual override (`category_overrides`), then the best-matching rule. Rule conflicts resolve purely by specificity (`category::rule_join_sql`) — categories have no manual ordering: a `url`-kind rule beats an `exe`/`domain`-kind rule, then match kind ranks `exact` > `prefix` > `substring` > `regex`, then the longer pattern wins.
 
+The history page's "Recategorize" button (`CategoryStore::recategorize_all`) is a start-over, not a top-up: one transaction erases *every* manual categorization in the database — all pins, all overrides, and the exact rules those overrides minted (`set_override` writes both halves; the rule half only exists to make a clicked-on app/site visible on the Categories page) — leaving history resolved purely from the rules the user keeps. It is deliberately unfiltered and skips nothing, since already-categorized rows are the ones a from-scratch pass exists to redo. A rule with no matching override row counts as hand-authored and survives; that pairing is the only thing distinguishing the two, so a mirror rule whose override an earlier pass already deleted is hand-authored from then on.
+
 ### Frontend
 
 `src/` is a small React + TypeScript app (Vite, Tailwind v4, TanStack Router file routes under `src/routes/`, base-ui-derived components in `src/components/ui/`). `src/api.ts` wraps Tauri `invoke` calls; `src/types.ts` mirrors the Rust `#[derive(Serialize)]` types returned by commands. `routes/history/` paginates through `list_sessions` and is where activities get categorized.

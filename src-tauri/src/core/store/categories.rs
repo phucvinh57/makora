@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::params;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use super::sqlite::SharedConnection;
 use crate::core::category::{KeyKind, MatchKind};
@@ -24,16 +24,6 @@ pub struct CategoryRule {
     pub category_id: i64,
 }
 
-/// A session categorization key on its own, with no rule/override/category
-/// attached — what [`CategoryStore::list_recategorization_keys`] returns and
-/// [`CategoryStore::recategorize_keys`] takes back in, so the frontend can
-/// hold a candidate list and drive the write in chunks to show progress.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CategoryKeyRef {
-    pub key_kind: String,
-    pub pattern: String,
-}
-
 /// What picking a category for one session would actually affect, so the
 /// frontend can show a confirmation ("this will recategorize N other
 /// activities too") before committing — a single app can serve more than
@@ -47,21 +37,18 @@ pub struct CategorizePreview {
     pub affected_count: i64,
 }
 
-/// Which app/site keys [`CategoryStore::list_recategorization_keys`]
-/// considers eligible for a bulk recategorization pass.
-#[derive(Debug, Clone, Default)]
-pub struct RecategorizeFilter {
-    /// Inclusive lower/upper bounds on session `start_time`, as plain
-    /// `YYYY-MM-DD` dates (either or both may be omitted).
-    pub start_date: Option<String>,
-    pub end_date: Option<String>,
-    /// Only include keys that currently resolve to no category at all (no
-    /// rule match, key-wide override, or per-session pin) rather than every
-    /// key in the date range.
-    pub only_uncategorized: bool,
-    /// Exclude any key with an existing key-wide override or per-session
-    /// pin, so a past manual choice is never reset by this pass.
-    pub protect_manual: bool,
+/// What a [`CategoryStore::recategorize_all`] pass erased, so the UI can say
+/// how much manual categorization was actually thrown away rather than just
+/// "done".
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct RecategorizeOutcome {
+    /// Per-session pins cleared (`sessions.category_id`).
+    pub pins_cleared: i64,
+    /// Key-wide overrides deleted (`category_overrides`).
+    pub overrides_cleared: i64,
+    /// Rules deleted because they only existed to mirror one of those
+    /// overrides on the Categories page (see [`CategoryStore::set_override`]).
+    pub rules_cleared: i64,
 }
 
 /// Read/write access to the category tables (`categories`, `category_rules`,
@@ -273,11 +260,35 @@ impl CategoryStore {
         Ok(())
     }
 
-    /// Same as [`Self::set_override`] but for many sessions at once — for
-    /// batch-categorizing a filtered set of history rows from the UI.
-    /// Sessions are looked up and written inside a single transaction so a
-    /// large selection doesn't leave the database half-updated if one id is
-    /// bad. Also upserts a `category_rules` entry per distinct key, same as
+    /// Pins `category_id` on exactly the given sessions and nothing else —
+    /// the bulk form of [`Self::set_row_category`], and what the history
+    /// page's multi-select bar does by default. Deliberately *not*
+    /// [`Self::set_overrides`]: selecting a filtered set of rows (say, every
+    /// `chatgpt.com` row inside one focus session) means "these rows", so
+    /// widening the choice to the whole app/site is an explicit opt-in
+    /// there. Written in one transaction so a large selection can't land
+    /// half-applied.
+    pub fn set_row_categories(&self, session_ids: &[i64], category_id: Option<i64>) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        for session_id in session_ids {
+            tx.execute(
+                "UPDATE sessions SET category_id = ?1 WHERE id = ?2",
+                params![category_id, session_id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Same as [`Self::set_override`] but for many sessions at once — the
+    /// opt-in "…and everything else from these apps/sites" form of
+    /// [`Self::set_row_categories`], so it carries the same caveat: every
+    /// past *and future* session sharing a selected row's key gets this
+    /// category, and per-session pins on those keys are cleared. Sessions
+    /// are looked up and written inside a single transaction so a large
+    /// selection doesn't leave the database half-updated if one id is bad.
+    /// Also upserts a `category_rules` entry per distinct key, same as
     /// [`Self::set_override`].
     pub fn set_overrides(&self, session_ids: &[i64], category_id: i64) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
@@ -307,90 +318,54 @@ impl CategoryStore {
         Ok(())
     }
 
-    /// Distinct app/site keys eligible for a bulk recategorization pass
-    /// under `filter` (see [`RecategorizeFilter`]). Doesn't write anything —
-    /// the caller (e.g. the frontend, in chunks so it can show progress)
-    /// drives the actual write via [`Self::recategorize_keys`] over this
-    /// list.
-    pub fn list_recategorization_keys(
-        &self,
-        filter: &RecategorizeFilter,
-    ) -> Result<Vec<CategoryKeyRef>> {
-        let conn = self.conn.lock().unwrap();
-
-        let mut where_sql = "1=1".to_string();
-        let mut binds: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-        if let Some(start) = filter.start_date.as_deref().filter(|s| !s.is_empty()) {
-            where_sql.push_str(" AND s.start_time >= ?");
-            binds.push(Box::new(format!("{start}T00:00:00")));
-        }
-        if let Some(end) = filter.end_date.as_deref().filter(|s| !s.is_empty()) {
-            where_sql.push_str(" AND s.start_time <= ?");
-            binds.push(Box::new(format!("{end}T23:59:59.999999999")));
-        }
-        // A per-session pin counts as "manual" too, same as a key-wide
-        // override — both are excluded by `protect_manual`, and both keep a
-        // key out of `only_uncategorized`'s scope (that condition already
-        // implies no override/pin exists, since either would resolve the key
-        // to a category, so `protect_manual` has no further effect on top
-        // of it).
-        if filter.only_uncategorized {
-            where_sql.push_str(
-                " AND s.category_id IS NULL AND ov.category_id IS NULL AND r.category_id IS NULL",
-            );
-        } else if filter.protect_manual {
-            where_sql.push_str(" AND s.category_id IS NULL AND ov.category_id IS NULL");
-        }
-
-        let sql = format!(
-            "SELECT DISTINCT s.category_key_kind, s.category_key
-             FROM sessions s
-             LEFT JOIN category_overrides ov ON ov.key_kind = s.category_key_kind AND ov.pattern = s.category_key
-             {rule_join}
-             WHERE {where_sql}",
-            rule_join = crate::core::category::rule_join_sql("r", "s"),
-        );
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            binds.iter().map(|b| b.as_ref()).collect();
-        let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt
-            .query_map(param_refs.as_slice(), |row| {
-                Ok(CategoryKeyRef {
-                    key_kind: row.get(0)?,
-                    pattern: row.get(1)?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    /// Re-evaluates each given key against the current rule set by clearing
-    /// its key-wide override, if any, and every per-session pin on that key
-    /// — after which `HistoryReader::list_sessions`'s read-time join resolves
-    /// it from the live rules (or "Uncategorized") instead of a frozen manual
-    /// choice. Meant to be called in chunks over the output of
-    /// [`Self::list_recategorization_keys`] so the caller can show progress.
-    /// Returns how many of the given keys actually had something cleared.
-    pub fn recategorize_keys(&self, keys: &[CategoryKeyRef]) -> Result<i64> {
+    /// Throws away *every* stored categorization decision in the database —
+    /// all per-session pins, all key-wide overrides, and the exact rules
+    /// those overrides minted — so history is left resolving purely from the
+    /// rules the user actually keeps on the Categories page (or
+    /// "Uncategorized" where none match). This is the whole of what the
+    /// history page's "Recategorize" button does: no date range, no
+    /// candidate-key list, no "protect manual" escape hatch, because a
+    /// from-scratch pass that skipped already-categorized activities would
+    /// leave exactly the rows the user is trying to fix untouched.
+    ///
+    /// The mirror rules go with the overrides deliberately. `set_override`
+    /// writes both halves at once, and the rule half is only there so a
+    /// clicked-on app/site is visible and manageable on the Categories page
+    /// — leaving it behind would have the pass silently re-derive the same
+    /// manual answer it just erased. A rule with no matching override row is
+    /// therefore treated as hand-authored and survives; that fingerprint is
+    /// the only thing separating the two, so mirror rules whose override was
+    /// already deleted by an earlier pass now count as hand-authored for
+    /// good.
+    ///
+    /// Everything happens in one transaction: a pass either fully lands or
+    /// leaves history exactly as it was, never half-erased.
+    pub fn recategorize_all(&self) -> Result<RecategorizeOutcome> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        let mut changed = 0i64;
-        for key in keys {
-            let override_removed = tx.execute(
-                "DELETE FROM category_overrides WHERE key_kind = ?1 AND pattern = ?2",
-                params![key.key_kind, key.pattern],
-            )?;
-            let pins_cleared = tx.execute(
-                "UPDATE sessions SET category_id = NULL
-                 WHERE category_key_kind = ?1 AND category_key = ?2 AND category_id IS NOT NULL",
-                params![key.key_kind, key.pattern],
-            )?;
-            if override_removed > 0 || pins_cleared > 0 {
-                changed += 1;
-            }
-        }
+        // Before the overrides themselves, while the (key_kind, pattern)
+        // pairs identifying them still exist.
+        let rules_cleared = tx.execute(
+            "DELETE FROM category_rules
+             WHERE match_kind = 'exact'
+               AND EXISTS (
+                   SELECT 1 FROM category_overrides ov
+                   WHERE ov.key_kind = category_rules.key_kind
+                     AND ov.pattern = category_rules.pattern
+               )",
+            [],
+        )?;
+        let overrides_cleared = tx.execute("DELETE FROM category_overrides", [])?;
+        let pins_cleared = tx.execute(
+            "UPDATE sessions SET category_id = NULL WHERE category_id IS NOT NULL",
+            [],
+        )?;
         tx.commit()?;
-        Ok(changed)
+        Ok(RecategorizeOutcome {
+            pins_cleared: pins_cleared as i64,
+            overrides_cleared: overrides_cleared as i64,
+            rules_cleared: rules_cleared as i64,
+        })
     }
 }
 
@@ -513,69 +488,66 @@ mod tests {
     }
 
     #[test]
-    fn list_recategorization_keys_respects_date_range_and_uncategorized_scope() {
+    fn recategorize_all_erases_manual_categorization_and_leaves_rules_deciding() {
         let (store, path) = temp_store();
         let conn = store.conn.clone();
+        let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
+        let filter = crate::core::store::queries::SessionFilter::default();
 
-        let other = store.create_category("Other", "#654321").unwrap();
+        let ruled = store.create_category("Ruled", "#111111").unwrap();
+        let manual = store.create_category("Manual", "#222222").unwrap();
         store
-            .create_rule("exe", "ruled.exe", "exact", other.id)
+            .create_rule("exe", "ruled.exe", "exact", ruled.id)
             .unwrap();
-        insert_session(&conn, "ruled.exe", "2024-06-15T00:00:00Z"); // rule-matched, in range
-        insert_session(&conn, "plain.exe", "2024-06-15T00:00:00Z"); // uncategorized, in range
-        insert_session(&conn, "outside.exe", "2023-01-01T00:00:00Z"); // uncategorized, out of range
 
-        let filter = RecategorizeFilter {
-            start_date: Some("2024-06-01".to_string()),
-            end_date: Some("2024-06-30".to_string()),
-            only_uncategorized: true,
-            protect_manual: false,
-        };
-        let keys = store.list_recategorization_keys(&filter).unwrap();
+        // One of each way a session can end up categorized: a hand-authored
+        // rule, a key-wide override, a per-session pin — plus a pin sitting
+        // on top of a rule, the case a pass that skipped already-categorized
+        // rows would leave frozen.
+        let by_rule = insert_session(&conn, "ruled.exe", "2024-06-15T00:00:00Z");
+        let by_override = insert_session(&conn, "override.exe", "2024-06-15T01:00:00Z");
+        let by_pin = insert_session(&conn, "pinned.exe", "2024-06-15T02:00:00Z");
+        let pinned_over_rule = insert_session(&conn, "ruled.exe", "2024-06-15T03:00:00Z");
+        store.set_override(by_override, manual.id).unwrap();
+        store.set_row_category(by_pin, Some(manual.id)).unwrap();
+        store
+            .set_row_category(pinned_over_rule, Some(manual.id))
+            .unwrap();
+
+        let outcome = store.recategorize_all().unwrap();
+        assert_eq!(outcome.pins_cleared, 2);
+        assert_eq!(outcome.overrides_cleared, 1);
         assert_eq!(
-            keys.iter().map(|k| k.pattern.as_str()).collect::<Vec<_>>(),
-            vec!["plain.exe"]
+            outcome.rules_cleared, 1,
+            "the exact rule set_override minted for override.exe goes with it"
         );
 
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn recategorize_keys_clears_overrides_but_protect_manual_excludes_them_from_the_candidate_list()
-    {
-        let (store, path) = temp_store();
-        let conn = store.conn.clone();
-
-        let other = store.create_category("Other", "#654321").unwrap();
-        let manual_id = insert_session(&conn, "manual.exe", "2024-06-15T00:00:00Z");
-        insert_session(&conn, "plain.exe", "2024-06-15T00:00:00Z");
-        store.set_override(manual_id, other.id).unwrap(); // manual.exe manually categorized
-
-        // Protected: only the non-manual key is a candidate.
-        let protected = RecategorizeFilter {
-            protect_manual: true,
-            ..Default::default()
-        };
-        let keys = store.list_recategorization_keys(&protected).unwrap();
+        let rows = reader.list_sessions(10, 0, &filter).unwrap();
+        let category_of = |id: i64| rows.iter().find(|r| r.id == id).unwrap().category_id;
+        assert_eq!(category_of(by_rule), Some(ruled.id));
+        assert_eq!(category_of(by_override), None);
+        assert_eq!(category_of(by_pin), None);
         assert_eq!(
-            keys.iter().map(|k| k.pattern.as_str()).collect::<Vec<_>>(),
-            vec!["plain.exe"]
+            category_of(pinned_over_rule),
+            Some(ruled.id),
+            "a pinned row falls back to what the rules say, not to nothing"
         );
 
-        // Unprotected: both keys are candidates, and clearing them removes
-        // the manual override (the non-manual key has nothing to clear).
-        let unprotected = RecategorizeFilter {
-            protect_manual: false,
-            ..Default::default()
-        };
-        let keys = store.list_recategorization_keys(&unprotected).unwrap();
-        assert_eq!(keys.len(), 2);
-        let cleared = store.recategorize_keys(&keys).unwrap();
-        assert_eq!(cleared, 1, "only manual.exe had an override to clear");
+        // The hand-authored rule is still there; the minted one isn't.
+        let patterns = store
+            .list_rules()
+            .unwrap()
+            .into_iter()
+            .map(|r| r.pattern)
+            .collect::<Vec<_>>();
+        assert!(patterns.contains(&"ruled.exe".to_string()));
+        assert!(!patterns.contains(&"override.exe".to_string()));
 
-        // manual.exe now has no override left to clear.
-        let keys = store.list_recategorization_keys(&unprotected).unwrap();
-        assert_eq!(store.recategorize_keys(&keys).unwrap(), 0);
+        // Nothing manual left, so a second pass is a no-op.
+        let again = store.recategorize_all().unwrap();
+        assert_eq!(again.pins_cleared, 0);
+        assert_eq!(again.overrides_cleared, 0);
+        assert_eq!(again.rules_cleared, 0);
 
         let _ = std::fs::remove_file(&path);
     }
@@ -694,31 +666,85 @@ mod tests {
     }
 
     #[test]
-    fn recategorize_keys_clears_per_session_pins_as_well_as_the_key_override() {
+    fn set_row_categories_pins_only_the_given_sessions() {
+        let (store, path) = temp_store();
+        let conn = store.conn.clone();
+        let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
+        let filter = crate::core::store::queries::SessionFilter::default();
+
+        let english = store.create_category("English", "#111111").unwrap();
+        // Three rows on the same key — the shape of "chatgpt.com used for
+        // two different things", where only some of them were English.
+        let a = insert_browser_session(&conn, "https://chatgpt.com/c/AAA", "2024-06-15T00:00:00Z");
+        let b = insert_browser_session(&conn, "https://chatgpt.com/c/BBB", "2024-06-15T01:00:00Z");
+        let c = insert_browser_session(&conn, "https://chatgpt.com/c/CCC", "2024-06-15T02:00:00Z");
+
+        store.set_row_categories(&[a, b], Some(english.id)).unwrap();
+
+        let rows = reader.list_sessions(10, 0, &filter).unwrap();
+        let category_of = |id: i64| rows.iter().find(|r| r.id == id).unwrap().category_id;
+        assert_eq!(category_of(a), Some(english.id));
+        assert_eq!(category_of(b), Some(english.id));
+        assert_eq!(
+            category_of(c),
+            None,
+            "an unselected row sharing the same key must be left alone"
+        );
+        assert!(
+            !store
+                .list_rules()
+                .unwrap()
+                .iter()
+                .any(|r| r.pattern == "chatgpt.com"),
+            "pinning rows must not create a key-wide rule"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn set_overrides_still_widens_to_the_whole_key_when_explicitly_asked() {
+        let (store, path) = temp_store();
+        let conn = store.conn.clone();
+        let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
+        let filter = crate::core::store::queries::SessionFilter::default();
+
+        let english = store.create_category("English", "#111111").unwrap();
+        let a = insert_browser_session(&conn, "https://chatgpt.com/c/AAA", "2024-06-15T00:00:00Z");
+        let c = insert_browser_session(&conn, "https://chatgpt.com/c/CCC", "2024-06-15T02:00:00Z");
+
+        store.set_overrides(&[a], english.id).unwrap();
+
+        let rows = reader.list_sessions(10, 0, &filter).unwrap();
+        let category_of = |id: i64| rows.iter().find(|r| r.id == id).unwrap().category_id;
+        assert_eq!(category_of(a), Some(english.id));
+        assert_eq!(category_of(c), Some(english.id));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn recategorize_all_clears_bulk_pins_across_every_app_and_site() {
         let (store, path) = temp_store();
         let conn = store.conn.clone();
 
         let pin_cat = store.create_category("PinCat", "#333333").unwrap();
         let a = insert_session(&conn, "pinned.exe", "2024-06-15T00:00:00Z");
-        store.set_row_category(a, Some(pin_cat.id)).unwrap();
+        let b = insert_browser_session(&conn, "https://chatgpt.com/c/AAA", "2024-06-15T01:00:00Z");
+        store.set_row_categories(&[a, b], Some(pin_cat.id)).unwrap();
 
-        let key = CategoryKeyRef {
-            key_kind: "exe".to_string(),
-            pattern: "pinned.exe".to_string(),
-        };
-        let changed = store.recategorize_keys(&[key]).unwrap();
-        assert_eq!(changed, 1);
+        assert_eq!(store.recategorize_all().unwrap().pins_cleared, 2);
 
-        let pinned: Option<i64> = conn
+        let still_pinned: i64 = conn
             .lock()
             .unwrap()
             .query_row(
-                "SELECT category_id FROM sessions WHERE id = ?1",
-                params![a],
+                "SELECT COUNT(*) FROM sessions WHERE category_id IS NOT NULL",
+                [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(pinned, None);
+        assert_eq!(still_pinned, 0);
 
         let _ = std::fs::remove_file(&path);
     }

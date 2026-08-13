@@ -12,7 +12,7 @@ pub mod sqlite;
 pub mod work_sessions;
 
 pub use categories::{
-    CategorizePreview, Category, CategoryKeyRef, CategoryRule, CategoryStore, RecategorizeFilter,
+    CategorizePreview, Category, CategoryRule, CategoryStore, RecategorizeOutcome,
 };
 pub use ignore::{IgnoreRule, IgnoreStore};
 pub use queries::{ActivityStats, CategoryFilter, HistoryReader, SessionFilter, SessionRow};

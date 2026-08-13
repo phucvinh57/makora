@@ -8,13 +8,13 @@ import type {
   ActivityStats,
   CategorizePreview,
   Category,
-  CategoryKeyRef,
   CategoryRule,
   IgnoreKind,
   IgnoreRule,
   KeyKind,
   MatchKind,
   QueryWhitelistEntry,
+  RecategorizeOutcome,
   SessionsPage,
   WorkSession,
   WorkSessionStats,
@@ -75,29 +75,27 @@ export function previewSessionCategory(
   return invoke("preview_session_category", { sessionId });
 }
 
+/** Categorizes exactly `sessionIds` and nothing else, unless `applyToAll` —
+ * which widens the choice to every past and future session sharing each
+ * selected row's app/site, the same thing `setSessionCategory` does. */
 export function setSessionsCategory(
   sessionIds: number[],
   categoryId: number,
+  applyToAll: boolean,
 ): Promise<void> {
-  return invoke("set_sessions_category", { sessionIds, categoryId });
-}
-
-export function listRecategorizationKeys(
-  startDate: string | undefined,
-  endDate: string | undefined,
-  onlyUncategorized: boolean,
-  protectManual: boolean,
-): Promise<CategoryKeyRef[]> {
-  return invoke("list_recategorization_keys", {
-    startDate,
-    endDate,
-    onlyUncategorized,
-    protectManual,
+  return invoke("set_sessions_category", {
+    sessionIds,
+    categoryId,
+    applyToAll,
   });
 }
 
-export function recategorizeKeys(keys: CategoryKeyRef[]): Promise<number> {
-  return invoke("recategorize_keys", { keys });
+/** Erases every manual categorization in the database — per-activity pins,
+ * app/site-wide overrides, and the rules those overrides minted — so the
+ * current rules decide all of history again, already-categorized activities
+ * included. Destructive and not undoable; confirm before calling. */
+export function recategorizeAll(): Promise<RecategorizeOutcome> {
+  return invoke("recategorize_all");
 }
 
 export function createCategory(name: string, color: string): Promise<Category> {

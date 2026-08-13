@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -13,6 +14,8 @@ export function BulkActionsBar({
   categories,
   bulkCategory,
   onBulkCategoryChange,
+  applyToAll,
+  onApplyToAllChange,
   onApply,
   applyPending,
   onClear,
@@ -21,6 +24,8 @@ export function BulkActionsBar({
   categories: Category[];
   bulkCategory: string;
   onBulkCategoryChange: (value: string) => void;
+  applyToAll: boolean;
+  onApplyToAllChange: (value: boolean) => void;
   onApply: () => void;
   applyPending: boolean;
   onClear: () => void;
@@ -56,6 +61,21 @@ export function BulkActionsBar({
       <Button variant="outline" size="sm" onClick={onClear}>
         Clear selection
       </Button>
+      {/* Off by default: a selection made under a search/time filter means
+        * "these activities", not "this app, forever" — the same site can
+        * serve a different purpose an hour later. Turning it on is the
+        * key-wide behavior, which also writes a rule that keeps applying to
+        * future activity. */}
+      <div className="ml-auto flex items-center gap-2 text-muted-foreground">
+        <Checkbox
+          id="bulk-apply-to-all"
+          checked={applyToAll}
+          onCheckedChange={(checked) => onApplyToAllChange(checked === true)}
+        />
+        <label htmlFor="bulk-apply-to-all" className="cursor-pointer">
+          Also apply to all other activity from the same apps/sites
+        </label>
+      </div>
     </div>
   );
 }

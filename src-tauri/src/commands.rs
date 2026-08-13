@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use crate::core::{
-    ActivityStats, CategorizePreview, Category, CategoryFilter, CategoryKeyRef, CategoryRule,
-    CategoryStore, HistoryReader, IgnoreRule, IgnoreStore, QueryWhitelistEntry,
-    QueryWhitelistStore, RecategorizeFilter, SessionFilter, SessionRow, WorkSession,
+    ActivityStats, CategorizePreview, Category, CategoryFilter, CategoryRule, CategoryStore,
+    HistoryReader, IgnoreRule, IgnoreStore, QueryWhitelistEntry, QueryWhitelistStore,
+    RecategorizeOutcome, SessionFilter, SessionRow, WorkSession,
     WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
 };
 use chrono::{DateTime, Utc};
@@ -134,59 +134,38 @@ pub fn preview_session_category(
         .map_err(|e| e.to_string())
 }
 
-/// Manually assigns a category to many sessions at once (and to every other
-/// session sharing each one's app/site key) — for batch-categorizing a
-/// filtered set of history rows in one action.
+/// Manually assigns a category to many sessions at once — for
+/// batch-categorizing a filtered set of history rows in one action. Pins
+/// exactly the given sessions, leaving every other session sharing their
+/// app/site keys alone, since a selection made under a search/time filter
+/// means those rows and not "this app, forever". `apply_to_all` opts into
+/// the wider behavior instead: every past and future session sharing a
+/// selected row's key gets the category too (see
+/// `CategoryStore::set_overrides`).
 #[tauri::command]
 pub fn set_sessions_category(
     categories: State<CategoryStore>,
     session_ids: Vec<i64>,
     category_id: i64,
+    apply_to_all: bool,
 ) -> Result<(), String> {
-    categories
-        .set_overrides(&session_ids, category_id)
-        .map_err(|e| e.to_string())
+    if apply_to_all {
+        categories.set_overrides(&session_ids, category_id)
+    } else {
+        categories.set_row_categories(&session_ids, Some(category_id))
+    }
+    .map_err(|e| e.to_string())
 }
 
-/// Distinct app/site keys eligible for a bulk recategorization pass — every
-/// key with at least one session inside `start_date`..=`end_date` (plain
-/// `YYYY-MM-DD`, either bound optional), optionally narrowed to keys that
-/// currently resolve to no category at all (`only_uncategorized`), and
-/// optionally excluding any key that already has a manual override
-/// (`protect_manual`). The frontend drives the actual write in chunks over
-/// this list via `recategorize_keys` so it can show progress.
+/// Re-categorizes all of history from scratch: erases every manual
+/// categorization in the database — per-session pins, key-wide overrides,
+/// and the rules those overrides minted — so the current rule set (or
+/// "Uncategorized") decides every activity again, already-categorized ones
+/// included. Returns what it erased, for the UI to report. Destructive and
+/// not undoable; the frontend confirms first.
 #[tauri::command]
-pub fn list_recategorization_keys(
-    categories: State<CategoryStore>,
-    start_date: Option<String>,
-    end_date: Option<String>,
-    only_uncategorized: bool,
-    protect_manual: bool,
-) -> Result<Vec<CategoryKeyRef>, String> {
-    let filter = RecategorizeFilter {
-        start_date,
-        end_date,
-        only_uncategorized,
-        protect_manual,
-    };
-    categories
-        .list_recategorization_keys(&filter)
-        .map_err(|e| e.to_string())
-}
-
-/// Re-evaluates a batch of app/site keys (from `list_recategorization_keys`)
-/// against the current rule set by clearing any manual override on them, so
-/// the live rule (or "Uncategorized") resolution takes back over instead of
-/// the frozen manual choice. Returns how many keys in this batch actually
-/// had an override cleared.
-#[tauri::command]
-pub fn recategorize_keys(
-    categories: State<CategoryStore>,
-    keys: Vec<CategoryKeyRef>,
-) -> Result<i64, String> {
-    categories
-        .recategorize_keys(&keys)
-        .map_err(|e| e.to_string())
+pub fn recategorize_all(categories: State<CategoryStore>) -> Result<RecategorizeOutcome, String> {
+    categories.recategorize_all().map_err(|e| e.to_string())
 }
 
 /// Creates a new user-defined category.

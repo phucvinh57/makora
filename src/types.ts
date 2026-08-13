@@ -35,9 +35,11 @@ export interface CategoryRule {
   category_id: number;
 }
 
-export interface CategoryKeyRef {
-  key_kind: KeyKind;
-  pattern: string;
+/** What a `recategorizeAll` pass erased — see the Rust `RecategorizeOutcome`. */
+export interface RecategorizeOutcome {
+  pins_cleared: number;
+  overrides_cleared: number;
+  rules_cleared: number;
 }
 
 export interface CategorizePreview {
