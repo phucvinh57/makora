@@ -8,8 +8,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { Category } from "@/types";
+import type { Category, WorkSession } from "@/types";
 import { ALL_CATEGORIES, UNCATEGORIZED } from "./constants";
+import type { TimeRange } from "./timeRange";
+import { TimeRangeFilter } from "./TimeRangeFilter";
 
 export function HistoryHeader({
   searchInput,
@@ -17,6 +19,9 @@ export function HistoryHeader({
   categoryFilter,
   onCategoryFilterChange,
   categories,
+  range,
+  rangeSession,
+  onRangeChange,
   loading,
   onRefresh,
   onRecategorizeClick,
@@ -26,6 +31,9 @@ export function HistoryHeader({
   categoryFilter: string;
   onCategoryFilterChange: (value: string) => void;
   categories: Category[];
+  range: TimeRange;
+  rangeSession?: WorkSession | null;
+  onRangeChange: (range: TimeRange) => void;
   loading: boolean;
   onRefresh: () => void;
   onRecategorizeClick: () => void;
@@ -69,6 +77,11 @@ export function HistoryHeader({
           ))}
         </SelectContent>
       </Select>
+      <TimeRangeFilter
+        range={range}
+        session={rangeSession}
+        onChange={onRangeChange}
+      />
       <Button
         variant="outline"
         size="sm"

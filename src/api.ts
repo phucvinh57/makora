@@ -21,13 +21,25 @@ import type {
   WorkSessionUpdate,
 } from "./types";
 
+/** `start`/`end` are RFC 3339 timestamps bounding the activity shown. Rows
+ * *overlapping* the window match, so an activity that began before the
+ * window and ran into it is included. */
 export function listSessions(
   page: number,
   pageSize: number,
   search?: string,
   category?: string,
+  start?: string,
+  end?: string,
 ): Promise<SessionsPage> {
-  return invoke("list_sessions", { page, pageSize, search, category });
+  return invoke("list_sessions", {
+    page,
+    pageSize,
+    search,
+    category,
+    start,
+    end,
+  });
 }
 
 /** `start`/`end` are RFC 3339 UTC timestamps; the range is half-open
@@ -177,6 +189,21 @@ export function createWorkSession(
 
 export function listWorkSessions(): Promise<WorkSession[]> {
   return invoke("list_work_sessions");
+}
+
+/** One page of work sessions, newest first — what the history page's focus
+ * session picker scrolls through. */
+export function searchWorkSessions(
+  search: string | undefined,
+  limit: number,
+  offset: number,
+): Promise<WorkSession[]> {
+  return invoke("search_work_sessions", { search, limit, offset });
+}
+
+/** `null` when the session has since been deleted. */
+export function getWorkSession(id: number): Promise<WorkSession | null> {
+  return invoke("get_work_session", { id });
 }
 
 export function updateWorkSession(update: WorkSessionUpdate): Promise<void> {

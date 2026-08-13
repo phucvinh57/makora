@@ -72,6 +72,8 @@ pub fn run() {
             commands::delete_query_whitelist_entry,
             commands::create_work_session,
             commands::list_work_sessions,
+            commands::search_work_sessions,
+            commands::get_work_session,
             commands::update_work_session,
             commands::stop_work_session,
             commands::delete_work_session,

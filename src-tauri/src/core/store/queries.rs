@@ -269,15 +269,25 @@ pub enum CategoryFilter {
     Category(i64),
 }
 
-/// The search box and category picker on the history page, combined into a
-/// single filter so `list_sessions`/`count_sessions` stay in lockstep (a
-/// page of rows and its total must be counted under the same conditions).
+/// The search box, category picker, and time-range picker on the history
+/// page, combined into a single filter so `list_sessions`/`count_sessions`
+/// stay in lockstep (a page of rows and its total must be counted under the
+/// same conditions).
 #[derive(Debug, Clone, Default)]
 pub struct SessionFilter {
     /// Substring matched (case-insensitively) against app name, window
     /// title, and URL.
     pub search: Option<String>,
     pub category: CategoryFilter,
+    /// RFC 3339 UTC bounds, each optional. A row matches when it *overlaps*
+    /// the range — not when its `start_time` falls inside it, the way
+    /// `activity_stats` buckets — because the question this filter answers
+    /// is "what was I doing between these two instants", and an activity
+    /// that began before the range and ran into it is part of that answer.
+    /// A still-open row (`end_time IS NULL`) counts as running through the
+    /// present, so it overlaps anything starting after it began.
+    pub start: Option<String>,
+    pub end: Option<String>,
 }
 
 impl SessionFilter {
@@ -311,6 +321,17 @@ impl SessionFilter {
                 clauses.push("cat.id = ?".to_string());
                 binds.push(Box::new(*id));
             }
+        }
+
+        // Overlap, not containment: a row is in range unless it ends before
+        // the range opens or starts after it closes.
+        if let Some(start) = &self.start {
+            clauses.push("(s.end_time IS NULL OR s.end_time > ?)".to_string());
+            binds.push(Box::new(start.clone()));
+        }
+        if let Some(end) = &self.end {
+            clauses.push("s.start_time < ?".to_string());
+            binds.push(Box::new(end.clone()));
         }
 
         (clauses.join(" AND "), binds)
@@ -516,6 +537,68 @@ mod stats_tests {
         assert_eq!(stats.apps.len(), 1);
         assert_eq!(stats.apps[0].label, "github.com");
         assert_eq!(stats.apps[0].kind, "domain");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn time_range_filter_keeps_rows_overlapping_the_range() {
+        let (reader, _categories, conn, path) = temp_reader();
+        insert_session(
+            &conn,
+            "before.exe",
+            None,
+            "before.exe",
+            "exe",
+            "2024-06-15T08:00:00Z",
+            Some("2024-06-15T09:00:00Z"),
+        ); // ends before the range opens
+        insert_session(
+            &conn,
+            "straddles.exe",
+            None,
+            "straddles.exe",
+            "exe",
+            "2024-06-15T09:30:00Z",
+            Some("2024-06-15T10:30:00Z"),
+        ); // began before the range but ran into it
+        insert_session(
+            &conn,
+            "inside.exe",
+            None,
+            "inside.exe",
+            "exe",
+            "2024-06-15T11:00:00Z",
+            Some("2024-06-15T11:10:00Z"),
+        );
+        insert_session(
+            &conn,
+            "open.exe",
+            None,
+            "open.exe",
+            "exe",
+            "2024-06-15T11:30:00Z",
+            None,
+        ); // still open: runs through the present
+        insert_session(
+            &conn,
+            "after.exe",
+            None,
+            "after.exe",
+            "exe",
+            "2024-06-15T13:00:00Z",
+            Some("2024-06-15T13:10:00Z"),
+        ); // starts after the range closes
+
+        let filter = SessionFilter {
+            start: Some("2024-06-15T10:00:00Z".to_string()),
+            end: Some("2024-06-15T12:00:00Z".to_string()),
+            ..Default::default()
+        };
+        let rows = reader.list_sessions(50, 0, &filter).unwrap();
+        let names: Vec<&str> = rows.iter().map(|r| r.app_name.as_str()).collect();
+        assert_eq!(names, ["open.exe", "inside.exe", "straddles.exe"]);
+        assert_eq!(reader.count_sessions(&filter).unwrap(), 3);
 
         let _ = std::fs::remove_file(&path);
     }

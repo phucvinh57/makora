@@ -171,13 +171,83 @@ impl WorkSessionStore {
     /// Newest first. The per-session category-id lookup is a second query
     /// per row, which is fine at "a handful of work sessions a day" scale.
     pub fn list(&self) -> Result<Vec<WorkSession>> {
+        self.query(None, -1, 0)
+    }
+
+    /// One page of sessions, newest first, optionally narrowed to those
+    /// whose name or note contains `search` (case-insensitively) — what the
+    /// history page's "filter by focus session" picker scrolls through, so
+    /// it never has to hold every session the user has ever run in memory.
+    pub fn search(
+        &self,
+        search: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<WorkSession>> {
+        self.query(
+            search.map(str::trim).filter(|s| !s.is_empty()),
+            limit.max(1),
+            offset.max(0),
+        )
+    }
+
+    /// One session by id, or `None` if it has since been deleted — lets the
+    /// history page label a session-scoped filter without loading the whole
+    /// list to find one name.
+    pub fn get(&self, id: i64) -> Result<Option<WorkSession>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
+        let mut sessions = Self::select(&conn, None, Some(id), -1, 0)?;
+        if sessions.is_empty() {
+            return Ok(None);
+        }
+        Self::attach_category_ids(&conn, &mut sessions)?;
+        Ok(sessions.pop())
+    }
+
+    /// Shared body of `list`/`search`: `limit` of `-1` means "no limit", the
+    /// same convention SQLite's own `LIMIT` uses.
+    fn query(&self, search: Option<&str>, limit: i64, offset: i64) -> Result<Vec<WorkSession>> {
+        let conn = self.conn.lock().unwrap();
+        let mut sessions = Self::select(&conn, search, None, limit, offset)?;
+        Self::attach_category_ids(&conn, &mut sessions)?;
+        Ok(sessions)
+    }
+
+    fn select(
+        conn: &rusqlite::Connection,
+        search: Option<&str>,
+        id: Option<i64>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<WorkSession>> {
+        let mut clauses = vec!["1=1".to_string()];
+        let mut binds: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        if let Some(term) = search {
+            clauses.push("(name LIKE ? ESCAPE '\\' OR note LIKE ? ESCAPE '\\')".to_string());
+            let pattern = format!("%{}%", term.replace('%', "\\%").replace('_', "\\_"));
+            binds.push(Box::new(pattern.clone()));
+            binds.push(Box::new(pattern));
+        }
+        if let Some(id) = id {
+            clauses.push("id = ?".to_string());
+            binds.push(Box::new(id));
+        }
+        binds.push(Box::new(limit));
+        binds.push(Box::new(offset));
+
+        let sql = format!(
             "SELECT id, name, note, target_seconds, start_time, end_time, created_at
-             FROM work_sessions ORDER BY start_time DESC, id DESC",
-        )?;
-        let mut sessions = stmt
-            .query_map([], |row| {
+             FROM work_sessions
+             WHERE {}
+             ORDER BY start_time DESC, id DESC
+             LIMIT ? OFFSET ?",
+            clauses.join(" AND "),
+        );
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            binds.iter().map(|b| b.as_ref()).collect();
+        let mut stmt = conn.prepare(&sql)?;
+        let sessions = stmt
+            .query_map(param_refs.as_slice(), |row| {
                 Ok(WorkSession {
                     id: row.get(0)?,
                     name: row.get(1)?,
@@ -190,15 +260,22 @@ impl WorkSessionStore {
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(sessions)
+    }
+
+    fn attach_category_ids(
+        conn: &rusqlite::Connection,
+        sessions: &mut [WorkSession],
+    ) -> Result<()> {
         let mut ids_stmt = conn.prepare(
             "SELECT category_id FROM work_session_categories WHERE work_session_id = ?1 ORDER BY category_id",
         )?;
-        for session in &mut sessions {
+        for session in sessions {
             session.category_ids = ids_stmt
                 .query_map(params![session.id], |row| row.get(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
         }
-        Ok(sessions)
+        Ok(())
     }
 
     /// Rewrites every field, replacing the target-category set wholesale.
@@ -583,6 +660,70 @@ mod tests {
 
         store.delete(created.id).unwrap();
         assert!(store.list().unwrap().is_empty());
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn search_pages_newest_first_and_matches_name_or_note() {
+        let (store, _categories, path) = temp_store();
+        // Same fixed window per session so ordering is decided by
+        // `start_time`, which `fixed_window_session` sets explicitly below.
+        for (index, (name, note)) in [
+            ("Morning writing", Some("draft the post")),
+            ("Afternoon review", None),
+            ("Evening writing", Some("edit the draft")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let created = store.create(name, note, 3600, None, &[]).unwrap();
+            let start = utc("2024-06-15T08:00:00+00:00") + Duration::hours(index as i64);
+            store
+                .update(&WorkSessionUpdate {
+                    id: created.id,
+                    name: name.to_string(),
+                    note: note.map(str::to_string),
+                    target_seconds: 3600,
+                    start_time: start.to_rfc3339(),
+                    end_time: (start + Duration::hours(1)).to_rfc3339(),
+                    category_ids: Vec::new(),
+                })
+                .unwrap();
+        }
+
+        let first_page = store.search(None, 2, 0).unwrap();
+        let names: Vec<&str> = first_page.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Evening writing", "Afternoon review"]);
+
+        let second_page = store.search(None, 2, 2).unwrap();
+        assert_eq!(second_page.len(), 1);
+        assert_eq!(second_page[0].name, "Morning writing");
+
+        let by_name = store.search(Some("writing"), 10, 0).unwrap();
+        assert_eq!(by_name.len(), 2);
+        // The note is searched too, not just the name.
+        let by_note = store.search(Some("edit the"), 10, 0).unwrap();
+        assert_eq!(by_note.len(), 1);
+        assert_eq!(by_note[0].name, "Evening writing");
+        // A blank search is the same as no search at all.
+        assert_eq!(store.search(Some("   "), 10, 0).unwrap().len(), 3);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn get_returns_one_session_with_its_categories_or_none_when_deleted() {
+        let (store, categories, path) = temp_store();
+        let cat = categories.create_category("Focus", "#123456").unwrap();
+        let created = store.create("Deep work", None, 1800, None, &[cat.id]).unwrap();
+
+        let fetched = store.get(created.id).unwrap().expect("session exists");
+        assert_eq!(fetched.name, "Deep work");
+        assert_eq!(fetched.category_ids, vec![cat.id]);
+
+        store.delete(created.id).unwrap();
+        assert!(store.get(created.id).unwrap().is_none());
 
         let _ = std::fs::remove_file(&path);
     }

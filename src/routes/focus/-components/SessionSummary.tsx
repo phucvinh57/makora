@@ -1,6 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
+import { ListFilter } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import {
   Card,
+  CardAction,
   CardContent,
   CardDescription,
   CardHeader,
@@ -160,6 +164,23 @@ export function SessionSummary({ session }: { session: WorkSession }) {
           <CardDescription>
             Apps and sites during the session, colored by verdict.
           </CardDescription>
+          {/* Hands the session's window to the history page's time filter,
+              which is where individual activities can be categorized. */}
+          <CardAction>
+            <Button
+              variant="outline"
+              size="sm"
+              render={
+                <Link
+                  to="/history"
+                  search={{ kind: "session", sessionId: session.id }}
+                />
+              }
+            >
+              <ListFilter className="size-3.5" />
+              See all activities
+            </Button>
+          </CardAction>
         </CardHeader>
         <CardContent>
           {stats.apps.length === 0 ? (

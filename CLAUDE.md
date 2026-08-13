@@ -91,7 +91,9 @@ A session's category is resolved at read time via `COALESCE`, most specific tier
 
 ### Frontend
 
-`src/` is a small React + TypeScript app (Vite, Tailwind v4, shadcn-derived components in `src/components/ui/`). `src/api.ts` wraps Tauri `invoke` calls; `src/types.ts` mirrors the Rust `#[derive(Serialize)]` types returned by commands. `HistoryPage.tsx` is the main (currently only) view, paginating through `list_sessions`.
+`src/` is a small React + TypeScript app (Vite, Tailwind v4, TanStack Router file routes under `src/routes/`, base-ui-derived components in `src/components/ui/`). `src/api.ts` wraps Tauri `invoke` calls; `src/types.ts` mirrors the Rust `#[derive(Serialize)]` types returned by commands. `routes/history/` paginates through `list_sessions` and is where activities get categorized.
+
+The history page's time filter lives in the URL as a `TimeRange`'s own fields (`?kind=…&from=&to=&sessionId=`, see `routes/history/-components/timeRange.ts`) so other pages can link into a scoped history — the Focus page's "See all activities" hands over a work session's id that way, and `validateSearch` resolves it to that session's window. Relative presets are stored as the preset, not the instants they currently resolve to, so "today" keeps meaning today. Rows *overlapping* the window match (unlike `activity_stats`, which buckets by `start_time`), so an activity that began before a focus session and ran into it still shows up in it.
 
 ## Known limitations
 

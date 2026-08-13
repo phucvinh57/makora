@@ -4,10 +4,11 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
+  getWorkSession,
   listCategories,
   listRecategorizationKeys,
   listSessions,
@@ -29,13 +30,52 @@ import {
 import { HistoryHeader } from "./-components/HistoryHeader";
 import { HistoryPagination } from "./-components/HistoryPagination";
 import { SessionsTable } from "./-components/SessionsTable";
+import {
+  ALL_TIME,
+  resolveRange,
+  type TimeRange,
+  type TimeRangeKind,
+} from "./-components/timeRange";
+
+const RANGE_KINDS: TimeRangeKind[] = [
+  "all",
+  "today",
+  "yesterday",
+  "3d",
+  "7d",
+  "custom",
+  "session",
+];
+
+/** The time filter lives in the URL (as a `TimeRange`'s own fields) so other
+ * pages can link straight into a scoped history — the Focus page's "See all
+ * activities" hands over a session id this way. Anything unrecognized
+ * degrades to "all time" rather than erroring, since these values can be
+ * hand-edited. */
+function validateSearch(search: Partial<TimeRange>): TimeRange {
+  const kind = RANGE_KINDS.find((k) => k === search.kind);
+  if (!kind || kind === "all") return ALL_TIME;
+  if (kind === "session") {
+    const sessionId = Number(search.sessionId);
+    return Number.isInteger(sessionId) ? { kind, sessionId } : ALL_TIME;
+  }
+  if (kind === "custom") {
+    const from = typeof search.from === "string" ? search.from : undefined;
+    const to = typeof search.to === "string" ? search.to : undefined;
+    return from || to ? { kind, from, to } : ALL_TIME;
+  }
+  return { kind };
+}
 
 export const Route = createFileRoute("/history")({
   component: HistoryPage,
+  validateSearch,
 });
 
 function HistoryPage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate({ from: Route.fullPath });
+  const range = Route.useSearch();
 
   const [page, setPage] = useState(0);
   const [searchInput, setSearchInput] = useState("");
@@ -62,6 +102,29 @@ function HistoryPage() {
     setSelectedIds(new Set());
   }
 
+  function handleRangeChange(next: TimeRange) {
+    navigate({ search: next });
+    setPage(0);
+    setSelectedIds(new Set());
+  }
+
+  // A session-scoped filter carries only the session's id, so its window has
+  // to be looked up before any rows can be fetched.
+  const rangeSessionQuery = useQuery({
+    queryKey: ["workSession", range.sessionId],
+    queryFn: () => getWorkSession(range.sessionId as number),
+    enabled: range.kind === "session" && range.sessionId !== undefined,
+  });
+  const rangeSession =
+    range.kind === "session" ? (rangeSessionQuery.data ?? null) : null;
+  const rangeSessionMissing =
+    range.kind === "session" && rangeSessionQuery.isSuccess && !rangeSession;
+
+  const { start, end } = useMemo(
+    () => resolveRange(range, rangeSession),
+    [range, rangeSession],
+  );
+
   const sessionsQuery = useQuery({
     queryKey: [
       "sessions",
@@ -69,6 +132,8 @@ function HistoryPage() {
       PAGE_SIZE,
       search,
       categoryFilter === ALL_CATEGORIES ? undefined : categoryFilter,
+      start,
+      end,
     ],
     queryFn: () =>
       listSessions(
@@ -76,7 +141,12 @@ function HistoryPage() {
         PAGE_SIZE,
         search || undefined,
         categoryFilter === ALL_CATEGORIES ? undefined : categoryFilter,
+        start,
+        end,
       ),
+    // Held until the session's window is known, so a session-scoped view
+    // never briefly renders as unscoped history.
+    enabled: range.kind !== "session" || rangeSession !== null,
     placeholderData: keepPreviousData,
   });
 
@@ -242,10 +312,20 @@ function HistoryPage() {
         categoryFilter={categoryFilter}
         onCategoryFilterChange={handleCategoryFilterChange}
         categories={categories}
+        range={range}
+        rangeSession={rangeSession}
+        onRangeChange={handleRangeChange}
         loading={loading}
         onRefresh={() => sessionsQuery.refetch()}
         onRecategorizeClick={handleRecategorizeClick}
       />
+
+      {rangeSessionMissing && (
+        <div className="mb-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          That focus session no longer exists — clear the time filter to see
+          your history again.
+        </div>
+      )}
 
       {error && (
         <div className="mb-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">

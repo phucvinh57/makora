@@ -17,11 +17,16 @@ pub struct SessionsPage {
 }
 
 /// One page of activity rows (app focus and browser-tab rows alike) matching
-/// `search`/`category`, newest first.
+/// `search`/`category`/the `start`..`end` window, newest first.
 ///
 /// `category` selects the category filter: omitted or `null` shows every
 /// row, `"uncategorized"` shows rows with no resolved category, and any
 /// other value is parsed as a category id.
+///
+/// `start`/`end` are optional RFC 3339 timestamps; rows *overlapping* that
+/// window match (see `SessionFilter`), so scoping history to a focus
+/// session's window shows the activity that ran through it, not only the
+/// activity that happened to begin inside it.
 #[tauri::command]
 pub fn list_sessions(
     reader: State<HistoryReader>,
@@ -29,12 +34,22 @@ pub fn list_sessions(
     page_size: i64,
     search: Option<String>,
     category: Option<String>,
+    start: Option<String>,
+    end: Option<String>,
 ) -> Result<SessionsPage, String> {
     let page_size = page_size.max(1);
     let offset = page.max(0) * page_size;
+    let start = start.as_deref().map(parse_rfc3339).transpose()?;
+    let end = end.as_deref().map(parse_rfc3339).transpose()?;
     let filter = SessionFilter {
         search,
         category: parse_category_filter(category.as_deref())?,
+        // Normalized to UTC here rather than passed through verbatim: the
+        // stored `start_time`/`end_time` are UTC RFC 3339 and the SQL
+        // compares them as plain strings, so an offset timestamp from the
+        // frontend would otherwise compare wrong.
+        start: start.map(|t| t.to_rfc3339()),
+        end: end.map(|t| t.to_rfc3339()),
     };
     let rows = reader
         .list_sessions(page_size, offset, &filter)
@@ -338,6 +353,32 @@ pub fn list_work_sessions(
     work_sessions: State<WorkSessionStore>,
 ) -> Result<Vec<WorkSession>, String> {
     work_sessions.list().map_err(|e| e.to_string())
+}
+
+/// One page of work sessions, newest first, optionally narrowed to those
+/// whose name or note contains `search`. Backs the history page's "filter by
+/// focus session" picker, which scrolls through them a page at a time rather
+/// than loading every session the user has ever run.
+#[tauri::command]
+pub fn search_work_sessions(
+    work_sessions: State<WorkSessionStore>,
+    search: Option<String>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<WorkSession>, String> {
+    work_sessions
+        .search(search.as_deref(), limit, offset)
+        .map_err(|e| e.to_string())
+}
+
+/// One work session by id, or `null` if it has been deleted — for labeling a
+/// session-scoped history filter without fetching the whole list.
+#[tauri::command]
+pub fn get_work_session(
+    work_sessions: State<WorkSessionStore>,
+    id: i64,
+) -> Result<Option<WorkSession>, String> {
+    work_sessions.get(id).map_err(|e| e.to_string())
 }
 
 /// Rewrites every field of a work session, including its time window —
