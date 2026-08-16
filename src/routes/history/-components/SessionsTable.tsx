@@ -20,6 +20,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { categoryOptions } from "@/components/CategoryOptions";
+import { categoryPath } from "@/categories";
 import { formatDuration, formatTimestamp } from "@/duration";
 import type { Category, SessionRow } from "@/types";
 import { ALL_CATEGORIES, UNCATEGORIZED } from "./constants";
@@ -84,95 +86,100 @@ export function SessionsTable({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {rows.map((row) => (
-              <TableRow key={row.id}>
-                <TableCell>
-                  <Checkbox
-                    checked={selectedIds.has(row.id)}
-                    onCheckedChange={(checked) =>
-                      onToggleRow(row.id, checked === true)
-                    }
-                    aria-label={`Select session ${row.id}`}
-                  />
-                </TableCell>
-                <TableCell className="truncate">
-                  <Tooltip>
-                    <TooltipTrigger className="truncate text-left">
-                      {row.app_name}
-                    </TooltipTrigger>
-                    <TooltipContent>{exeFileName(row.exe_path)}</TooltipContent>
-                  </Tooltip>
-                </TableCell>
-                <TableCell>
-                  <Select
-                    value={String(row.category_id ?? UNCATEGORIZED)}
-                    onValueChange={(value) =>
-                      onRowCategoryChange(row, value ?? UNCATEGORIZED)
-                    }
-                  >
-                    <SelectTrigger
-                      size="sm"
-                      className="h-6 w-full min-w-0 px-1.5 text-xs"
-                      title={
-                        row.category_is_pinned
-                          ? "Pinned to this activity"
-                          : undefined
+            {rows.map((row) => {
+              const category =
+                row.category_id !== null
+                  ? categories.find((c) => c.id === row.category_id)
+                  : undefined;
+              const path = category
+                ? categoryPath(category, categories)
+                : "Uncategorized";
+              return (
+                <TableRow key={row.id}>
+                  <TableCell>
+                    <Checkbox
+                      checked={selectedIds.has(row.id)}
+                      onCheckedChange={(checked) =>
+                        onToggleRow(row.id, checked === true)
+                      }
+                      aria-label={`Select session ${row.id}`}
+                    />
+                  </TableCell>
+                  <TableCell className="truncate">
+                    <Tooltip>
+                      <TooltipTrigger className="truncate text-left">
+                        {row.app_name}
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {exeFileName(row.exe_path)}
+                      </TooltipContent>
+                    </Tooltip>
+                  </TableCell>
+                  <TableCell>
+                    <Select
+                      value={String(row.category_id ?? UNCATEGORIZED)}
+                      onValueChange={(value) =>
+                        onRowCategoryChange(row, value ?? UNCATEGORIZED)
                       }
                     >
-                      <SelectValue>
-                        <span className="flex min-w-0 items-center gap-1.5">
-                          <span
-                            className="size-2 shrink-0 rounded-full"
-                            style={{
-                              backgroundColor:
-                                row.category_color ?? "var(--muted-foreground)",
-                            }}
-                          />
-                          <span className="truncate">
-                            {row.category_name ?? "Uncategorized"}
+                      <SelectTrigger
+                        size="sm"
+                        className="h-6 w-full min-w-0 px-1.5 text-xs"
+                        title={
+                          row.category_is_pinned
+                            ? `${path} — pinned to this activity`
+                            : path
+                        }
+                      >
+                        <SelectValue>
+                          <span className="flex min-w-0 items-center gap-1.5">
+                            <span
+                              className="size-2 shrink-0 rounded-full"
+                              style={{
+                                backgroundColor:
+                                  row.category_color ??
+                                  "var(--muted-foreground)",
+                              }}
+                            />
+                            <span className="truncate">
+                              {row.category_name ?? "Uncategorized"}
+                            </span>
                           </span>
-                        </span>
-                      </SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value={UNCATEGORIZED}>
-                        Uncategorized
-                      </SelectItem>
-                      {categories.map((category) => (
-                        <SelectItem
-                          key={category.id}
-                          value={String(category.id)}
-                        >
-                          {category.name}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={UNCATEGORIZED}>
+                          Uncategorized
                         </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </TableCell>
-                <TableCell
-                  className="hidden truncate font-mono text-xs @4xl:table-cell"
-                  title={row.url ?? undefined}
-                >
-                  {row.url ?? ""}
-                </TableCell>
-                <TableCell
-                  className="truncate"
-                  title={
-                    row.url
-                      ? `${row.window_title}\n${row.url}`
-                      : row.window_title
-                  }
-                >
-                  {row.window_title}
-                </TableCell>
-                <TableCell className="hidden text-muted-foreground tabular-nums @2xl:table-cell">
-                  {formatTimestamp(row.start_time)}
-                </TableCell>
-                <TableCell className="text-right tabular-nums">
-                  {formatDuration(row.start_time, row.end_time)}
-                </TableCell>
-              </TableRow>
-            ))}
+                        {categoryOptions(categories)}
+                      </SelectContent>
+                    </Select>
+                  </TableCell>
+                  <TableCell
+                    className="hidden truncate font-mono text-xs @4xl:table-cell"
+                    title={row.url ?? undefined}
+                  >
+                    {row.url ?? ""}
+                  </TableCell>
+                  <TableCell
+                    className="truncate"
+                    title={
+                      row.url
+                        ? `${row.window_title}\n${row.url}`
+                        : row.window_title
+                    }
+                  >
+                    {row.window_title}
+                  </TableCell>
+                  <TableCell className="hidden text-muted-foreground tabular-nums @2xl:table-cell">
+                    {formatTimestamp(row.start_time)}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {formatDuration(row.start_time, row.end_time)}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
             {!loading && rows.length === 0 && (
               <TableRow>
                 <TableCell

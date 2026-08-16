@@ -139,6 +139,19 @@ fn migrations() -> Migrations<'static> {
             DELETE FROM categories;
             DELETE FROM sqlite_sequence WHERE name IN ('categories', 'category_rules');",
         ),
+        M::up("CREATE TABLE categories_new (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                name      TEXT NOT NULL,
+                color     TEXT NOT NULL,
+                parent_id INTEGER REFERENCES categories(id)
+            );
+            INSERT INTO categories_new (id, name, color) SELECT id, name, color FROM categories;
+            DROP TABLE categories;
+            ALTER TABLE categories_new RENAME TO categories;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_name
+                ON categories(COALESCE(parent_id, 0), name);
+            CREATE INDEX IF NOT EXISTS idx_categories_parent ON categories(parent_id);",
+        ),
     ])
 }
 
@@ -170,10 +183,20 @@ pub fn open_connection(path: &Path) -> Result<SharedConnection> {
     let mut conn = Connection::open(path)
         .with_context(|| format!("opening database at {}", path.display()))?;
     register_regexp_function(&conn).context("registering regexp SQL function")?;
-    migrations()
-        .to_latest(&mut conn)
-        .context("migrating schema")?;
+    migrate(&mut conn).context("migrating schema")?;
     Ok(Arc::new(Mutex::new(conn)))
+}
+
+/// The bundled SQLite enforces foreign keys by default, which a migration that rebuilds a
+/// referenced table (`DROP TABLE categories` while rules and pins point at it) would trip
+/// over. SQLite's own recipe is to lift the check for the duration — it cannot be toggled
+/// inside a transaction, so it has to happen out here rather than inside a migration.
+fn migrate(conn: &mut Connection) -> Result<()> {
+    conn.pragma_update(None, "foreign_keys", "OFF")?;
+    let result = migrations().to_latest(conn);
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    result?;
+    Ok(())
 }
 
 pub struct SqliteStore {
@@ -266,6 +289,75 @@ mod tests {
                 ("Second".to_string(), 1),
                 ("Third".to_string(), 2),
             ]
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn subcategory_migration_keeps_existing_categories_and_scopes_names_to_their_parent() {
+        let path = temp_db_path();
+        let mut conn = Connection::open(&path).unwrap();
+        register_regexp_function(&conn).unwrap();
+        let migs = migrations();
+        migs.to_version(&mut conn, 12).unwrap();
+        conn.execute_batch(
+            "INSERT INTO categories (name, color) VALUES ('Work', '#111111');
+             INSERT INTO categories (name, color) VALUES ('Personal', '#222222');",
+        )
+        .unwrap();
+        let work_id: i64 = conn
+            .query_row("SELECT id FROM categories WHERE name = 'Work'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        conn.execute(
+            "INSERT INTO category_rules (key_kind, pattern, match_kind, category_id)
+             VALUES ('exe', 'code.exe', 'exact', ?1)",
+            params![work_id],
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let surviving: Vec<(i64, String)> = conn
+            .prepare("SELECT id, name FROM categories ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            surviving,
+            vec![(1, "Work".to_string()), (2, "Personal".to_string())],
+            "the rebuild has to keep ids, since rules and pins point at them"
+        );
+        let rules_still_pointing: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM category_rules WHERE category_id = ?1",
+                params![work_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rules_still_pointing, 1);
+
+        conn.execute(
+            "INSERT INTO categories (name, color, parent_id) VALUES ('Reading', '#333333', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO categories (name, color, parent_id) VALUES ('Reading', '#444444', 2)",
+            [],
+        )
+        .expect("the same subcategory name under a different parent is a different category");
+        assert!(
+            conn.execute(
+                "INSERT INTO categories (name, color, parent_id) VALUES ('Reading', '#555555', 1)",
+                [],
+            )
+            .is_err(),
+            "two subcategories of the same parent must not share a name"
         );
 
         let _ = std::fs::remove_file(&path);

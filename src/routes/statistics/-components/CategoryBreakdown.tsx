@@ -13,24 +13,90 @@ import {
   ChartTooltip,
   ChartTooltipContent,
 } from "@/components/ui/chart";
+import { buildCategoryTree, type CategoryNode } from "@/categories";
 import { formatSeconds } from "@/duration";
-import type { ActivityStats } from "@/types";
+import type { ActivityStats, Category } from "@/types";
 import { UNCATEGORIZED_COLOR } from "./constants";
 
-export function CategoryBreakdown({ stats }: { stats: ActivityStats }) {
-  const data = stats.categories.map((c) => ({
-    key: c.category_id !== null ? String(c.category_id) : "uncategorized",
-    name: c.name ?? "Uncategorized",
-    value: c.total_seconds,
-    color: c.color ?? UNCATEGORIZED_COLOR,
-  }));
+interface Slice {
+  key: string;
+  name: string;
+  value: number;
+  color: string;
+  depth: number;
+}
+
+/**
+ * One row per category in tree order, each carrying its own time *plus* everything its
+ * subcategories spent — a parent that is only ever used through its children still shows
+ * where that time went.
+ */
+function rollUp(
+  nodes: CategoryNode[],
+  secondsById: Map<number, number>,
+): { rows: Slice[]; total: number } {
+  const rows: Slice[] = [];
+  let total = 0;
+  for (const node of nodes) {
+    const nested = rollUp(node.children, secondsById);
+    const value = (secondsById.get(node.category.id) ?? 0) + nested.total;
+    total += value;
+    if (value === 0) continue;
+    rows.push({
+      key: String(node.category.id),
+      name: node.category.name,
+      value,
+      color: node.category.color,
+      depth: node.depth,
+    });
+    rows.push(...nested.rows);
+  }
+  return { rows, total };
+}
+
+export function CategoryBreakdown({
+  stats,
+  categories,
+}: {
+  stats: ActivityStats;
+  categories: Category[];
+}) {
+  const { rows, topLevel } = useMemo(() => {
+    const secondsById = new Map(
+      stats.categories
+        .filter((c) => c.category_id !== null)
+        .map((c) => [c.category_id as number, c.total_seconds]),
+    );
+    const tree = buildCategoryTree(categories);
+    const { rows } = rollUp(tree, secondsById);
+
+    const uncategorized = stats.categories.find((c) => c.category_id === null);
+    const untracked: Slice[] = uncategorized
+      ? [
+          {
+            key: "uncategorized",
+            name: "Uncategorized",
+            value: uncategorized.total_seconds,
+            color: UNCATEGORIZED_COLOR,
+            depth: 0,
+          },
+        ]
+      : [];
+
+    // The pie splits the whole range once, so only the roots go in it — a subcategory's
+    // time is already inside its parent's slice.
+    return {
+      rows: [...rows, ...untracked],
+      topLevel: [...rows.filter((r) => r.depth === 0), ...untracked],
+    };
+  }, [stats.categories, categories]);
 
   const chartConfig = useMemo<ChartConfig>(
     () =>
       Object.fromEntries(
-        data.map((c) => [c.key, { label: c.name, color: c.color }]),
+        topLevel.map((c) => [c.key, { label: c.name, color: c.color }]),
       ),
-    [data.map],
+    [topLevel],
   );
 
   return (
@@ -38,11 +104,12 @@ export function CategoryBreakdown({ stats }: { stats: ActivityStats }) {
       <CardHeader>
         <CardTitle>Time per category</CardTitle>
         <CardDescription>
-          How tracked time splits across your categories.
+          How tracked time splits across your categories; subcategory time
+          counts towards its parent.
         </CardDescription>
       </CardHeader>
       <CardContent>
-        {data.length === 0 ? (
+        {rows.length === 0 ? (
           <p className="py-8 text-center text-sm text-muted-foreground">
             Nothing to show for this range.
           </p>
@@ -69,7 +136,7 @@ export function CategoryBreakdown({ stats }: { stats: ActivityStats }) {
                   }
                 />
                 <Pie
-                  data={data}
+                  data={topLevel}
                   dataKey="value"
                   nameKey="name"
                   innerRadius={55}
@@ -77,24 +144,33 @@ export function CategoryBreakdown({ stats }: { stats: ActivityStats }) {
                   paddingAngle={2}
                   cornerRadius={4}
                 >
-                  {data.map((c) => (
+                  {topLevel.map((c) => (
                     <Cell key={c.key} fill={c.color} />
                   ))}
                 </Pie>
               </PieChart>
             </ChartContainer>
             <ul className="flex min-w-0 flex-1 flex-col gap-1.5">
-              {data.map((c) => (
+              {rows.map((c) => (
                 <li
                   key={c.key}
                   className="flex items-center justify-between gap-3 text-sm"
+                  style={{ paddingLeft: c.depth * 14 }}
                 >
                   <span className="flex min-w-0 items-center gap-2">
                     <span
                       className="size-2.5 shrink-0 rounded-full"
                       style={{ backgroundColor: c.color }}
                     />
-                    <span className="truncate">{c.name}</span>
+                    <span
+                      className={
+                        c.depth > 0
+                          ? "truncate text-muted-foreground"
+                          : "truncate"
+                      }
+                    >
+                      {c.name}
+                    </span>
                   </span>
                   <span className="shrink-0 tabular-nums text-muted-foreground">
                     {formatSeconds(c.value)}

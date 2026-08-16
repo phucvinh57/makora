@@ -28,11 +28,16 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  categoryOptions,
+  categoryValueLabels,
+} from "@/components/CategoryOptions";
+import {
   createCategoryRule,
   deleteCategoryRule,
   listCategories,
   listCategoryRules,
 } from "@/api";
+import { categoryPath } from "@/categories";
 import { openDialog, useDialog } from "@/hooks/useDialog";
 import type { CategoryRule, KeyKind, MatchKind } from "@/types";
 
@@ -118,18 +123,7 @@ export function RulesTab({
   const rules = rulesQuery.data ?? [];
   const categoryById = new Map(categories.map((c) => [c.id, c]));
   const selectedNewRuleCategoryId = newRuleCategoryId ?? categories[0]?.id;
-  const categorySelectItems = Object.fromEntries(
-    categories.map((cat) => [
-      String(cat.id),
-      <span className="flex items-center gap-1.5" key={cat.id}>
-        <span
-          className="size-2 shrink-0 rounded-full"
-          style={{ backgroundColor: cat.color }}
-        />
-        {cat.name}
-      </span>,
-    ]),
-  );
+  const categorySelectItems = categoryValueLabels(categories);
 
   function invalidateAll() {
     queryClient.invalidateQueries({ queryKey: ["categories"] });
@@ -230,17 +224,7 @@ export function RulesTab({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value={ALL_CATEGORIES}>All categories</SelectItem>
-            {categories.map((cat) => (
-              <SelectItem key={cat.id} value={String(cat.id)}>
-                <span className="flex items-center gap-1.5">
-                  <span
-                    className="size-2 shrink-0 rounded-full"
-                    style={{ backgroundColor: cat.color }}
-                  />
-                  {cat.name}
-                </span>
-              </SelectItem>
-            ))}
+            {categoryOptions(categories)}
           </SelectContent>
         </Select>
         <Button
@@ -282,12 +266,17 @@ export function RulesTab({
                     </TableCell>
                     <TableCell className="truncate">
                       {category && (
-                        <span className="flex items-center gap-1.5">
+                        <span
+                          className="flex items-center gap-1.5"
+                          title={categoryPath(category, categories)}
+                        >
                           <span
                             className="size-2 shrink-0 rounded-full"
                             style={{ backgroundColor: category.color }}
                           />
-                          {category.name}
+                          <span className="truncate">
+                            {categoryPath(category, categories)}
+                          </span>
                         </span>
                       )}
                     </TableCell>
@@ -388,19 +377,7 @@ export function RulesTab({
               <SelectTrigger className="w-full" aria-label="Category">
                 <SelectValue placeholder="Category…" />
               </SelectTrigger>
-              <SelectContent>
-                {categories.map((cat) => (
-                  <SelectItem key={cat.id} value={String(cat.id)}>
-                    <span className="flex items-center gap-1.5">
-                      <span
-                        className="size-2 shrink-0 rounded-full"
-                        style={{ backgroundColor: cat.color }}
-                      />
-                      {cat.name}
-                    </span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
+              <SelectContent>{categoryOptions(categories)}</SelectContent>
             </Select>
             {addRuleMutation.isError && (
               <p className="text-xs text-destructive">

@@ -298,8 +298,7 @@ impl WorkSessionStore {
         let sql = format!(
             "SELECT s.start_time, s.end_time, s.app_name, s.category_key, s.category_key_kind,
                     cat.color,
-                    (cat.id IS NOT NULL AND cat.id IN
-                        (SELECT category_id FROM work_session_categories WHERE work_session_id = ?1))
+                    (cat.id IS NOT NULL AND cat.id IN ({on_task_ids}))
              FROM sessions s
              {rule_join}
              LEFT JOIN categories cat
@@ -308,6 +307,10 @@ impl WorkSessionStore {
                AND julianday(s.start_time) < julianday(?3)
              ORDER BY s.start_time ASC",
             rule_join = crate::core::category::rule_join_sql("r", "s"),
+            // Marking a parent category on-task covers everything filed under it.
+            on_task_ids = crate::core::category::subtree_ids_sql(
+                "SELECT category_id FROM work_session_categories WHERE work_session_id = ?1"
+            ),
         );
         let mut stmt = conn.prepare(&sql)?;
         let raw_rows = stmt
@@ -556,7 +559,7 @@ mod tests {
     #[test]
     fn create_derives_end_time_from_target_and_round_trips_categories() {
         let (store, categories, path) = temp_store();
-        let cat = categories.create_category("Focus", "#123456").unwrap();
+        let cat = categories.create_category("Focus", "#123456", None).unwrap();
 
         let created = store
             .create("Ship feature", Some("the release"), 1800, None, &[cat.id])
@@ -625,7 +628,7 @@ mod tests {
     #[test]
     fn get_returns_one_session_with_its_categories_or_none_when_deleted() {
         let (store, categories, path) = temp_store();
-        let cat = categories.create_category("Focus", "#123456").unwrap();
+        let cat = categories.create_category("Focus", "#123456", None).unwrap();
         let created = store
             .create("Deep work", None, 1800, None, &[cat.id])
             .unwrap();
@@ -643,7 +646,7 @@ mod tests {
     #[test]
     fn straddling_tracked_row_is_clipped_to_the_window() {
         let (store, categories, path) = temp_store();
-        let cat = categories.create_category("Focus", "#123456").unwrap();
+        let cat = categories.create_category("Focus", "#123456", None).unwrap();
         categories
             .create_rule("exe", "editor64.exe", "exact", cat.id)
             .unwrap();
@@ -674,8 +677,8 @@ mod tests {
     #[test]
     fn on_task_resolution_uses_rules_and_row_pins_beat_them() {
         let (store, categories, path) = temp_store();
-        let focus = categories.create_category("Focus", "#123456").unwrap();
-        let other = categories.create_category("Other", "#654321").unwrap();
+        let focus = categories.create_category("Focus", "#123456", None).unwrap();
+        let other = categories.create_category("Other", "#654321", None).unwrap();
         categories
             .create_rule("exe", "chat64.exe", "exact", other.id)
             .unwrap();
@@ -708,9 +711,55 @@ mod tests {
     }
 
     #[test]
+    fn an_on_task_parent_category_counts_its_subcategories_as_on_task_too() {
+        let (store, categories, path) = temp_store();
+        let work = categories.create_category("Work", "#123456", None).unwrap();
+        let reading = categories
+            .create_category("Reading", "#222222", Some(work.id))
+            .unwrap();
+        let personal = categories
+            .create_category("Personal", "#654321", None)
+            .unwrap();
+        categories
+            .create_rule("exe", "reader64.exe", "exact", reading.id)
+            .unwrap();
+        categories
+            .create_rule("exe", "chat64.exe", "exact", personal.id)
+            .unwrap();
+
+        let id = fixed_window_session(
+            &store,
+            "2024-06-15T10:00:00+00:00",
+            "2024-06-15T10:10:00+00:00",
+            &[work.id],
+        );
+        insert_tracked(
+            &store,
+            "reader64.exe",
+            "2024-06-15T10:00:00+00:00",
+            Some("2024-06-15T10:06:00+00:00"),
+        );
+        insert_tracked(
+            &store,
+            "chat64.exe",
+            "2024-06-15T10:06:00+00:00",
+            Some("2024-06-15T10:10:00+00:00"),
+        );
+
+        let stats = store.stats_at(id, utc("2024-06-16T00:00:00Z")).unwrap();
+        assert_eq!(
+            stats.on_task_seconds, 360.0,
+            "time in a subcategory of an on-task category is on-task"
+        );
+        assert_eq!(stats.off_task_seconds, 240.0);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn switch_count_ignores_idle_gaps_between_on_task_blocks() {
         let (store, categories, path) = temp_store();
-        let focus = categories.create_category("Focus", "#123456").unwrap();
+        let focus = categories.create_category("Focus", "#123456", None).unwrap();
         categories
             .create_rule("exe", "editor64.exe", "exact", focus.id)
             .unwrap();
@@ -775,7 +824,7 @@ mod tests {
     #[test]
     fn in_progress_session_clamps_window_to_now_and_counts_the_open_row() {
         let (store, categories, path) = temp_store();
-        let focus = categories.create_category("Focus", "#123456").unwrap();
+        let focus = categories.create_category("Focus", "#123456", None).unwrap();
         categories
             .create_rule("exe", "editor64.exe", "exact", focus.id)
             .unwrap();
@@ -799,7 +848,7 @@ mod tests {
     #[test]
     fn consecutive_rows_of_the_same_app_merge_into_one_timeline_block() {
         let (store, categories, path) = temp_store();
-        let focus = categories.create_category("Focus", "#123456").unwrap();
+        let focus = categories.create_category("Focus", "#123456", None).unwrap();
         categories
             .create_rule("exe", "editor64.exe", "exact", focus.id)
             .unwrap();

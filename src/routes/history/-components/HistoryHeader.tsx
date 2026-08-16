@@ -8,6 +8,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  categoryOptions,
+  categoryValueLabels,
+} from "@/components/CategoryOptions";
 import type { Category, WorkSession } from "@/types";
 import { ALL_CATEGORIES, UNCATEGORIZED } from "./constants";
 import type { TimeRange } from "./timeRange";
@@ -59,22 +63,20 @@ export function HistoryHeader({
         items={{
           [ALL_CATEGORIES]: "All categories",
           [UNCATEGORIZED]: "Uncategorized",
-          ...Object.fromEntries(
-            categories.map((category) => [String(category.id), category.name]),
-          ),
+          ...categoryValueLabels(categories),
         }}
       >
-        <SelectTrigger size="sm" className="w-40">
+        <SelectTrigger
+          size="sm"
+          className="w-40"
+          title="Picking a category also shows its subcategories"
+        >
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
           <SelectItem value={ALL_CATEGORIES}>All categories</SelectItem>
           <SelectItem value={UNCATEGORIZED}>Uncategorized</SelectItem>
-          {categories.map((category) => (
-            <SelectItem key={category.id} value={String(category.id)}>
-              {category.name}
-            </SelectItem>
-          ))}
+          {categoryOptions(categories)}
         </SelectContent>
       </Select>
       <TimeRangeFilter

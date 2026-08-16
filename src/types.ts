@@ -21,6 +21,7 @@ export interface Category {
   id: number;
   name: string;
   color: string;
+  parent_id: number | null;
 }
 
 export type KeyKind = "exe" | "domain" | "url";

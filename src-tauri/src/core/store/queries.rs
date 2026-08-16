@@ -258,8 +258,12 @@ impl SessionFilter {
         match &self.category {
             CategoryFilter::All => {}
             CategoryFilter::Uncategorized => clauses.push("cat.id IS NULL".to_string()),
+            // Picking a parent means "this category and everything filed under it".
             CategoryFilter::Category(id) => {
-                clauses.push("cat.id = ?".to_string());
+                clauses.push(format!(
+                    "cat.id IN ({})",
+                    category::subtree_ids_sql("SELECT ?")
+                ));
                 binds.push(Box::new(*id));
             }
         }
@@ -405,7 +409,7 @@ mod stats_tests {
     #[test]
     fn category_breakdown_resolves_via_rules_and_groups_uncategorized_separately() {
         let (reader, categories, conn, path) = temp_reader();
-        let cat = categories.create_category("Dev", "#111111").unwrap();
+        let cat = categories.create_category("Dev", "#111111", None).unwrap();
         categories
             .create_rule("exe", "myeditor.exe", "exact", cat.id)
             .unwrap();
@@ -445,6 +449,64 @@ mod stats_tests {
             .find(|c| c.category_id.is_none())
             .unwrap();
         assert!((uncategorized.total_seconds - 300.0).abs() < 0.01);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn filtering_by_a_parent_category_includes_everything_nested_under_it() {
+        let (reader, categories, conn, path) = temp_reader();
+        let work = categories.create_category("Work", "#111111", None).unwrap();
+        let reading = categories
+            .create_category("Reading", "#222222", Some(work.id))
+            .unwrap();
+        let papers = categories
+            .create_category("Papers", "#333333", Some(reading.id))
+            .unwrap();
+        let personal = categories
+            .create_category("Personal", "#444444", None)
+            .unwrap();
+        categories
+            .create_rule("exe", "work.exe", "exact", work.id)
+            .unwrap();
+        categories
+            .create_rule("exe", "papers.exe", "exact", papers.id)
+            .unwrap();
+        categories
+            .create_rule("exe", "personal.exe", "exact", personal.id)
+            .unwrap();
+
+        for exe in ["work.exe", "papers.exe", "personal.exe"] {
+            insert_session(
+                &conn,
+                exe,
+                None,
+                exe,
+                "exe",
+                "2024-06-15T10:00:00Z",
+                Some("2024-06-15T10:10:00Z"),
+            );
+        }
+
+        let filter = SessionFilter {
+            category: CategoryFilter::Category(work.id),
+            ..Default::default()
+        };
+        let mut names: Vec<String> = reader
+            .list_sessions(50, 0, &filter)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.app_name)
+            .collect();
+        names.sort();
+        assert_eq!(names, ["papers.exe", "work.exe"]);
+        assert_eq!(reader.count_sessions(&filter).unwrap(), 2);
+
+        let leaf_only = SessionFilter {
+            category: CategoryFilter::Category(papers.id),
+            ..Default::default()
+        };
+        assert_eq!(reader.count_sessions(&leaf_only).unwrap(), 1);
 
         let _ = std::fs::remove_file(&path);
     }

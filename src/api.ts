@@ -66,16 +66,21 @@ export function recategorizeAll(): Promise<RecategorizeOutcome> {
   return invoke("recategorize_all");
 }
 
-export function createCategory(name: string, color: string): Promise<Category> {
-  return invoke("create_category", { name, color });
+export function createCategory(
+  name: string,
+  color: string,
+  parentId: number | null,
+): Promise<Category> {
+  return invoke("create_category", { name, color, parentId });
 }
 
 export function updateCategory(
   id: number,
   name: string,
   color: string,
+  parentId: number | null,
 ): Promise<void> {
-  return invoke("update_category", { id, name, color });
+  return invoke("update_category", { id, name, color, parentId });
 }
 
 export function deleteCategory(id: number): Promise<void> {

@@ -3,13 +3,14 @@ use rusqlite::params;
 use serde::Serialize;
 
 use super::sqlite::SharedConnection;
-use crate::core::category::{KeyKind, MatchKind};
+use crate::core::category::{subtree_ids_sql, KeyKind, MatchKind};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Category {
     pub id: i64,
     pub name: String,
     pub color: String,
+    pub parent_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -30,64 +31,147 @@ pub struct CategoryStore {
     conn: SharedConnection,
 }
 
+/// Names only have to be unique among siblings, so the raw constraint error would be
+/// misleading — the same name elsewhere in the tree is fine.
+fn name_clash(err: rusqlite::Error, name: &str, parent_id: Option<i64>) -> anyhow::Error {
+    let unique_violation = matches!(
+        err.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::ConstraintViolation)
+    ) && err.to_string().contains("UNIQUE");
+    if !unique_violation {
+        return err.into();
+    }
+    match parent_id {
+        Some(_) => anyhow!("a subcategory named \"{name}\" already exists under this parent"),
+        None => anyhow!("a top-level category named \"{name}\" already exists"),
+    }
+}
+
+/// Turns the foreign key's opaque "constraint failed" into something the UI can show.
+fn ensure_exists(conn: &rusqlite::Connection, category_id: i64) -> Result<()> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM categories WHERE id = ?1)",
+        params![category_id],
+        |row| row.get(0),
+    )?;
+    if !exists {
+        bail!("category {category_id} does not exist");
+    }
+    Ok(())
+}
+
 impl CategoryStore {
     pub fn new(conn: SharedConnection) -> Self {
         Self { conn }
     }
 
+    /// Every category, flat — the caller (the UI) assembles the tree from `parent_id`.
+    /// Siblings come out in the order they should be shown under their parent.
     pub fn list_categories(&self) -> Result<Vec<Category>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare("SELECT id, name, color FROM categories ORDER BY name COLLATE NOCASE, id")?;
+        let mut stmt = conn.prepare(
+            "SELECT id, name, color, parent_id FROM categories ORDER BY name COLLATE NOCASE, id",
+        )?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(Category {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     color: row.get(2)?,
+                    parent_id: row.get(3)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
-    pub fn create_category(&self, name: &str, color: &str) -> Result<Category> {
+    pub fn create_category(
+        &self,
+        name: &str,
+        color: &str,
+        parent_id: Option<i64>,
+    ) -> Result<Category> {
         let conn = self.conn.lock().unwrap();
+        if let Some(parent_id) = parent_id {
+            ensure_exists(&conn, parent_id)?;
+        }
         conn.execute(
-            "INSERT INTO categories (name, color) VALUES (?1, ?2)",
-            params![name, color],
-        )?;
+            "INSERT INTO categories (name, color, parent_id) VALUES (?1, ?2, ?3)",
+            params![name, color, parent_id],
+        )
+        .map_err(|err| name_clash(err, name, parent_id))?;
         Ok(Category {
             id: conn.last_insert_rowid(),
             name: name.to_string(),
             color: color.to_string(),
+            parent_id,
         })
     }
 
-    pub fn update_category(&self, id: i64, name: &str, color: &str) -> Result<()> {
-        self.conn.lock().unwrap().execute(
-            "UPDATE categories SET name = ?1, color = ?2 WHERE id = ?3",
-            params![name, color, id],
-        )?;
+    pub fn update_category(
+        &self,
+        id: i64,
+        name: &str,
+        color: &str,
+        parent_id: Option<i64>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        if let Some(parent_id) = parent_id {
+            ensure_exists(&conn, parent_id)?;
+            // Re-parenting a category under itself or under one of its own descendants would
+            // cut that whole branch loose from every root.
+            let cycles: bool = conn.query_row(
+                &format!("SELECT ?2 IN ({})", subtree_ids_sql("SELECT ?1")),
+                params![id, parent_id],
+                |row| row.get(0),
+            )?;
+            if cycles {
+                bail!("a category cannot be moved inside itself");
+            }
+        }
+        conn.execute(
+            "UPDATE categories SET name = ?1, color = ?2, parent_id = ?3 WHERE id = ?4",
+            params![name, color, parent_id, id],
+        )
+        .map_err(|err| name_clash(err, name, parent_id))?;
         Ok(())
     }
 
+    /// Deletes a category *and everything nested under it* — a subcategory has no meaning
+    /// without its parent, so the whole branch goes, taking its rules and pins with it.
     pub fn delete_category(&self, id: i64) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        tx.execute(
-            "DELETE FROM category_rules WHERE category_id = ?1",
-            params![id],
-        )?;
-        tx.execute(
-            "UPDATE sessions SET category_id = NULL WHERE category_id = ?1",
-            params![id],
-        )?;
-        tx.execute(
-            "DELETE FROM work_session_categories WHERE category_id = ?1",
-            params![id],
-        )?;
-        tx.execute("DELETE FROM categories WHERE id = ?1", params![id])?;
+        // Deepest first: a parent still referenced by one of its children cannot be deleted.
+        let doomed: Vec<i64> = {
+            let mut stmt = tx.prepare(
+                "WITH RECURSIVE subtree(id, depth) AS (
+                    SELECT ?1, 0
+                    UNION
+                    SELECT c.id, subtree.depth + 1 FROM categories c JOIN subtree ON c.parent_id = subtree.id
+                )
+                SELECT id FROM subtree ORDER BY depth DESC",
+            )?;
+            let ids = stmt
+                .query_map(params![id], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            ids
+        };
+        for category_id in &doomed {
+            tx.execute(
+                "DELETE FROM category_rules WHERE category_id = ?1",
+                params![category_id],
+            )?;
+            tx.execute(
+                "UPDATE sessions SET category_id = NULL WHERE category_id = ?1",
+                params![category_id],
+            )?;
+            tx.execute(
+                "DELETE FROM work_session_categories WHERE category_id = ?1",
+                params![category_id],
+            )?;
+            tx.execute("DELETE FROM categories WHERE id = ?1", params![category_id])?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -212,7 +296,7 @@ mod tests {
             "a fresh database starts with no taxonomy at all — the default rules are generated, not seeded here"
         );
 
-        let created = store.create_category("Focus", "#123456").unwrap();
+        let created = store.create_category("Focus", "#123456", None).unwrap();
         assert_eq!(created.name, "Focus");
         assert!(store
             .list_categories()
@@ -221,7 +305,7 @@ mod tests {
             .any(|c| c.id == created.id));
 
         store
-            .update_category(created.id, "Deep Work", "#654321")
+            .update_category(created.id, "Deep Work", "#654321", None)
             .unwrap();
         let updated = store
             .list_categories()
@@ -288,8 +372,8 @@ mod tests {
         let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
         let filter = crate::core::store::queries::SessionFilter::default();
 
-        let ruled = store.create_category("Ruled", "#111111").unwrap();
-        let manual = store.create_category("Manual", "#222222").unwrap();
+        let ruled = store.create_category("Ruled", "#111111", None).unwrap();
+        let manual = store.create_category("Manual", "#222222", None).unwrap();
         store
             .create_rule("exe", "ruled.exe", "exact", ruled.id)
             .unwrap();
@@ -332,8 +416,8 @@ mod tests {
         let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
         let filter = crate::core::store::queries::SessionFilter::default();
 
-        let rule_cat = store.create_category("RuleCat", "#111111").unwrap();
-        let pin_cat = store.create_category("PinCat", "#333333").unwrap();
+        let rule_cat = store.create_category("RuleCat", "#111111", None).unwrap();
+        let pin_cat = store.create_category("PinCat", "#333333", None).unwrap();
         store
             .create_rule("exe", "shared.exe", "exact", rule_cat.id)
             .unwrap();
@@ -368,7 +452,7 @@ mod tests {
         let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
         let filter = crate::core::store::queries::SessionFilter::default();
 
-        let english = store.create_category("English", "#111111").unwrap();
+        let english = store.create_category("English", "#111111", None).unwrap();
         let a = insert_browser_session(&conn, "https://chatgpt.com/c/AAA", "2024-06-15T00:00:00Z");
         let b = insert_browser_session(&conn, "https://chatgpt.com/c/BBB", "2024-06-15T01:00:00Z");
         let c = insert_browser_session(&conn, "https://chatgpt.com/c/CCC", "2024-06-15T02:00:00Z");
@@ -401,7 +485,7 @@ mod tests {
         let (store, path) = temp_store();
         let conn = store.conn.clone();
 
-        let pin_cat = store.create_category("PinCat", "#333333").unwrap();
+        let pin_cat = store.create_category("PinCat", "#333333", None).unwrap();
         let a = insert_session(&conn, "pinned.exe", "2024-06-15T00:00:00Z");
         let b = insert_browser_session(&conn, "https://chatgpt.com/c/AAA", "2024-06-15T01:00:00Z");
         store.set_row_categories(&[a, b], Some(pin_cat.id)).unwrap();
@@ -429,7 +513,7 @@ mod tests {
         let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
         let filter = crate::core::store::queries::SessionFilter::default();
 
-        let cat = store.create_category("Games", "#111111").unwrap();
+        let cat = store.create_category("Games", "#111111", None).unwrap();
         store
             .create_rule("exe", "steam", "substring", cat.id)
             .unwrap();
@@ -452,7 +536,7 @@ mod tests {
         let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
         let filter = crate::core::store::queries::SessionFilter::default();
 
-        let cat = store.create_category("Work", "#222222").unwrap();
+        let cat = store.create_category("Work", "#222222", None).unwrap();
         store
             .create_rule("domain", r"^[\w-]+\.corp\.example\.com$", "regex", cat.id)
             .unwrap();
@@ -491,7 +575,7 @@ mod tests {
     #[test]
     fn invalid_regex_pattern_is_rejected_up_front() {
         let (store, path) = temp_store();
-        let cat = store.create_category("Bad", "#333333").unwrap();
+        let cat = store.create_category("Bad", "#333333", None).unwrap();
         assert!(store
             .create_rule("exe", "(unclosed", "regex", cat.id)
             .is_err());
@@ -505,8 +589,8 @@ mod tests {
         let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
         let filter = crate::core::store::queries::SessionFilter::default();
 
-        let broad = store.create_category("Broad", "#444444").unwrap();
-        let specific = store.create_category("Specific", "#555555").unwrap();
+        let broad = store.create_category("Broad", "#444444", None).unwrap();
+        let specific = store.create_category("Specific", "#555555", None).unwrap();
         store
             .create_rule("exe", "steam", "substring", broad.id)
             .unwrap();
@@ -529,9 +613,9 @@ mod tests {
         let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
         let filter = crate::core::store::queries::SessionFilter::default();
 
-        let substring_cat = store.create_category("Substring", "#111111").unwrap();
-        let prefix_cat = store.create_category("Prefix", "#222222").unwrap();
-        let exact_cat = store.create_category("Exact", "#333333").unwrap();
+        let substring_cat = store.create_category("Substring", "#111111", None).unwrap();
+        let prefix_cat = store.create_category("Prefix", "#222222", None).unwrap();
+        let exact_cat = store.create_category("Exact", "#333333", None).unwrap();
         store
             .create_rule("exe", "editor", "substring", substring_cat.id)
             .unwrap();
@@ -577,8 +661,8 @@ mod tests {
         let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
         let filter = crate::core::store::queries::SessionFilter::default();
 
-        let short_cat = store.create_category("Short", "#111111").unwrap();
-        let long_cat = store.create_category("Long", "#222222").unwrap();
+        let short_cat = store.create_category("Short", "#111111", None).unwrap();
+        let long_cat = store.create_category("Long", "#222222", None).unwrap();
         store
             .create_rule("domain", "example.net", "substring", short_cat.id)
             .unwrap();
@@ -607,8 +691,8 @@ mod tests {
         let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
         let filter = crate::core::store::queries::SessionFilter::default();
 
-        let regex_cat = store.create_category("Regex", "#111111").unwrap();
-        let substring_cat = store.create_category("Substring", "#222222").unwrap();
+        let regex_cat = store.create_category("Regex", "#111111", None).unwrap();
+        let substring_cat = store.create_category("Substring", "#222222", None).unwrap();
         store
             .create_rule("exe", r"^my.*\.exe$", "regex", regex_cat.id)
             .unwrap();
@@ -633,8 +717,8 @@ mod tests {
         let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
         let filter = crate::core::store::queries::SessionFilter::default();
 
-        let work = store.create_category("Work", "#111111").unwrap();
-        let english = store.create_category("English study", "#222222").unwrap();
+        let work = store.create_category("Work", "#111111", None).unwrap();
+        let english = store.create_category("English study", "#222222", None).unwrap();
         store
             .create_rule("domain", "docs.example.org", "exact", work.id)
             .unwrap();
@@ -677,7 +761,7 @@ mod tests {
         let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
         let filter = crate::core::store::queries::SessionFilter::default();
 
-        let cat = store.create_category("Docs", "#111111").unwrap();
+        let cat = store.create_category("Docs", "#111111", None).unwrap();
         store
             .create_rule("url", "myeditor.exe", "substring", cat.id)
             .unwrap();
@@ -690,9 +774,88 @@ mod tests {
     }
 
     #[test]
+    fn deleting_a_parent_takes_its_whole_subtree_with_it() {
+        let (store, path) = temp_store();
+        let conn = store.conn.clone();
+
+        let work = store.create_category("Work", "#111111", None).unwrap();
+        let reading = store
+            .create_category("Reading", "#222222", Some(work.id))
+            .unwrap();
+        let papers = store
+            .create_category("Papers", "#333333", Some(reading.id))
+            .unwrap();
+        let personal = store.create_category("Personal", "#444444", None).unwrap();
+        store
+            .create_rule("exe", "papers.exe", "exact", papers.id)
+            .unwrap();
+        let pinned = insert_session(&conn, "anything.exe", "2024-06-15T00:00:00Z");
+        store.set_row_category(pinned, Some(papers.id)).unwrap();
+
+        store.delete_category(work.id).unwrap();
+
+        let left: Vec<i64> = store
+            .list_categories()
+            .unwrap()
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        assert_eq!(left, vec![personal.id]);
+        assert!(store.list_rules().unwrap().is_empty());
+        let still_pinned: i64 = conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE category_id IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(still_pinned, 0);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_category_cannot_be_moved_under_one_of_its_own_descendants() {
+        let (store, path) = temp_store();
+        let work = store.create_category("Work", "#111111", None).unwrap();
+        let reading = store
+            .create_category("Reading", "#222222", Some(work.id))
+            .unwrap();
+        let papers = store
+            .create_category("Papers", "#333333", Some(reading.id))
+            .unwrap();
+
+        assert!(store
+            .update_category(work.id, "Work", "#111111", Some(papers.id))
+            .is_err());
+        assert!(store
+            .update_category(work.id, "Work", "#111111", Some(work.id))
+            .is_err());
+        assert!(store
+            .update_category(work.id, "Work", "#111111", Some(9999))
+            .is_err());
+
+        store
+            .update_category(papers.id, "Papers", "#333333", Some(work.id))
+            .expect("moving a category up to another branch is fine");
+        let parent_of_papers = store
+            .list_categories()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == papers.id)
+            .unwrap()
+            .parent_id;
+        assert_eq!(parent_of_papers, Some(work.id));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn create_rule_rejects_invalid_key_kind() {
         let (store, path) = temp_store();
-        let cat = store.create_category("Cat", "#111111").unwrap();
+        let cat = store.create_category("Cat", "#111111", None).unwrap();
         assert!(store.create_rule("bogus", "x", "exact", cat.id).is_err());
         let _ = std::fs::remove_file(&path);
     }

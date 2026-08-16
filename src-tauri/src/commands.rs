@@ -101,9 +101,10 @@ pub fn create_category(
     categories: State<CategoryStore>,
     name: String,
     color: String,
+    parent_id: Option<i64>,
 ) -> Result<Category, String> {
     categories
-        .create_category(&name, &color)
+        .create_category(&name, &color, parent_id)
         .map_err(|e| e.to_string())
 }
 
@@ -113,9 +114,10 @@ pub fn update_category(
     id: i64,
     name: String,
     color: String,
+    parent_id: Option<i64>,
 ) -> Result<(), String> {
     categories
-        .update_category(id, &name, &color)
+        .update_category(id, &name, &color, parent_id)
         .map_err(|e| e.to_string())
 }
 

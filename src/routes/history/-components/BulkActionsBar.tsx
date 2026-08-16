@@ -2,10 +2,13 @@ import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
-  SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  categoryOptions,
+  categoryValueLabels,
+} from "@/components/CategoryOptions";
 import type { Category } from "@/types";
 
 export function BulkActionsBar({
@@ -31,20 +34,12 @@ export function BulkActionsBar({
       <Select
         value={bulkCategory}
         onValueChange={(value) => onBulkCategoryChange(value ?? "")}
-        items={Object.fromEntries(
-          categories.map((category) => [String(category.id), category.name]),
-        )}
+        items={categoryValueLabels(categories)}
       >
         <SelectTrigger size="sm" className="w-40">
           <SelectValue placeholder="Set category…" />
         </SelectTrigger>
-        <SelectContent>
-          {categories.map((category) => (
-            <SelectItem key={category.id} value={String(category.id)}>
-              {category.name}
-            </SelectItem>
-          ))}
-        </SelectContent>
+        <SelectContent>{categoryOptions(categories)}</SelectContent>
       </Select>
       <Button
         size="sm"

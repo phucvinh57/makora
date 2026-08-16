@@ -87,6 +87,22 @@ pub fn rule_join_sql(rule_alias: &str, sessions_alias: &str) -> String {
     )
 }
 
+/// A category subtree as a `SELECT id` — the seed rows plus every descendant.
+///
+/// `seed_select` supplies the roots (`"SELECT ?"`, a lookup, …); the recursion walks
+/// `parent_id` downwards. `UNION` (not `UNION ALL`) keeps a corrupted cycle from looping
+/// forever even though [`CategoryStore::update_category`] refuses to create one.
+pub fn subtree_ids_sql(seed_select: &str) -> String {
+    format!(
+        "WITH RECURSIVE subtree(id) AS (
+            {seed_select}
+            UNION
+            SELECT c.id FROM categories c JOIN subtree ON c.parent_id = subtree.id
+        )
+        SELECT id FROM subtree"
+    )
+}
+
 pub fn category_key(exe_path: &str, url: Option<&str>) -> (KeyKind, String) {
     match url.and_then(normalized_domain) {
         Some(domain) => (KeyKind::Domain, domain),

@@ -15,6 +15,7 @@ import {
   setSessionRowCategory,
   setSessionsCategory,
 } from "@/api";
+import { categoryPath } from "@/categories";
 import type { SessionRow } from "@/types";
 import { BulkActionsBar } from "./-components/BulkActionsBar";
 import {
@@ -170,8 +171,10 @@ function HistoryPage() {
         toast.success("Cleared this activity's category");
         return;
       }
-      const categoryName =
-        categories.find((c) => c.id === categoryId)?.name ?? "category";
+      const category = categories.find((c) => c.id === categoryId);
+      const categoryName = category
+        ? categoryPath(category, categories)
+        : "category";
       toast.success(`Set to ${categoryName}`, {
         description: row.window_title,
       });
