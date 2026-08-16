@@ -48,8 +48,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # Tauri renders its webview with WebKitGTK and its tray icon with
-      # libayatana-appindicator, neither of which the runner image carries.
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |

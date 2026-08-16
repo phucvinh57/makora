@@ -1,8 +1,6 @@
 import { cn } from "@/lib/utils";
 import type { Category } from "@/types";
 
-/** Multi-select toggle chips for a work session's target categories —
- * everything resolved to a selected category counts as on-task. */
 export function CategoryPicker({
   categories,
   selected,

@@ -51,9 +51,6 @@ const MATCH_KIND_LABEL: Record<MatchKind, string> = {
   regex: "matches",
 };
 
-// Base UI's <SelectValue> only shows an item's label if the root is told
-// what it is via `items` — it won't infer it from a matching <SelectItem>'s
-// children, so every select below needs its own map alongside the item list.
 const MATCH_KIND_SELECT_LABEL: Record<MatchKind, string> = {
   exact: "is",
   prefix: "starts with",
@@ -61,13 +58,6 @@ const MATCH_KIND_SELECT_LABEL: Record<MatchKind, string> = {
   regex: "matches (regex)",
 };
 
-// Strips the scheme, `www.` prefix, and port from a pasted `domain`/`url`
-// pattern -- so pasting a full URL straight from the address bar still
-// matches `category_key`/`url_key`, neither of which ever contains those.
-// Parsed via the native `URL` API rather than by hand; a pattern is only fed
-// to it as-is when it already looks absolute (contains `://`), otherwise an
-// `http://` scheme is assumed first -- feeding a bare `host:port` straight to
-// `URL` would otherwise get misparsed as `host` being the scheme.
 function stripSchemeAndWww(pattern: string): string {
   let url: URL;
   try {
@@ -158,17 +148,10 @@ export function RulesTab({
       pattern: string;
       matchKind: MatchKind;
     }) => {
-      // Strip a pasted full URL down to the scheme-less form
-      // `category_key`/`url_key` are matched against, before any other
-      // normalization below.
       const stripped =
         matchKind !== "regex" && (keyKind === "domain" || keyKind === "url")
           ? stripSchemeAndWww(pattern.trim())
           : pattern.trim();
-      // Lowercasing canonicalizes exe/domain exact/prefix/substring patterns
-      // (matching is case-insensitive either way), but would corrupt
-      // case-sensitive regex escapes like `\D`/`\S`/`\W` and misrender a
-      // URL path's casing, so regex and url patterns are sent as-is.
       const normalized =
         matchKind === "regex" || keyKind === "url"
           ? stripped

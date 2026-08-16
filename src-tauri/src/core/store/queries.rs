@@ -18,8 +18,6 @@ pub struct SessionRow {
     pub category_color: Option<String>,
     pub category_is_pinned: bool,
 }
-/// Total time and top breakdowns for `HistoryReader::activity_stats` over a
-/// date range — the aggregate counterpart to `list_sessions`'s raw rows.
 #[derive(Debug, Clone, Serialize)]
 pub struct ActivityStats {
     pub total_seconds: f64,
@@ -29,8 +27,6 @@ pub struct ActivityStats {
     pub daily: Vec<DailyStat>,
 }
 
-/// Time spent under one resolved category (or `None`/`null` for
-/// "Uncategorized"), ordered by `total_seconds` descending.
 #[derive(Debug, Clone, Serialize)]
 pub struct CategoryStat {
     pub category_id: Option<i64>,
@@ -40,8 +36,6 @@ pub struct CategoryStat {
     pub session_count: i64,
 }
 
-/// Time spent under one app/site categorization key, ordered by
-/// `total_seconds` descending and capped to the top entries.
 #[derive(Debug, Clone, Serialize)]
 pub struct AppStat {
     pub label: String,
@@ -51,15 +45,12 @@ pub struct AppStat {
     pub session_count: i64,
 }
 
-/// Total time tracked on one local-time calendar day, ordered oldest first.
 #[derive(Debug, Clone, Serialize)]
 pub struct DailyStat {
     pub day: String,
     pub total_seconds: f64,
 }
 
-/// How many app/site rows `HistoryReader::activity_stats` returns in its
-/// `apps` breakdown — enough to be useful without overwhelming the chart.
 const TOP_APPS_LIMIT: i64 = 15;
 
 pub struct HistoryReader {
@@ -71,7 +62,6 @@ impl HistoryReader {
         Self { conn }
     }
 
-    /// Total number of activity rows matching `filter`, for pagination.
     pub fn count_sessions(&self, filter: &SessionFilter) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
         let (where_sql, binds) = filter.to_sql();
@@ -89,11 +79,6 @@ impl HistoryReader {
         Ok(conn.query_row(&sql, param_refs.as_slice(), |row| row.get(0))?)
     }
 
-    /// A page of activity rows (app focus and browser-tab rows alike)
-    /// matching `filter`, newest first. Category is resolved at read time —
-    /// a per-session pin wins over a rule, via `COALESCE` — rather than
-    /// stored denormalized, so editing a rule re-categorizes historical
-    /// sessions immediately instead of only affecting future ones.
     pub fn list_sessions(
         &self,
         limit: i64,
@@ -140,24 +125,6 @@ impl HistoryReader {
         Ok(rows)
     }
 
-    /// Aggregates tracked time between `start` and `end` (RFC 3339 UTC
-    /// bounds, half-open: `start_time >= start AND start_time < end`) into a
-    /// total, a per-category breakdown, a top-apps/sites breakdown, and a
-    /// per-day breakdown bucketed in the machine's local time zone (so a
-    /// "day" lines up with the user's clock even though `start_time` is
-    /// stored in UTC).
-    ///
-    /// A session still open (`end_time IS NULL`) contributes nothing yet —
-    /// its duration isn't known until it closes — rather than guessing with
-    /// `now()`, which would make the same range's total grow every time this
-    /// is called while a session is focused.
-    ///
-    /// Category resolution reuses the exact join stack `list_sessions` uses
-    /// (per-session pin, then rule, via
-    /// `category::rule_join_sql`'s deterministic single-winner subquery) so
-    /// a `SUM` here can never double-count a session across categories, and
-    /// a total here always agrees with what the history page would show for
-    /// the same range/category filter.
     pub fn activity_stats(&self, start: &str, end: &str) -> Result<ActivityStats> {
         const DURATION: &str = "(julianday(s.end_time) - julianday(s.start_time)) * 86400.0";
         let conn = self.conn.lock().unwrap();
@@ -251,9 +218,6 @@ impl HistoryReader {
     }
 }
 
-/// How the category filter narrows `list_sessions`/`count_sessions`: show
-/// everything, only rows with no resolved category, or only rows resolving
-/// to one specific category.
 #[derive(Debug, Clone, Default)]
 pub enum CategoryFilter {
     #[default]
@@ -262,31 +226,15 @@ pub enum CategoryFilter {
     Category(i64),
 }
 
-/// The search box, category picker, and time-range picker on the history
-/// page, combined into a single filter so `list_sessions`/`count_sessions`
-/// stay in lockstep (a page of rows and its total must be counted under the
-/// same conditions).
 #[derive(Debug, Clone, Default)]
 pub struct SessionFilter {
-    /// Substring matched (case-insensitively) against app name, window
-    /// title, and URL.
     pub search: Option<String>,
     pub category: CategoryFilter,
-    /// RFC 3339 UTC bounds, each optional. A row matches when it *overlaps*
-    /// the range — not when its `start_time` falls inside it, the way
-    /// `activity_stats` buckets — because the question this filter answers
-    /// is "what was I doing between these two instants", and an activity
-    /// that began before the range and ran into it is part of that answer.
-    /// A still-open row (`end_time IS NULL`) counts as running through the
-    /// present, so it overlaps anything starting after it began.
     pub start: Option<String>,
     pub end: Option<String>,
 }
 
 impl SessionFilter {
-    /// Builds a `WHERE`-clause body (without the `WHERE` keyword, always
-    /// non-empty thanks to the `1=1` filler) and its bound parameters, in
-    /// the order they appear in the SQL.
     fn to_sql(&self) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
         let mut clauses = vec!["1=1".to_string()];
         let mut binds: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -316,8 +264,6 @@ impl SessionFilter {
             }
         }
 
-        // Overlap, not containment: a row is in range unless it ends before
-        // the range opens or starts after it closes.
         if let Some(start) = &self.start {
             clauses.push("(s.end_time IS NULL OR s.end_time > ?)".to_string());
             binds.push(Box::new(start.clone()));
@@ -339,10 +285,6 @@ mod stats_tests {
     use crate::core::store::categories::CategoryStore;
     use crate::core::store::sqlite::open_connection;
 
-    // Same disposable-file convention as `categories.rs`'s tests: a fresh
-    // on-disk SQLite database per test (migrations register the `regexp`
-    // function and seed default categories, which an in-memory `:memory:`
-    // connection would need to redo identically anyway).
     fn temp_reader() -> (
         HistoryReader,
         CategoryStore,
@@ -398,7 +340,7 @@ mod stats_tests {
             "exe",
             "2024-06-15T10:00:00Z",
             Some("2024-06-15T10:10:00Z"),
-        ); // 600s
+        );
         insert_session(
             &conn,
             "chrome.exe",
@@ -407,7 +349,7 @@ mod stats_tests {
             "exe",
             "2024-06-15T11:00:00Z",
             None,
-        ); // still open
+        );
 
         let stats = reader
             .activity_stats("2024-06-15T00:00:00Z", "2024-06-16T00:00:00Z")
@@ -432,7 +374,7 @@ mod stats_tests {
             "exe",
             "2024-06-14T23:59:00Z",
             Some("2024-06-15T00:00:00Z"),
-        ); // before range
+        );
         insert_session(
             &conn,
             "code.exe",
@@ -441,7 +383,7 @@ mod stats_tests {
             "exe",
             "2024-06-15T00:00:00Z",
             Some("2024-06-15T00:10:00Z"),
-        ); // at start: included
+        );
         insert_session(
             &conn,
             "code.exe",
@@ -450,7 +392,7 @@ mod stats_tests {
             "exe",
             "2024-06-16T00:00:00Z",
             Some("2024-06-16T00:10:00Z"),
-        ); // at end: excluded
+        );
 
         let stats = reader
             .activity_stats("2024-06-15T00:00:00Z", "2024-06-16T00:00:00Z")
@@ -476,7 +418,7 @@ mod stats_tests {
             "exe",
             "2024-06-15T10:00:00Z",
             Some("2024-06-15T10:10:00Z"),
-        ); // 600s, Dev
+        );
         insert_session(
             &conn,
             "plainapp.exe",
@@ -485,7 +427,7 @@ mod stats_tests {
             "exe",
             "2024-06-15T11:00:00Z",
             Some("2024-06-15T11:05:00Z"),
-        ); // 300s, uncategorized
+        );
 
         let stats = reader
             .activity_stats("2024-06-15T00:00:00Z", "2024-06-16T00:00:00Z")
@@ -541,7 +483,7 @@ mod stats_tests {
             "exe",
             "2024-06-15T08:00:00Z",
             Some("2024-06-15T09:00:00Z"),
-        ); // ends before the range opens
+        );
         insert_session(
             &conn,
             "straddles.exe",
@@ -550,7 +492,7 @@ mod stats_tests {
             "exe",
             "2024-06-15T09:30:00Z",
             Some("2024-06-15T10:30:00Z"),
-        ); // began before the range but ran into it
+        );
         insert_session(
             &conn,
             "inside.exe",
@@ -568,7 +510,7 @@ mod stats_tests {
             "exe",
             "2024-06-15T11:30:00Z",
             None,
-        ); // still open: runs through the present
+        );
         insert_session(
             &conn,
             "after.exe",
@@ -577,7 +519,7 @@ mod stats_tests {
             "exe",
             "2024-06-15T13:00:00Z",
             Some("2024-06-15T13:10:00Z"),
-        ); // starts after the range closes
+        );
 
         let filter = SessionFilter {
             start: Some("2024-06-15T10:00:00Z".to_string()),
@@ -603,7 +545,7 @@ mod stats_tests {
             "exe",
             "2024-06-15T10:00:00Z",
             Some("2024-06-15T10:10:00Z"),
-        ); // 600s
+        );
         insert_session(
             &conn,
             "code.exe",
@@ -612,7 +554,7 @@ mod stats_tests {
             "exe",
             "2024-06-16T10:00:00Z",
             Some("2024-06-16T10:20:00Z"),
-        ); // 1200s
+        );
 
         let stats = reader
             .activity_stats("2024-06-15T00:00:00Z", "2024-06-17T00:00:00Z")

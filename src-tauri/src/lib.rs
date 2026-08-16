@@ -15,29 +15,14 @@ use crate::core::{
     SessionTracker, SqliteStore, WatchEvent, WorkSessionStore,
 };
 
-/// Shared by the platform-event thread, the tab-ingest server, and the
-/// shutdown handler.
 type SharedTracker = Arc<Mutex<SessionTracker<SqliteStore>>>;
 
 pub fn run() {
-    // Registered before anything else, and before any of the state below is
-    // built: only one Makora process may own the database write path, the
-    // ingest port and the tray icon. A second launch (taskbar icon, autostart
-    // racing a manual start) hands its arguments to the running instance —
-    // which just shows its window — and exits from inside this plugin's
-    // initializer, i.e. before `setup` runs. Without it the second process
-    // would close the running instance's open activity row via
-    // `close_dangling_sessions`, then die on the ingest port already being
-    // bound, which is what made clicking the taskbar icon look like a crash.
     let mut builder =
         tauri::Builder::default().plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tray::show_main_window(app);
         }));
 
-    // Dev builds load their UI from `devUrl` (the Vite dev server) rather
-    // than the bundled frontend, so registering one for autostart would
-    // point the OS at a binary that only works while `bun tauri dev` is
-    // running. Only production builds may register for autostart.
     if !cfg!(debug_assertions) {
         builder = builder.plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -72,18 +57,10 @@ pub fn run() {
             commands::work_session_stats,
         ])
         .setup(|app| {
-            // Opening the database happens here, after the single-instance
-            // plugin has had its say, so a second launch never touches it.
             let db_path =
                 database_path(app.handle()).context("resolving application data directory")?;
             eprintln!("makora: writing sessions to {}", db_path.display());
 
-            // One SQLite connection shared by the tracker's write path, the
-            // UI's read-only queries, and category edits — SQLite serializes
-            // writes at the file level regardless of connection count, so
-            // separate connections here would only add the risk of a
-            // `SQLITE_BUSY` error when two of them write at once, not any
-            // real concurrency.
             let conn = open_connection(&db_path).context("opening database")?;
             let ignore = Arc::new(IgnoreStore::new(conn.clone()));
             let store = SqliteStore::new(conn.clone());
@@ -100,10 +77,6 @@ pub fn run() {
 
             let (tx, rx) = mpsc::channel::<WatchEvent>();
 
-            // Query Linux presence before the focus watcher starts. When
-            // Makora itself starts while the screen is locked, this queues
-            // the initial away event ahead of the focus provider's initial
-            // focused-window sync, so no transient activity row is opened.
             #[cfg(target_os = "linux")]
             crate::core::platform::start_presence_watcher(tx.clone())
                 .context("starting presence watcher")?;

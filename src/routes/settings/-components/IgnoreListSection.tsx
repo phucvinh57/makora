@@ -42,9 +42,6 @@ const MATCH_KIND_LABEL: Record<MatchKind, string> = {
   regex: "matches",
 };
 
-// Base UI's <SelectValue> only shows an item's label if the root is told
-// what it is via `items` — it won't infer it from a matching <SelectItem>'s
-// children.
 const MATCH_KIND_SELECT_LABEL: Record<MatchKind, string> = {
   exact: "is",
   prefix: "starts with",
@@ -78,10 +75,6 @@ export function IgnoreListSection() {
 
   const createMutation = useMutation({
     mutationFn: () => {
-      // Lowercasing canonicalizes exact/substring patterns (matching is
-      // case-insensitive either way), but would corrupt case-sensitive
-      // regex escapes like `\D`/`\S`/`\W`, so regex patterns are sent as-is —
-      // same convention as the labelling rule form.
       const normalized =
         matchKind === "regex" ? pattern.trim() : pattern.trim().toLowerCase();
       return createIgnoreRule(kind, normalized, matchKind);

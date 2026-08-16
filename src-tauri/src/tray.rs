@@ -2,9 +2,6 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 
-/// Builds the tray icon: left-click (or the "Show" menu item) restores the
-/// main window, "Quit" exits the app. This is the only way back once the
-/// window has been closed.
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let show_item = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
@@ -38,14 +35,6 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Restores the main window, rebuilding it from `tauri.conf.json`'s window
-/// config if it was destroyed (see `lib.rs`'s `ExitRequested` handling) —
-/// closing the window frees its WebView2 process, so there's nothing to
-/// show/focus until a fresh one is built.
-///
-/// Also the single-instance handler: launching Makora again (taskbar icon,
-/// desktop entry) surfaces the running instance's window instead of starting
-/// a second process.
 pub fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();

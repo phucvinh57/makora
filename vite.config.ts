@@ -4,10 +4,7 @@ import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-// https://v2.tauri.app/start/frontend/vite/
 export default defineConfig({
-  // tanstackRouter must run before the react plugin — it generates
-  // routeTree.gen.ts from src/routes/** that the react plugin then compiles.
   plugins: [
     tanstackRouter({ target: "react", autoCodeSplitting: true }),
     react(),

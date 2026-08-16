@@ -24,9 +24,6 @@ import {
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 
-/** The `datetime-local` wire format this picker speaks, so it drops into the
- * places that used a native `datetime-local` input without touching either
- * side of the conversion. */
 const VALUE_FORMAT = "yyyy-MM-dd'T'HH:mm";
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
@@ -43,12 +40,6 @@ function formatValue(date: Date) {
   return format(date, VALUE_FORMAT);
 }
 
-/** A date *and* time picker. WebKitGTK's native `datetime-local` popup only
- * offers a calendar — the time has to be typed segment by segment — so the
- * whole control is ours: a month grid plus hour/minute columns.
- *
- * `value` is a local wall-clock `YYYY-MM-DDTHH:mm` string (empty = unset),
- * exactly what a `datetime-local` input reads and writes. */
 export function DateTimePicker({
   id,
   value,
@@ -59,12 +50,10 @@ export function DateTimePicker({
   className,
   "aria-label": ariaLabel,
 }: {
-  /** Lands on the trigger, so a `<label htmlFor>` can point at the control. */
   id?: string;
   value: string;
   onValueChange: (value: string) => void;
   placeholder?: string;
-  /** Show a "Clear" action — for open-ended windows, where "" is meaningful. */
   clearable?: boolean;
   disabled?: boolean;
   className?: string;
@@ -90,8 +79,6 @@ export function DateTimePicker({
           {selected ? format(selected, "MMM d, yyyy, HH:mm") : placeholder}
         </span>
       </PopoverTrigger>
-      {/* Mounted only while open, so the panel's view month re-seeds from the
-          current value every time it is opened. */}
       <PopoverContent className="w-auto p-0" align="start">
         <DateTimePanel
           selected={selected}
@@ -130,8 +117,6 @@ function DateTimePanel({
     end: endOfWeek(endOfMonth(month)),
   });
 
-  /** Editing one field keeps the rest: picking a day on an unset value lands
-   * on the current time rather than midnight. */
   const base = selected ?? new Date();
 
   return (
@@ -282,8 +267,6 @@ function NavButton({
   );
 }
 
-/** A scrolling column of hours or minutes; the selected entry is scrolled into
- * view when the panel opens so 23:55 doesn't start at the top of the list. */
 function TimeColumn({
   label,
   values,
@@ -299,8 +282,6 @@ function TimeColumn({
 
   useEffect(() => {
     selectedRef.current?.scrollIntoView({ block: "center" });
-    // Only on mount: scrolling on every change would fight the user's own
-    // scrolling while they pick.
   }, []);
 
   return (

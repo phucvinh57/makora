@@ -5,12 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use super::sqlite::SharedConnection;
 
-/// A user-created focus block: a time window plus what the user intended to
-/// do with it (a name, a planned duration, and which categories count as
-/// "on-task"). `end_time` is always set — start + target at creation, so the
-/// session "auto-ends" by simply reaching it — and is rewritten by an early
-/// stop or a manual edit. `target_seconds` keeps the original plan for
-/// comparing planned vs. actual after edits.
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkSession {
     pub id: i64,
@@ -23,43 +17,26 @@ pub struct WorkSession {
     pub category_ids: Vec<i64>,
 }
 
-/// A full rewrite of a work session, as sent by the edit dialog — every
-/// field is replaced, including the target-category set.
 #[derive(Debug, Clone, Deserialize)]
 pub struct WorkSessionUpdate {
     pub id: i64,
     pub name: String,
     pub note: Option<String>,
     pub target_seconds: i64,
-    /// RFC 3339 UTC.
     pub start_time: String,
     pub end_time: String,
     pub category_ids: Vec<i64>,
 }
 
-/// How the tracked history overlapping a work session's window breaks down
-/// against its target categories. Computed at read time from `sessions`
-/// rows, so category/rule edits after the fact re-evaluate past work
-/// sessions too.
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkSessionStats {
     pub window_start: String,
-    /// The analyzed window's end: `min(end_time, now)`, so an in-progress
-    /// session is only judged on the time that has actually elapsed.
     pub window_end: String,
     pub in_progress: bool,
     pub on_task_seconds: f64,
     pub off_task_seconds: f64,
-    /// Window time with no tracked session at all (machine idle, tracker
-    /// off). Counts toward neither on- nor off-task, but
-    /// `on + off + idle` always equals the window length so the timeline
-    /// strip can render edge to edge.
     pub idle_seconds: f64,
-    /// `on / (on + off)` as 0–100; 0 when nothing was tracked.
     pub focus_percent: f64,
-    /// Transitions from an on-task block to an off-task one. Idle gaps are
-    /// skipped: stepping away from the machine between two on-task blocks
-    /// isn't a context switch, coming back to a distraction is.
     pub switch_count: i64,
     pub apps: Vec<WorkSessionAppStat>,
     pub timeline: Vec<TimelineBlock>,
@@ -67,31 +44,22 @@ pub struct WorkSessionStats {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkSessionAppStat {
-    /// Domain for browser-tab keys, exe file stem otherwise — same labeling
-    /// convention as `HistoryReader::activity_stats`' top-apps breakdown.
     pub label: String,
-    /// `"exe"` or `"domain"` — which kind of key `label` came from.
     pub kind: String,
     pub on_task: bool,
     pub category_color: Option<String>,
     pub total_seconds: f64,
 }
 
-/// One contiguous stretch of the analyzed window, clipped to it.
 #[derive(Debug, Clone, Serialize)]
 pub struct TimelineBlock {
     pub start_time: String,
     pub end_time: String,
-    /// Empty for `"idle"` blocks.
     pub label: String,
-    /// `"on_task"`, `"off_task"`, or `"idle"`.
     pub kind: String,
     pub category_color: Option<String>,
 }
 
-/// One tracked `sessions` row overlapping the analyzed window, already
-/// clipped to it and tagged with whether its resolved category is one of the
-/// work session's targets.
 struct ClippedRow {
     start: DateTime<Utc>,
     end: DateTime<Utc>,
@@ -101,16 +69,8 @@ struct ClippedRow {
     color: Option<String>,
 }
 
-/// Adjacent tracked rows closer together than this merge into one timeline
-/// block (a browser closing one tab row and opening the next produces
-/// back-to-back rows, not a real gap), and gaps shorter than this don't
-/// become `idle` blocks.
 const GAP_TOLERANCE_SECONDS: f64 = 1.0;
 
-/// Storage for user-created work sessions and the read-time evaluation of
-/// tracked history against them. Shares the process-wide connection like
-/// every other store — SQLite serializes writes at the file level, so a
-/// separate connection would add `SQLITE_BUSY` risk, not concurrency.
 pub struct WorkSessionStore {
     conn: SharedConnection,
 }
@@ -120,9 +80,6 @@ impl WorkSessionStore {
         Self { conn }
     }
 
-    /// `start_time: None` starts the session now. `end_time` is derived as
-    /// start + target — there is no timer anywhere; reaching that instant
-    /// *is* the auto-end.
     pub fn create(
         &self,
         name: &str,
@@ -168,16 +125,10 @@ impl WorkSessionStore {
         })
     }
 
-    /// Newest first. The per-session category-id lookup is a second query
-    /// per row, which is fine at "a handful of work sessions a day" scale.
     pub fn list(&self) -> Result<Vec<WorkSession>> {
         self.query(None, -1, 0)
     }
 
-    /// One page of sessions, newest first, optionally narrowed to those
-    /// whose name or note contains `search` (case-insensitively) — what the
-    /// history page's "filter by focus session" picker scrolls through, so
-    /// it never has to hold every session the user has ever run in memory.
     pub fn search(
         &self,
         search: Option<&str>,
@@ -191,9 +142,6 @@ impl WorkSessionStore {
         )
     }
 
-    /// One session by id, or `None` if it has since been deleted — lets the
-    /// history page label a session-scoped filter without loading the whole
-    /// list to find one name.
     pub fn get(&self, id: i64) -> Result<Option<WorkSession>> {
         let conn = self.conn.lock().unwrap();
         let mut sessions = Self::select(&conn, None, Some(id), -1, 0)?;
@@ -204,8 +152,6 @@ impl WorkSessionStore {
         Ok(sessions.pop())
     }
 
-    /// Shared body of `list`/`search`: `limit` of `-1` means "no limit", the
-    /// same convention SQLite's own `LIMIT` uses.
     fn query(&self, search: Option<&str>, limit: i64, offset: i64) -> Result<Vec<WorkSession>> {
         let conn = self.conn.lock().unwrap();
         let mut sessions = Self::select(&conn, search, None, limit, offset)?;
@@ -278,8 +224,6 @@ impl WorkSessionStore {
         Ok(())
     }
 
-    /// Rewrites every field, replacing the target-category set wholesale.
-    /// Editing is unrestricted by design — the user owns their own plan.
     pub fn update(&self, update: &WorkSessionUpdate) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
@@ -313,8 +257,6 @@ impl WorkSessionStore {
         Ok(())
     }
 
-    /// Ends an in-progress session now. A session whose window has already
-    /// passed is left alone — its end already happened.
     pub fn stop(&self, id: i64) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         self.conn.lock().unwrap().execute(
@@ -341,8 +283,6 @@ impl WorkSessionStore {
         self.stats_at(id, Utc::now())
     }
 
-    /// `now` is injected so tests can pin an "in-progress" moment; `stats`
-    /// is the production entry point.
     fn stats_at(&self, id: i64, now: DateTime<Utc>) -> Result<WorkSessionStats> {
         let conn = self.conn.lock().unwrap();
         let (start_str, end_str): (String, String) = conn.query_row(
@@ -352,19 +292,9 @@ impl WorkSessionStore {
         )?;
         let start = parse_utc(&start_str)?;
         let end = parse_utc(&end_str)?;
-        // Judge an in-progress session only on elapsed time; a session
-        // scheduled in the future has an empty window.
         let window_end = end.min(now).max(start);
         let in_progress = now >= start && now < end;
 
-        // The category-resolution join stack is exactly the one
-        // `HistoryReader::list_sessions` uses (per-session pin →
-        // best-matching rule), so on/off-task here always agrees with the
-        // category shown for the same row on the History page. Overlap
-        // filtering goes through `julianday` rather than string comparison:
-        // stored timestamps mix `+00:00`/`Z` suffixes and fractional-digit
-        // counts, which don't order lexicographically. A still-open row
-        // participates as if it ended `now`.
         let sql = format!(
             "SELECT s.start_time, s.end_time, s.app_name, s.category_key, s.category_key_kind,
                     cat.color,
@@ -416,8 +346,6 @@ impl WorkSessionStore {
             if clip_end <= clip_start {
                 continue;
             }
-            // Same labeling as `activity_stats`' top-apps breakdown: the
-            // domain for a browser-tab row, the app otherwise.
             let label = if key_kind == "domain" { key } else { app_name };
             rows.push(ClippedRow {
                 start: clip_start,
@@ -433,8 +361,6 @@ impl WorkSessionStore {
     }
 }
 
-/// Stored timestamps are chrono `to_rfc3339` (`+00:00`) but frontend-edited
-/// ones may carry a `Z` suffix; `parse_from_rfc3339` accepts both.
 fn parse_utc(value: &str) -> Result<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
         .map(|t| t.with_timezone(&Utc))
@@ -451,8 +377,6 @@ fn compute_stats(
     in_progress: bool,
     rows: &[ClippedRow],
 ) -> WorkSessionStats {
-    // Merge back-to-back rows with the same label and verdict (e.g. a run
-    // of tab rows on one site) into single timeline blocks.
     struct Block {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
@@ -513,9 +437,6 @@ fn compute_stats(
         timeline.push(idle_block(&cursor, window_end));
     }
 
-    // Derive idle from the remainder rather than summing idle blocks, so
-    // on + off + idle equals the window length exactly even though
-    // sub-tolerance gaps never became blocks.
     let window_seconds = seconds_between(window_start, window_end);
     let idle_seconds = (window_seconds - on_task_seconds - off_task_seconds).max(0.0);
     let tracked = on_task_seconds + off_task_seconds;
@@ -525,9 +446,6 @@ fn compute_stats(
         0.0
     };
 
-    // Per-app rollup. Keyed by (key kind, label, verdict) rather than key
-    // alone: a per-session pin can put one row of an app on-task while the
-    // rest stay off, and folding those together would hide it.
     let mut app_totals: Vec<WorkSessionAppStat> = Vec::new();
     for row in rows {
         let duration = seconds_between(&row.start, &row.end);
@@ -612,8 +530,6 @@ mod tests {
         parse_utc(value).unwrap()
     }
 
-    /// Creates a work session over a fixed window by creating and then
-    /// editing it, since `create` derives its window from "now".
     fn fixed_window_session(
         store: &WorkSessionStore,
         start: &str,
@@ -665,8 +581,6 @@ mod tests {
     #[test]
     fn search_pages_newest_first_and_matches_name_or_note() {
         let (store, _categories, path) = temp_store();
-        // Same fixed window per session so ordering is decided by
-        // `start_time`, which `fixed_window_session` sets explicitly below.
         for (index, (name, note)) in [
             ("Morning writing", Some("draft the post")),
             ("Afternoon review", None),
@@ -700,11 +614,9 @@ mod tests {
 
         let by_name = store.search(Some("writing"), 10, 0).unwrap();
         assert_eq!(by_name.len(), 2);
-        // The note is searched too, not just the name.
         let by_note = store.search(Some("edit the"), 10, 0).unwrap();
         assert_eq!(by_note.len(), 1);
         assert_eq!(by_note[0].name, "Evening writing");
-        // A blank search is the same as no search at all.
         assert_eq!(store.search(Some("   "), 10, 0).unwrap().len(), 3);
 
         let _ = std::fs::remove_file(&path);
@@ -741,7 +653,6 @@ mod tests {
             "2024-06-15T10:10:00+00:00",
             &[cat.id],
         );
-        // Tracked row runs 09:55–10:20; only 10:00–10:10 lies inside.
         insert_tracked(
             &store,
             "editor64.exe",
@@ -774,7 +685,6 @@ mod tests {
             "2024-06-15T10:10:00+00:00",
             &[focus.id],
         );
-        // Rule puts chat64.exe in Other (off-task)…
         let pinned = insert_tracked(
             &store,
             "chat64.exe",
@@ -787,13 +697,11 @@ mod tests {
             "2024-06-15T10:04:00+00:00",
             Some("2024-06-15T10:10:00+00:00"),
         );
-        // …but a per-row pin overrides the rule for the first row only.
         categories.set_row_category(pinned, Some(focus.id)).unwrap();
 
         let stats = store.stats_at(id, utc("2024-06-16T00:00:00Z")).unwrap();
         assert_eq!(stats.on_task_seconds, 240.0);
         assert_eq!(stats.off_task_seconds, 360.0);
-        // Same app, split verdicts — the rollup keeps them apart.
         assert_eq!(stats.apps.len(), 2);
 
         let _ = std::fs::remove_file(&path);
@@ -812,7 +720,6 @@ mod tests {
             "2024-06-15T10:30:00+00:00",
             &[focus.id],
         );
-        // on → off → on → off = 2 switches…
         insert_tracked(
             &store,
             "editor64.exe",
@@ -837,7 +744,6 @@ mod tests {
             "2024-06-15T10:12:00+00:00",
             Some("2024-06-15T10:14:00+00:00"),
         );
-        // …then an idle gap between two on-task blocks adds none.
         insert_tracked(
             &store,
             "editor64.exe",
@@ -853,12 +759,10 @@ mod tests {
 
         let stats = store.stats_at(id, utc("2024-06-16T00:00:00Z")).unwrap();
         assert_eq!(stats.switch_count, 2);
-        // 10:16–10:20 idle gap plus the untracked 10:25–10:30 tail.
         assert_eq!(
             stats.timeline.iter().filter(|b| b.kind == "idle").count(),
             2
         );
-        // Idle is the window remainder: 30min − 16min on − 5min off = 9min.
         assert_eq!(stats.idle_seconds, 540.0);
         assert_eq!(
             stats.on_task_seconds + stats.off_task_seconds + stats.idle_seconds,
@@ -881,7 +785,6 @@ mod tests {
             "2024-06-15T11:00:00+00:00",
             &[focus.id],
         );
-        // Still-open row, focused since 10:00; "now" is 10:15.
         insert_tracked(&store, "editor64.exe", "2024-06-15T10:00:00+00:00", None);
 
         let stats = store.stats_at(id, utc("2024-06-15T10:15:00Z")).unwrap();
@@ -930,7 +833,6 @@ mod tests {
     #[test]
     fn stop_ends_an_in_progress_session_and_leaves_past_ones_alone() {
         let (store, _categories, path) = temp_store();
-        // In progress: created now with an hour target.
         let active = store.create("Active", None, 3600, None, &[]).unwrap();
         store.stop(active.id).unwrap();
         let stopped = store
@@ -941,7 +843,6 @@ mod tests {
             .unwrap();
         assert!(utc(&stopped.end_time) < utc(&active.end_time));
 
-        // Already over: end_time stays untouched.
         let past = store.create("Past", None, 3600, None, &[]).unwrap();
         store
             .update(&WorkSessionUpdate {

@@ -1,19 +1,9 @@
 use url::Url;
 
-/// Which kind of pattern a session's [`category_key`] was derived from, or
-/// (for [`Url`](KeyKind::Url)) a rule-only target matched against a
-/// session's `url_key` instead. Stored on `category_key_kind` alongside the
-/// key so it can be matched against rules of the same kind without
-/// re-deriving it (and without the different kinds of pattern ever being
-/// confused for one another).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyKind {
     Exe,
     Domain,
-    /// Rule-only: [`category_key`] never produces this kind. Matches a
-    /// session's [`url_key`] (host + path) instead of
-    /// its `category_key`, so two pages on the same domain — e.g. two
-    /// Google Docs documents — can resolve to different categories.
     Url,
 }
 
@@ -36,16 +26,6 @@ impl KeyKind {
     }
 }
 
-/// How a [`crate::core::store::CategoryRule`]'s `pattern` is matched against
-/// a session's key (`category_key`, or `url_key` for a [`KeyKind::Url`]
-/// rule). Also doubles as this system's specificity ranking, most to least
-/// specific: [`Exact`](MatchKind::Exact) > [`Prefix`](MatchKind::Prefix) >
-/// [`Substring`](MatchKind::Substring) > [`Regex`](MatchKind::Regex) — see
-/// [`rule_join_sql`]. A `Substring` rule of `"steam"` also catches
-/// `steamwebhelper.exe`; a `Prefix` rule of `"docs.google.com/document/d/ABC"`
-/// catches that one document (and its sub-paths) but not other documents on
-/// the same domain; a `Regex` rule can express things like "any
-/// `*.corp.example.com` subdomain" that none of the others can.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchKind {
     Exact,
@@ -75,33 +55,6 @@ impl MatchKind {
     }
 }
 
-/// A `LEFT JOIN ... ON ...` clause resolving `sessions_alias` against
-/// `category_rules`, honoring each rule's `match_kind` (case-insensitive
-/// exact equality, prefix, substring — all via `lower`/`instr`, same
-/// convention as `ignore_rules` — or a case-insensitive regex via the
-/// `regexp` SQLite function registered in `store::sqlite::open_connection`,
-/// backing the `REGEXP` operator). A [`KeyKind::Url`] rule matches
-/// `sessions_alias.url_key`; an `Exe`/`Domain` rule matches
-/// `(category_key_kind, category_key)` as before.
-///
-/// When more than one rule matches the same session (e.g. a `url` rule for
-/// one Google Docs document and a broader `domain` rule for
-/// `docs.google.com` both apply), the subquery picks a single deterministic
-/// winner by **specificity** — there is no user-managed ordering (categories
-/// have no priority) — so this join can never fan a session row out into
-/// duplicates the way a plain multi-match `ON` condition would:
-///
-/// 1. Target: a `url` rule beats an `exe`/`domain` rule.
-/// 2. Match kind, most to least specific: `exact` > `prefix` > `substring` >
-///    `regex` (see [`MatchKind`]'s doc comment).
-/// 3. Longer pattern wins (a rough proxy for "more specific").
-/// 4. Lowest rule id, as a final tiebreak — only matters when two rules in
-///    the *same* category both match, where the winner is immaterial since
-///    they resolve to the same category either way.
-///
-/// `rule_alias` names the joined `category_rules` row; `sessions_alias`
-/// names the table/subquery being joined against (must expose
-/// `category_key_kind`/`category_key`/`url_key` columns).
 pub fn rule_join_sql(rule_alias: &str, sessions_alias: &str) -> String {
     format!(
         "LEFT JOIN category_rules {rule_alias} ON {rule_alias}.id = (
@@ -134,11 +87,6 @@ pub fn rule_join_sql(rule_alias: &str, sessions_alias: &str) -> String {
     )
 }
 
-/// The stable lookup key used to categorize a session: the URL's host for a
-/// browser-tab row, or the executable's file name for a plain app-focus row.
-/// Computed once when the session is written so that changing a rule later
-/// re-categorizes historical sessions without needing to re-parse the URL or
-/// path at query time.
 pub fn category_key(exe_path: &str, url: Option<&str>) -> (KeyKind, String) {
     match url.and_then(normalized_domain) {
         Some(domain) => (KeyKind::Domain, domain),
@@ -146,10 +94,6 @@ pub fn category_key(exe_path: &str, url: Option<&str>) -> (KeyKind, String) {
     }
 }
 
-/// The lowercased, `www.`-stripped host of `url` — the same normalization
-/// [`category_key`] applies to a browser-tab row's key, exposed separately so
-/// other lookups against a URL (e.g. [`crate::core::store::IgnoreStore`]) key
-/// on it identically instead of re-deriving their own notion of "domain".
 pub fn normalized_domain(url: &str) -> Option<String> {
     let host = domain_of(url)?.to_ascii_lowercase();
     Some(
@@ -159,19 +103,6 @@ pub fn normalized_domain(url: &str) -> Option<String> {
     )
 }
 
-/// The normalized match target for a [`KeyKind::Url`] rule: lowercased,
-/// `www.`-stripped host (same as [`normalized_domain`]) plus the path
-/// (trailing `/` trimmed) plus `?query` when the query is non-empty. `None`
-/// for anything [`domain_of`] can't extract a host from.
-///
-/// `url` is expected to already be query-filtered (see
-/// [`filter_query_params`]) — this function doesn't filter it itself, so
-/// that the same normalized form always reflects whatever was actually
-/// stored on the session.
-///
-/// Examples: `https://www.YouTube.com/watch?v=XYZ` → `youtube.com/watch?v=XYZ`;
-/// `https://docs.google.com/document/d/ABC/edit` →
-/// `docs.google.com/document/d/ABC/edit`; `https://example.com/` → `example.com`.
 pub fn url_key(url: &str) -> Option<String> {
     let domain = normalized_domain(url)?;
     let parsed = parse_lenient(url);
@@ -195,16 +126,6 @@ pub fn url_key(url: &str) -> Option<String> {
     Some(key)
 }
 
-/// Filters `url`'s query string down to only the params in `allowed`
-/// (matched by the raw param name, i.e. the text before `=`, case-sensitive),
-/// re-emitted sorted by name for a canonical form. The fragment is always
-/// dropped. An empty `allowed` list drops the whole query string.
-///
-/// This is the privacy boundary for query params — everything not explicitly
-/// allowed is stripped before the URL is ever stored. `ingest::normalize_url`
-/// is the only production caller and passes an empty `allowed`, so in
-/// practice every param is dropped; the parameter remains so a future
-/// allowlist doesn't need this rewritten.
 pub fn filter_query_params(url: &str, allowed: &[String]) -> String {
     let Some(mut parsed) = parse_lenient(url) else {
         return url.split('#').next().unwrap_or(url).to_string();
@@ -225,16 +146,6 @@ pub fn filter_query_params(url: &str, allowed: &[String]) -> String {
     parsed.to_string()
 }
 
-/// The file-name component of an executable path, split on either
-/// separator rather than only the host's.
-///
-/// `exe_path` is a lookup key here, never something that gets opened, and
-/// the same stored path has to produce the same key everywhere: `Path`
-/// treats `\` as an ordinary filename character off Windows, so
-/// `Path::file_name` would key a Windows-recorded session on its *entire*
-/// path when that database is read on Linux — silently splitting one app
-/// into two categories. Splitting on both separators is unambiguous for
-/// every path this app records, since neither platform's paths mix them.
 pub(crate) fn exe_file_name(exe_path: &str) -> &str {
     exe_path
         .rsplit(['/', '\\'])
@@ -243,20 +154,12 @@ pub(crate) fn exe_file_name(exe_path: &str) -> &str {
         .unwrap_or(exe_path)
 }
 
-/// Parses `input` as an absolute URL via the `url` crate, retrying with an
-/// assumed `http://` scheme when it has none — covers a bare domain
-/// (`example.com`) or a rule pattern pasted without a scheme
-/// (`docs.google.com/document/d/ABC`), neither of which `Url::parse` accepts
-/// on its own.
 fn parse_lenient(input: &str) -> Option<Url> {
     Url::parse(input)
         .or_else(|_| Url::parse(&format!("http://{input}")))
         .ok()
 }
 
-/// Extracts the host from a URL — see `TabEvent::url`. Falls back gracefully
-/// on anything else since this only ever feeds a lookup key, never a
-/// security decision.
 pub(crate) fn domain_of(url: &str) -> Option<String> {
     let host = parse_lenient(url)?.host_str()?.to_string();
     if host.is_empty() {
@@ -279,14 +182,9 @@ mod tests {
 
     #[test]
     fn exe_keys_are_identical_whichever_platform_reads_the_database() {
-        // The same key regardless of which separator the recording platform
-        // used, and regardless of which platform is running this code —
-        // `Path::file_name` gives neither guarantee.
         assert_eq!(exe_file_name(r"C:\Program Files\Code\Code.exe"), "Code.exe");
         assert_eq!(exe_file_name("/opt/google/chrome/chrome"), "chrome");
         assert_eq!(exe_file_name("chrome.exe"), "chrome.exe");
-        // The Linux watcher's fallback identity for a window with no
-        // readable process still reduces to the app id.
         assert_eq!(
             exe_file_name("wayland-app-id://org.gnome.Nautilus"),
             "org.gnome.Nautilus"

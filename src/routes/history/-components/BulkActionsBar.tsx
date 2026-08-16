@@ -56,10 +56,6 @@ export function BulkActionsBar({
       <Button variant="outline" size="sm" onClick={onClear}>
         Clear selection
       </Button>
-      {/* A selection made under a search/time filter means "these
-        * activities", never "this app, forever" — the same site can serve a
-        * different purpose an hour later. Making a choice apply to an app's
-        * whole history is a rule on the Labelling page instead. */}
       <span className="ml-auto text-muted-foreground">
         Applies to the selected activities only
       </span>

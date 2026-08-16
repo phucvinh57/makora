@@ -43,11 +43,6 @@ const RANGE_KINDS: TimeRangeKind[] = [
   "session",
 ];
 
-/** The time filter lives in the URL (as a `TimeRange`'s own fields) so other
- * pages can link straight into a scoped history — the Focus page's "See all
- * activities" hands over a session id this way. Anything unrecognized
- * degrades to "all time" rather than erroring, since these values can be
- * hand-edited. */
 function validateSearch(search: Partial<TimeRange>): TimeRange {
   const kind = RANGE_KINDS.find((k) => k === search.kind);
   if (!kind || kind === "all") return ALL_TIME;
@@ -80,16 +75,11 @@ function HistoryPage() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [bulkCategory, setBulkCategory] = useState("");
 
-  // Drops the selection *and* the bulk bar's pending category, so a
-  // half-made choice never carries over into a later, unrelated selection.
   function clearSelection() {
     setSelectedIds(new Set());
     setBulkCategory("");
   }
 
-  // Debounce the search box so typing doesn't fire a query per keystroke. A
-  // change lands the user back on page 0 and clears the (now possibly
-  // stale) selection, same as changing the category filter does below.
   useEffect(() => {
     const handle = setTimeout(() => {
       setSearch(searchInput.trim());
@@ -112,8 +102,6 @@ function HistoryPage() {
     clearSelection();
   }
 
-  // A session-scoped filter carries only the session's id, so its window has
-  // to be looked up before any rows can be fetched.
   const rangeSessionQuery = useQuery({
     queryKey: ["workSession", range.sessionId],
     queryFn: () => getWorkSession(range.sessionId as number),
@@ -148,8 +136,6 @@ function HistoryPage() {
         start,
         end,
       ),
-    // Held until the session's window is known, so a session-scoped view
-    // never briefly renders as unscoped history.
     enabled: range.kind !== "session" || rangeSession !== null,
     placeholderData: keepPreviousData,
   });
@@ -172,11 +158,6 @@ function HistoryPage() {
     queryClient.invalidateQueries({ queryKey: ["sessions"] });
   }
 
-  // Sets (or clears) the category on just this one activity — no other
-  // session sharing its app/site is touched, and there is no offer to widen
-  // it to one: making a choice stick across an app's whole history means
-  // writing a rule for it on the Labelling page, which is the only thing
-  // that decides future activity too.
   const categoryChangeMutation = useMutation({
     mutationFn: async ({ row, value }: { row: SessionRow; value: string }) => {
       const categoryId = value === UNCATEGORIZED ? null : Number(value);
@@ -198,12 +179,9 @@ function HistoryPage() {
     onError: (err) => toast.error(String(err)),
   });
 
-  // Categorizes the selected rows and only those — a selection made under a
-  // search/time filter means "these activities" (the same site can be
-  // English study in one focus session and coding in the next), so it never
-  // widens to the whole app/site.
   const bulkApplyMutation = useMutation({
-    mutationFn: () => setSessionsCategory([...selectedIds], Number(bulkCategory)),
+    mutationFn: () =>
+      setSessionsCategory([...selectedIds], Number(bulkCategory)),
     onSuccess: () => {
       const count = selectedIds.size;
       clearSelection();
@@ -213,13 +191,6 @@ function HistoryPage() {
     onError: (err) => toast.error(String(err)),
   });
 
-  // Clears every per-activity pin so the read-time join in `list_sessions`
-  // re-derives every activity from the current rules (or "Uncategorized"),
-  // including the ones that already had a category. Deliberately not scoped
-  // to the page's filters: this is "start over", and skipping
-  // already-categorized rows would spare exactly the rows worth redoing.
-  // Rules are untouched — they *are* the taxonomy, not a by-product of past
-  // clicks — so the Labelling page's list stays valid.
   async function runRecategorize() {
     const toastId = toast.loading("Recategorizing all activities…");
     try {
@@ -240,7 +211,10 @@ function HistoryPage() {
     toast("Recategorize all history from scratch?", {
       description:
         'Clears every per-activity category you picked by hand, so only your rules, and "Uncategorized" where none match, decide. Your rules are kept. This cannot be undone.',
-      action: { label: "Clear pins and recategorize", onClick: runRecategorize },
+      action: {
+        label: "Clear pins and recategorize",
+        onClick: runRecategorize,
+      },
       duration: 10000,
     });
   }

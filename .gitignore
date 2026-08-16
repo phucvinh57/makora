@@ -4,7 +4,6 @@
 *.db-wal
 *.db-shm
 
-# frontend
 /node_modules
 /dist
 /src-tauri/gen

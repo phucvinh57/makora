@@ -9,9 +9,6 @@ use tiny_http::{Method, Response, Server};
 use crate::core::category::filter_query_params;
 use crate::core::{BrowserKind, SessionStore, SessionTracker, TabEvent};
 
-/// Loopback port the browser extension posts active-tab events to. Fixed in
-/// v1 — there's no config file yet, and the extension has this port baked
-/// in too.
 pub const PORT: u16 = 47632;
 
 #[derive(Deserialize)]
@@ -21,13 +18,6 @@ struct TabEventDto {
     title: String,
 }
 
-/// Starts the local HTTP ingest server on its own thread and returns once
-/// it's bound, mirroring how `FocusWatcher` impls own their event loop.
-///
-/// Bound to loopback only, and every request is checked against an
-/// extension-origin allowlist — there's no shared-secret auth in v1, so
-/// that's the only thing stopping an arbitrary local process or web page
-/// from posting fake tab events.
 pub fn spawn<S: SessionStore + Send + 'static>(
     tracker: Arc<Mutex<SessionTracker<S>>>,
 ) -> Result<thread::JoinHandle<()>> {
@@ -82,23 +72,10 @@ fn handle_request<S: SessionStore>(
     204
 }
 
-/// The privacy boundary for a tab event's query string: the extension sends
-/// the URL as-is (see `extension/background.js`), so this is the only place
-/// deciding what actually gets stored, and nothing here trusts it to have
-/// filtered anything itself.
-///
-/// Origin and path are kept; the fragment and the *entire* query string are
-/// dropped. There is no longer a per-domain exception list — query params
-/// were the one place a tracked URL could carry a session token or a search
-/// term, and curating which ones were safe was manual work that the
-/// rule-based taxonomy doesn't need: rules match on host and path.
 fn normalize_url(url: &str) -> String {
     filter_query_params(url, &[])
 }
 
-/// Loopback binding keeps other machines out, but any local process can
-/// still hit a local port — this Origin check keeps ordinary web pages
-/// (and non-extension local processes) from injecting fake tab events.
 fn has_allowed_extension_origin(request: &tiny_http::Request) -> bool {
     request
         .headers()

@@ -24,9 +24,6 @@ import { formatDuration, formatTimestamp } from "@/duration";
 import type { Category, SessionRow } from "@/types";
 import { ALL_CATEGORIES, UNCATEGORIZED } from "./constants";
 
-// The exe file name (lowercased) is exactly what an "app" category rule's
-// pattern must match — showing it as a tooltip saves a trip to Task Manager
-// when the user wants to categorize an app from the history table.
 function exeFileName(exePath: string): string {
   const segments = exePath.split(/[\\/]/);
   return (segments[segments.length - 1] || exePath).toLowerCase();

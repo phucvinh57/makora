@@ -15,30 +15,17 @@ pub struct Category {
 #[derive(Debug, Clone, Serialize)]
 pub struct CategoryRule {
     pub id: i64,
-    /// `"exe"`, `"domain"`, or `"url"` — see [`KeyKind`].
     pub key_kind: String,
     pub pattern: String,
-    /// `"exact"`, `"prefix"`, `"substring"`, or `"regex"` — see [`MatchKind`]
-    /// and `category::rule_join_sql`.
     pub match_kind: String,
     pub category_id: i64,
 }
 
-/// What a [`CategoryStore::recategorize_all`] pass erased, so the UI can say
-/// how much manual categorization was actually thrown away rather than just
-/// "done".
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct RecategorizeOutcome {
-    /// Per-session pins cleared (`sessions.category_id`).
     pub pins_cleared: i64,
 }
 
-/// Read/write access to the category tables (`categories`, `category_rules`).
-/// Shares a connection with `SessionStore` (the
-/// tracker's write path) and `HistoryReader` (session reads) rather than
-/// opening its own — SQLite only allows one writer at a time regardless of
-/// connection count, so separate connections wouldn't add write concurrency,
-/// only the risk of a `SQLITE_BUSY` error when two of them write at once.
 pub struct CategoryStore {
     conn: SharedConnection,
 }
@@ -48,9 +35,6 @@ impl CategoryStore {
         Self { conn }
     }
 
-    /// Ordered by name — categories no longer have a user-managed
-    /// precedence, since rule conflicts resolve by specificity instead (see
-    /// `category::rule_join_sql`).
     pub fn list_categories(&self) -> Result<Vec<Category>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
@@ -88,9 +72,6 @@ impl CategoryStore {
         Ok(())
     }
 
-    /// Deletes a category along with every rule and pin that points at it, so
-    /// sessions matching those patterns fall back to "Uncategorized" instead
-    /// of leaving dangling foreign keys behind.
     pub fn delete_category(&self, id: i64) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
@@ -130,11 +111,6 @@ impl CategoryStore {
         Ok(rows)
     }
 
-    /// `key_kind` is `"exe"`, `"domain"`, or `"url"` (see [`KeyKind`]);
-    /// `match_kind` is `"exact"`, `"prefix"`, `"substring"`, or `"regex"`
-    /// (see [`MatchKind`]); a `"regex"` pattern is compiled up front so an
-    /// invalid one is rejected here rather than silently never matching at
-    /// query time.
     pub fn create_rule(
         &self,
         key_kind: &str,
@@ -175,15 +151,6 @@ impl CategoryStore {
         Ok(())
     }
 
-    /// Assigns `category_id` to a single session only — a per-session pin
-    /// that's resolved before any rule (see `HistoryReader::list_sessions`).
-    /// `None` clears the pin, letting the rules / "Uncategorized" resolve it
-    /// instead.
-    ///
-    /// This pin is the *only* manual categorization left: there is no
-    /// "…and every other activity from this app/site" tier any more, so
-    /// making a choice stick across an app's whole history means writing a
-    /// rule for it on the Categories page.
     pub fn set_row_category(&self, session_id: i64, category_id: Option<i64>) -> Result<()> {
         self.conn.lock().unwrap().execute(
             "UPDATE sessions SET category_id = ?1 WHERE id = ?2",
@@ -192,13 +159,6 @@ impl CategoryStore {
         Ok(())
     }
 
-    /// Pins `category_id` on exactly the given sessions and nothing else —
-    /// the bulk form of [`Self::set_row_category`], and everything the
-    /// history page's multi-select bar does. Selecting a filtered set of rows
-    /// (say, every `chatgpt.com` row inside one focus session) means "these
-    /// rows" and never widens to the app/site, since the same site can serve
-    /// a different purpose an hour later. Written in one transaction so a
-    /// large selection can't land half-applied.
     pub fn set_row_categories(&self, session_ids: &[i64], category_id: Option<i64>) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
@@ -212,19 +172,6 @@ impl CategoryStore {
         Ok(())
     }
 
-    /// Clears every per-session pin, leaving history resolving purely from
-    /// the rules on the Categories page (or "Uncategorized" where none
-    /// match). This is the whole of what the history page's "Recategorize"
-    /// button does: no date range, no candidate-key list, no "protect manual"
-    /// escape hatch, because a from-scratch pass that skipped
-    /// already-categorized activities would leave exactly the rows the user
-    /// is trying to fix untouched.
-    ///
-    /// Rules themselves are never touched — they *are* the taxonomy now, not
-    /// a by-product of past clicks. Back when a key-wide override tier
-    /// existed, each override minted a mirror rule that this pass also had to
-    /// delete; with pins as the only manual tier there is nothing left to
-    /// unpick, and one statement covers it.
     pub fn recategorize_all(&self) -> Result<RecategorizeOutcome> {
         let pins_cleared = self.conn.lock().unwrap().execute(
             "UPDATE sessions SET category_id = NULL WHERE category_id IS NOT NULL",
@@ -248,8 +195,6 @@ mod tests {
         (CategoryStore::new(conn), path)
     }
 
-    // Good enough to avoid collisions between parallel test runs without
-    // pulling in a `uuid` dependency just for test fixtures.
     fn uuid_ish() -> u128 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -323,9 +268,6 @@ mod tests {
         conn.last_insert_rowid()
     }
 
-    /// Inserts a browser-tab session with `url` and its derived `url_key`
-    /// (see `category::url_key`) filled in, alongside the usual `domain`
-    /// `category_key`, so tests can exercise `url`-kind rules.
     fn insert_browser_session(conn: &SharedConnection, url: &str, start_time: &str) -> i64 {
         let (key_kind, key) = crate::core::category::category_key("chrome.exe", Some(url));
         let url_key = crate::core::category::url_key(url);
@@ -352,9 +294,6 @@ mod tests {
             .create_rule("exe", "ruled.exe", "exact", ruled.id)
             .unwrap();
 
-        // Both ways a session can end up categorized: a rule, and a
-        // per-session pin — plus a pin sitting on top of a rule, the case a
-        // pass that skipped already-categorized rows would leave frozen.
         let by_rule = insert_session(&conn, "ruled.exe", "2024-06-15T00:00:00Z");
         let by_pin = insert_session(&conn, "pinned.exe", "2024-06-15T02:00:00Z");
         let pinned_over_rule = insert_session(&conn, "ruled.exe", "2024-06-15T03:00:00Z");
@@ -375,15 +314,12 @@ mod tests {
             "a pinned row falls back to what the rules say, not to nothing"
         );
 
-        // Rules are the taxonomy, not a by-product of past clicks — a pass
-        // never touches them.
         assert!(store
             .list_rules()
             .unwrap()
             .iter()
             .any(|r| r.pattern == "ruled.exe"));
 
-        // Nothing manual left, so a second pass is a no-op.
         assert_eq!(store.recategorize_all().unwrap().pins_cleared, 0);
 
         let _ = std::fs::remove_file(&path);
@@ -409,19 +345,15 @@ mod tests {
             rows.iter().find(|r| r.id == id).unwrap().category_id
         };
 
-        // Nothing pinned yet: both fall back to the rule.
         let rows = reader.list_sessions(10, 0, &filter).unwrap();
         assert_eq!(category_of(&rows, a), Some(rule_cat.id));
         assert_eq!(category_of(&rows, b), Some(rule_cat.id));
 
-        // Pinning `b` beats the rule for `b` only — `a` is unaffected, since
-        // a pin never widens to the rest of the key.
         store.set_row_category(b, Some(pin_cat.id)).unwrap();
         let rows = reader.list_sessions(10, 0, &filter).unwrap();
         assert_eq!(category_of(&rows, a), Some(rule_cat.id));
         assert_eq!(category_of(&rows, b), Some(pin_cat.id));
 
-        // Clearing the pin falls back to the rule again.
         store.set_row_category(b, None).unwrap();
         let rows = reader.list_sessions(10, 0, &filter).unwrap();
         assert_eq!(category_of(&rows, b), Some(rule_cat.id));
@@ -437,8 +369,6 @@ mod tests {
         let filter = crate::core::store::queries::SessionFilter::default();
 
         let english = store.create_category("English", "#111111").unwrap();
-        // Three rows on the same key — the shape of "chatgpt.com used for
-        // two different things", where only some of them were English.
         let a = insert_browser_session(&conn, "https://chatgpt.com/c/AAA", "2024-06-15T00:00:00Z");
         let b = insert_browser_session(&conn, "https://chatgpt.com/c/BBB", "2024-06-15T01:00:00Z");
         let c = insert_browser_session(&conn, "https://chatgpt.com/c/CCC", "2024-06-15T02:00:00Z");
@@ -575,9 +505,6 @@ mod tests {
         let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
         let filter = crate::core::store::queries::SessionFilter::default();
 
-        // "Broad" is created (and thus would have won under the old
-        // category-priority scheme) before "Specific", yet its rule is less
-        // specific — specificity alone must decide the winner.
         let broad = store.create_category("Broad", "#444444").unwrap();
         let specific = store.create_category("Specific", "#555555").unwrap();
         store
@@ -650,7 +577,6 @@ mod tests {
         let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
         let filter = crate::core::store::queries::SessionFilter::default();
 
-        // The only thing deciding the winner here is pattern length.
         let short_cat = store.create_category("Short", "#111111").unwrap();
         let long_cat = store.create_category("Long", "#222222").unwrap();
         store

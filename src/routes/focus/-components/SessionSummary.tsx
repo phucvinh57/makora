@@ -55,8 +55,6 @@ function LegendEntry({
   );
 }
 
-/** On/off/idle share of the window as one stacked bar — the aggregate the
- * timeline strip details chronologically, sharing its colors and legend. */
 function ProportionBar({ stats }: { stats: WorkSessionStats }) {
   const parts = [
     { key: "on", seconds: stats.on_task_seconds, color: ON_TASK_COLOR },
@@ -86,7 +84,6 @@ export function SessionSummary({ session }: { session: WorkSession }) {
   const statsQuery = useQuery({
     queryKey: workSessionStatsKey(session.id),
     queryFn: () => workSessionStats(session.id),
-    // Live view while the session is running; static afterwards.
     refetchInterval: (query) =>
       query.state.data?.in_progress ? 15_000 : false,
   });
@@ -164,8 +161,6 @@ export function SessionSummary({ session }: { session: WorkSession }) {
           <CardDescription>
             Apps and sites during the session, colored by verdict.
           </CardDescription>
-          {/* Hands the session's window to the history page's time filter,
-              which is where individual activities can be categorized. */}
           <CardAction>
             <Button
               variant="outline"

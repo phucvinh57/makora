@@ -35,7 +35,6 @@ export interface CategoryRule {
   category_id: number;
 }
 
-/** What a `recategorizeAll` pass erased — see the Rust `RecategorizeOutcome`. */
 export interface RecategorizeOutcome {
   pins_cleared: number;
 }
@@ -78,9 +77,6 @@ export interface ActivityStats {
   daily: DailyStat[];
 }
 
-/** A user-created focus block. `end_time` is always set — start + target at
- * creation (the session auto-ends by reaching it), rewritten by an early
- * stop or edit. `category_ids` are the categories that count as on-task. */
 export interface WorkSession {
   id: number;
   name: string;
@@ -94,11 +90,9 @@ export interface WorkSession {
 
 export type TimelineBlockKind = "on_task" | "off_task" | "idle";
 
-/** One contiguous stretch of a work session's analyzed window. */
 export interface TimelineBlock {
   start_time: string;
   end_time: string;
-  /** Empty for idle blocks. */
   label: string;
   kind: TimelineBlockKind;
   category_color: string | null;
@@ -112,9 +106,6 @@ export interface WorkSessionAppStat {
   total_seconds: number;
 }
 
-/** Tracked history evaluated against a work session's target categories.
- * For an in-progress session the window is clamped to now, so this doubles
- * as the live view. `on + off + idle` equals the window length. */
 export interface WorkSessionStats {
   window_start: string;
   window_end: string;
@@ -122,14 +113,12 @@ export interface WorkSessionStats {
   on_task_seconds: number;
   off_task_seconds: number;
   idle_seconds: number;
-  /** 0-100; 0 when nothing was tracked. */
   focus_percent: number;
   switch_count: number;
   apps: WorkSessionAppStat[];
   timeline: TimelineBlock[];
 }
 
-/** Full rewrite of a work session, as the edit dialog sends it. */
 export interface WorkSessionUpdate {
   id: number;
   name: string;

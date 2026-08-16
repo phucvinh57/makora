@@ -10,9 +10,6 @@ import { cn } from "@/lib/utils";
 import type { WorkSession } from "@/types";
 import { SEARCH_DEBOUNCE_MS, WORK_SESSION_PAGE_SIZE } from "./constants";
 
-/** A searchable, endlessly scrolling list of focus sessions, newest first.
- * Pages are fetched on demand rather than all at once, since sessions
- * accumulate for as long as the user keeps using the app. */
 export function WorkSessionPicker({
   selectedId,
   onSelect,
@@ -40,8 +37,6 @@ export function WorkSessionPicker({
         pageParam,
       ),
     initialPageParam: 0,
-    // A short page means the end of the list; otherwise resume at the
-    // offset one past everything fetched so far.
     getNextPageParam: (lastPage, allPages) =>
       lastPage.length < WORK_SESSION_PAGE_SIZE
         ? undefined
@@ -51,10 +46,6 @@ export function WorkSessionPicker({
   const sessions = sessionsQuery.data?.pages.flat() ?? [];
   const { fetchNextPage, hasNextPage, isFetchingNextPage } = sessionsQuery;
 
-  // Loads the next page when a sentinel at the bottom of the scroll area
-  // comes into view. A callback ref (rather than a ref + effect) so the
-  // observer attaches the moment the sentinel mounts, including when the
-  // list re-renders empty and back after a search.
   const observerRef = useRef<IntersectionObserver | null>(null);
   const sentinelRef = useCallback(
     (node: HTMLDivElement | null) => {

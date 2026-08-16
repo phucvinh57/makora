@@ -9,24 +9,11 @@ use crate::core::ignore::IgnorePolicy;
 #[derive(Debug, Clone, Serialize)]
 pub struct IgnoreRule {
     pub id: i64,
-    /// `"app"` (matched against the exe file name) or `"site"` (matched
-    /// against the URL domain).
     pub kind: String,
     pub pattern: String,
-    /// `"exact"`, `"substring"`, or `"regex"` — see [`MatchKind`] and
-    /// `category::rule_join_sql`, whose matching semantics this mirrors.
     pub match_kind: String,
 }
 
-/// Read/write access to the `ignore_rules` table, and the live lookup
-/// `SessionTracker` uses (via [`IgnorePolicy`]) to decide whether a
-/// newly-focused app or newly-visited site should be tracked at all. Keys
-/// and matches candidates the same way [`crate::core::store::CategoryStore`]
-/// does — [`category_key`]/[`normalized_domain`] for normalization, and the
-/// same exact/substring/regex semantics — so "ignore" and "categorize" never
-/// disagree about what a given app/site name resolves to. Shares a
-/// connection with `SessionStore`/`CategoryStore` for the same reason they
-/// do — SQLite only allows one writer regardless of connection count.
 pub struct IgnoreStore {
     conn: SharedConnection,
 }
@@ -54,15 +41,9 @@ impl IgnoreStore {
         Ok(rows)
     }
 
-    /// `match_kind` is `"exact"`, `"substring"`, or `"regex"` (see
-    /// [`MatchKind`]); a `"regex"` pattern is compiled up front so an
-    /// invalid one is rejected here rather than silently never matching at
-    /// query time — same validation [`crate::core::store::CategoryStore::create_rule`] does.
     pub fn create_rule(&self, kind: &str, pattern: &str, match_kind: &str) -> Result<IgnoreRule> {
         let pattern = pattern.trim();
         if pattern.is_empty() {
-            // An empty pattern matches every candidate under `substring`,
-            // which would silently stop all tracking for that kind.
             bail!("ignore pattern must not be empty");
         }
         let parsed_match_kind = MatchKind::parse(match_kind)
@@ -92,10 +73,6 @@ impl IgnoreStore {
         Ok(())
     }
 
-    /// Same exact/substring/regex semantics as `category::rule_join_sql`'s
-    /// per-arm matching (`lower()`/`instr()` for substring, the registered
-    /// `regexp()` function for regex), just evaluated as a scalar lookup
-    /// against a single candidate instead of joined across `sessions`.
     fn matches(&self, kind: &str, candidate: &str) -> bool {
         let conn = self.conn.lock().unwrap();
         conn.query_row(

@@ -27,9 +27,6 @@ function blockTitle(block: TimelineBlock) {
   return `${label}${verdict ? ` · ${verdict}` : ""} · ${range} · ${formatSeconds(blockSeconds(block))}`;
 }
 
-/** Chronological strip of the session window: what was focused when, colored
- * by verdict (identity is in the tooltip, not the color). Idle stretches
- * stay uncolored so tracked time visually dominates. */
 export function TimelineStrip({ stats }: { stats: WorkSessionStats }) {
   const blocks = stats.timeline;
 

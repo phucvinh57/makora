@@ -19,9 +19,6 @@ import type {
   WorkSessionUpdate,
 } from "./types";
 
-/** `start`/`end` are RFC 3339 timestamps bounding the activity shown. Rows
- * *overlapping* the window match, so an activity that began before the
- * window and ran into it is included. */
 export function listSessions(
   page: number,
   pageSize: number,
@@ -40,8 +37,6 @@ export function listSessions(
   });
 }
 
-/** `start`/`end` are RFC 3339 UTC timestamps; the range is half-open
- * (`start_time >= start && start_time < end`). */
 export function activityStats(
   start: string,
   end: string,
@@ -53,10 +48,6 @@ export function listCategories(): Promise<Category[]> {
   return invoke("list_categories");
 }
 
-/** Categorizes exactly this one activity and nothing else. The only manual
- * categorization there is — to make a choice stick across an app's whole
- * history, add a rule for it on the Labelling page. `categoryId: null`
- * clears the pin, falling back to the rules. */
 export function setSessionRowCategory(
   sessionId: number,
   categoryId: number | null,
@@ -64,8 +55,6 @@ export function setSessionRowCategory(
   return invoke("set_session_row_category", { sessionId, categoryId });
 }
 
-/** Categorizes exactly `sessionIds` and nothing else — the bulk form of
- * `setSessionRowCategory`. */
 export function setSessionsCategory(
   sessionIds: number[],
   categoryId: number,
@@ -73,9 +62,6 @@ export function setSessionsCategory(
   return invoke("set_sessions_category", { sessionIds, categoryId });
 }
 
-/** Clears every per-activity pin so the current rules decide all of history
- * again, already-categorized activities included. Rules are left alone.
- * Not undoable; confirm before calling. */
 export function recategorizeAll(): Promise<RecategorizeOutcome> {
   return invoke("recategorize_all");
 }
@@ -134,8 +120,6 @@ export function deleteIgnoreRule(id: number): Promise<void> {
   return invoke("delete_ignore_rule", { id });
 }
 
-/** `startTime` (RFC 3339 UTC) omitted means "start now"; the end is derived
- * as start + target and reaching it is the auto-end. */
 export function createWorkSession(
   name: string,
   note: string | null,
@@ -156,8 +140,6 @@ export function listWorkSessions(): Promise<WorkSession[]> {
   return invoke("list_work_sessions");
 }
 
-/** One page of work sessions, newest first — what the history page's focus
- * session picker scrolls through. */
 export function searchWorkSessions(
   search: string | undefined,
   limit: number,
@@ -166,7 +148,6 @@ export function searchWorkSessions(
   return invoke("search_work_sessions", { search, limit, offset });
 }
 
-/** `null` when the session has since been deleted. */
 export function getWorkSession(id: number): Promise<WorkSession | null> {
   return invoke("get_work_session", { id });
 }
@@ -175,7 +156,6 @@ export function updateWorkSession(update: WorkSessionUpdate): Promise<void> {
   return invoke("update_work_session", { update });
 }
 
-/** Ends an in-progress work session now; past sessions are left untouched. */
 export function stopWorkSession(id: number): Promise<void> {
   return invoke("stop_work_session", { id });
 }

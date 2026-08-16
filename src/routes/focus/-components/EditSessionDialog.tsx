@@ -19,12 +19,10 @@ import type { WorkSession } from "@/types";
 import { CategoryPicker } from "./CategoryPicker";
 import { WORK_SESSIONS_KEY, workSessionStatsKey } from "./constants";
 
-/** RFC 3339 UTC → the local wall-clock value `DateTimePicker` reads. */
 function toLocalInput(value: string) {
   return format(new Date(value), "yyyy-MM-dd'T'HH:mm");
 }
 
-/** Local wall-clock picker value → RFC 3339 UTC. */
 function toUtc(value: string) {
   return new Date(value).toISOString();
 }
@@ -41,7 +39,6 @@ export function EditSessionDialog() {
   const [end, setEnd] = useState("");
   const [categoryIds, setCategoryIds] = useState<number[]>([]);
 
-  // Re-seed the form whenever a (possibly different) session is opened.
   useEffect(() => {
     if (!session || !dialog.open) return;
     setName(session.name);

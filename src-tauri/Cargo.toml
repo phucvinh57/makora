@@ -41,10 +41,6 @@ objc2 = "0.6"
 block2 = "0.6"
 core-foundation-sys = "0.8"
 
-# The GNOME provider talks to the shell extension over the session bus, and
-# the wlroots provider speaks Wayland directly. `zbus`'s blocking API is used
-# deliberately: the focus watcher owns a plain thread on every platform, and
-# nothing else in this crate needs an async runtime.
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "5"
 wayland-client = "0.31"

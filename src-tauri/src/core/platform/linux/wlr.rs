@@ -1,16 +1,3 @@
-//! Focus watching on wlroots-style compositors (sway, Hyprland, river, and
-//! anything else advertising `zwlr_foreign_toplevel_manager_v1`).
-//!
-//! Unlike the standardized `ext-foreign-toplevel-list-v1` — which Mutter
-//! implements but which carries no focus information at all — this protocol's
-//! `state` event includes an `activated` flag, which is exactly the focus
-//! signal needed. The cost is that it reports no process id, so sessions on
-//! these compositors are keyed on the Wayland `app_id` instead (see
-//! [`super::proc`]).
-//!
-//! GNOME never reaches this provider: Mutter does not implement the
-//! protocol, so [`WlrProvider::probe`] fails and [`super::gnome`] is used.
-
 use std::collections::HashMap;
 
 use wayland_client::backend::ObjectId;
@@ -25,9 +12,6 @@ use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_m
 
 use super::provider::{ToplevelProvider, WindowObservation};
 
-/// The newest manager version this client understands. Version 3 is where
-/// `zwlr_foreign_toplevel_handle_v1.done` and the `activated` state landed,
-/// so nothing older is useful here.
 const MANAGER_VERSION: u32 = 3;
 
 pub struct WlrProvider {
@@ -57,10 +41,6 @@ impl ToplevelProvider for WlrProvider {
                 eprintln!("makora: wlr focus provider: {err}");
                 return;
             }
-            // Observations are buffered rather than emitted from inside the
-            // `Dispatch` callbacks, which keeps `Toplevels` free of borrowed
-            // state and so free of lifetime parameters the event queue would
-            // otherwise have to carry.
             for observation in state.emitted.drain(..) {
                 emit(observation);
             }
@@ -72,8 +52,6 @@ impl ToplevelProvider for WlrProvider {
     }
 }
 
-/// Throwaway state used only to answer "does this compositor speak the
-/// protocol at all?" during [`WlrProvider::probe`].
 #[derive(Default)]
 struct Probe {
     found: bool,
@@ -96,9 +74,6 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Probe {
     }
 }
 
-/// The properties of one toplevel, double-buffered as the protocol
-/// requires: `title`, `app_id` and `state` events are all provisional until
-/// a `done` event commits them together.
 #[derive(Default)]
 struct Toplevel {
     app_id: String,
@@ -126,8 +101,6 @@ impl Toplevel {
 #[derive(Default)]
 struct Toplevels {
     windows: HashMap<ObjectId, Toplevel>,
-    /// Which toplevel is currently focused, so a `done` that merely changes
-    /// a title doesn't look like a focus change.
     active: Option<ObjectId>,
     emitted: Vec<WindowObservation>,
     finished: bool,
@@ -170,8 +143,6 @@ impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for Toplevels {
         _connection: &Connection,
         _queue: &QueueHandle<Self>,
     ) {
-        // `Toplevel` needs no handling: binding the child object is enough,
-        // and its own events carry everything interesting.
         if let ManagerEvent::Finished = event {
             state.finished = true;
         }
@@ -210,8 +181,6 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Toplevels {
                 if window.activated && state.active.as_ref() != Some(&id) {
                     state.active = Some(id);
                     state.emitted.push(WindowObservation {
-                        // The protocol carries no process id at all, which
-                        // is why `WindowObservation::pid` is optional.
                         pid: None,
                         app_id: window.app_id.clone(),
                         wm_class: window.app_id.clone(),
@@ -222,9 +191,6 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Toplevels {
             HandleEvent::Closed => {
                 state.windows.remove(&id);
                 if state.active.as_ref() == Some(&id) {
-                    // Don't synthesize anything: the compositor activates
-                    // some other window next, and that `done` is the real
-                    // focus change.
                     state.active = None;
                 }
             }
@@ -233,8 +199,6 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Toplevels {
     }
 }
 
-/// Decodes the `state` event's payload, a flat array of little-endian `u32`
-/// state enum values, and answers whether `activated` is among them.
 fn is_activated(flags: &[u8]) -> bool {
     flags
         .chunks_exact(4)
@@ -255,10 +219,6 @@ mod tests {
 
     #[test]
     fn probing_is_safe_on_any_session() {
-        // `probe` runs at startup on every Linux machine, including ones
-        // with no Wayland display at all (a headless CI runner, an X11-only
-        // session) and ones whose compositor doesn't speak this protocol.
-        // It must answer rather than panic or block in all three cases.
         let found = WlrProvider::probe().is_some();
         if std::env::var_os("WAYLAND_DISPLAY").is_none() {
             assert!(!found, "no Wayland display, so there is nothing to bind");
@@ -293,9 +253,6 @@ mod tests {
             pending_activated: Some(true),
             ..Default::default()
         };
-        // Before `done`, nothing is visible — the protocol sends title,
-        // app_id and state separately and only `done` makes them a
-        // consistent set.
         assert_eq!(window.title, "");
         assert!(!window.activated);
 
@@ -303,7 +260,6 @@ mod tests {
         assert_eq!(window.title, "Inbox");
         assert!(window.activated);
 
-        // A later `done` carrying only a title must not clear `activated`.
         window.pending_title = Some("Drafts".into());
         window.commit();
         assert_eq!(window.title, "Drafts");
