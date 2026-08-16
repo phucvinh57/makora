@@ -20,10 +20,9 @@ pub mod watcher;
 pub use model::{BrowserKind, TabEvent, WatchEvent};
 pub use platform::PlatformFocusWatcher;
 pub use store::{
-    open_connection, ActivityStats, CategorizePreview, Category, CategoryFilter, CategoryRule,
-    CategoryStore, HistoryReader, IgnoreRule, IgnoreStore, QueryWhitelistEntry,
-    QueryWhitelistStore, RecategorizeOutcome, SessionFilter, SessionRow, SessionStore, SqliteStore,
-    WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
+    open_connection, ActivityStats, Category, CategoryFilter, CategoryRule, CategoryStore,
+    HistoryReader, IgnoreRule, IgnoreStore, RecategorizeOutcome, SessionFilter, SessionRow,
+    SessionStore, SqliteStore, WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
 };
 pub use tracker::SessionTracker;
 pub use watcher::FocusWatcher;

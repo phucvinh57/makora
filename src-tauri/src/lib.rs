@@ -12,7 +12,7 @@ use tauri::Manager;
 
 use crate::core::{
     open_connection, CategoryStore, FocusWatcher, HistoryReader, IgnoreStore, PlatformFocusWatcher,
-    QueryWhitelistStore, SessionTracker, SqliteStore, WatchEvent, WorkSessionStore,
+    SessionTracker, SqliteStore, WatchEvent, WorkSessionStore,
 };
 
 /// Shared by the platform-event thread, the tab-ingest server, and the
@@ -29,11 +29,10 @@ pub fn run() {
     // would close the running instance's open activity row via
     // `close_dangling_sessions`, then die on the ingest port already being
     // bound, which is what made clicking the taskbar icon look like a crash.
-    let mut builder = tauri::Builder::default().plugin(tauri_plugin_single_instance::init(
-        |app, _args, _cwd| {
+    let mut builder =
+        tauri::Builder::default().plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tray::show_main_window(app);
-        },
-    ));
+        }));
 
     // Dev builds load their UI from `devUrl` (the Vite dev server) rather
     // than the bundled frontend, so registering one for autostart would
@@ -51,9 +50,7 @@ pub fn run() {
             commands::list_sessions,
             commands::activity_stats,
             commands::list_categories,
-            commands::set_session_category,
             commands::set_session_row_category,
-            commands::preview_session_category,
             commands::set_sessions_category,
             commands::recategorize_all,
             commands::create_category,
@@ -65,9 +62,6 @@ pub fn run() {
             commands::list_ignore_rules,
             commands::create_ignore_rule,
             commands::delete_ignore_rule,
-            commands::list_query_whitelist,
-            commands::create_query_whitelist_entry,
-            commands::delete_query_whitelist_entry,
             commands::create_work_session,
             commands::list_work_sessions,
             commands::search_work_sessions,
@@ -92,7 +86,6 @@ pub fn run() {
             // real concurrency.
             let conn = open_connection(&db_path).context("opening database")?;
             let ignore = Arc::new(IgnoreStore::new(conn.clone()));
-            let whitelist = Arc::new(QueryWhitelistStore::new(conn.clone()));
             let store = SqliteStore::new(conn.clone());
             let tracker: SharedTracker = Arc::new(Mutex::new(
                 SessionTracker::with_ignore_policy(store, ignore.clone())
@@ -104,7 +97,6 @@ pub fn run() {
             app.manage(CategoryStore::new(conn));
             app.manage(tracker.clone());
             app.manage(ignore);
-            app.manage(whitelist.clone());
 
             let (tx, rx) = mpsc::channel::<WatchEvent>();
 
@@ -139,7 +131,7 @@ pub fn run() {
                 })
                 .context("spawning activity-tracker thread")?;
 
-            ingest::spawn(tracker, whitelist).context("starting tab-ingest server")?;
+            ingest::spawn(tracker).context("starting tab-ingest server")?;
             eprintln!(
                 "makora: listening for tab events on http://127.0.0.1:{}",
                 ingest::PORT

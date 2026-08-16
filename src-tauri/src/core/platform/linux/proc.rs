@@ -179,8 +179,7 @@ mod tests {
 
     #[test]
     fn snap_revision_is_replaced_so_updates_dont_split_history() {
-        let before =
-            normalize_snap_revision("/snap/firefox/6836/usr/lib/firefox/firefox");
+        let before = normalize_snap_revision("/snap/firefox/6836/usr/lib/firefox/firefox");
         let after = normalize_snap_revision("/snap/firefox/7001/usr/lib/firefox/firefox");
         assert_eq!(before, "/snap/firefox/current/usr/lib/firefox/firefox");
         assert_eq!(
@@ -208,7 +207,10 @@ mod tests {
 
     #[test]
     fn non_snap_paths_starting_with_snap_are_left_alone() {
-        assert_eq!(normalize_snap_revision("/snapshot/bin/tool"), "/snapshot/bin/tool");
+        assert_eq!(
+            normalize_snap_revision("/snapshot/bin/tool"),
+            "/snapshot/bin/tool"
+        );
         assert_eq!(normalize_snap_revision("/snap/firefox"), "/snap/firefox");
     }
 
@@ -239,7 +241,10 @@ name=not-this-one
 name=org.gnome.Boxes
 runtime=runtime/org.gnome.Platform/x86_64/47
 ";
-        assert_eq!(parse_flatpak_app_id(info).as_deref(), Some("org.gnome.Boxes"));
+        assert_eq!(
+            parse_flatpak_app_id(info).as_deref(),
+            Some("org.gnome.Boxes")
+        );
     }
 
     #[test]

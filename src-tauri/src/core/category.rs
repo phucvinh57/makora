@@ -3,7 +3,7 @@ use url::Url;
 /// Which kind of pattern a session's [`category_key`] was derived from, or
 /// (for [`Url`](KeyKind::Url)) a rule-only target matched against a
 /// session's `url_key` instead. Stored on `category_key_kind` alongside the
-/// key so it can be matched against rules/overrides of the same kind without
+/// key so it can be matched against rules of the same kind without
 /// re-deriving it (and without the different kinds of pattern ever being
 /// confused for one another).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,7 +11,7 @@ pub enum KeyKind {
     Exe,
     Domain,
     /// Rule-only: [`category_key`] never produces this kind. Matches a
-    /// session's [`url_key`] (host + path + whitelisted query) instead of
+    /// session's [`url_key`] (host + path) instead of
     /// its `category_key`, so two pages on the same domain — e.g. two
     /// Google Docs documents — can resolve to different categories.
     Url,
@@ -136,9 +136,9 @@ pub fn rule_join_sql(rule_alias: &str, sessions_alias: &str) -> String {
 
 /// The stable lookup key used to categorize a session: the URL's host for a
 /// browser-tab row, or the executable's file name for a plain app-focus row.
-/// Computed once when the session is written so that changing a rule or
-/// override later re-categorizes historical sessions without needing to
-/// re-parse the URL or path at query time.
+/// Computed once when the session is written so that changing a rule later
+/// re-categorizes historical sessions without needing to re-parse the URL or
+/// path at query time.
 pub fn category_key(exe_path: &str, url: Option<&str>) -> (KeyKind, String) {
     match url.and_then(normalized_domain) {
         Some(domain) => (KeyKind::Domain, domain),
@@ -152,7 +152,11 @@ pub fn category_key(exe_path: &str, url: Option<&str>) -> (KeyKind, String) {
 /// on it identically instead of re-deriving their own notion of "domain".
 pub fn normalized_domain(url: &str) -> Option<String> {
     let host = domain_of(url)?.to_ascii_lowercase();
-    Some(host.strip_prefix("www.").map(str::to_string).unwrap_or(host))
+    Some(
+        host.strip_prefix("www.")
+            .map(str::to_string)
+            .unwrap_or(host),
+    )
 }
 
 /// The normalized match target for a [`KeyKind::Url`] rule: lowercased,
@@ -196,9 +200,11 @@ pub fn url_key(url: &str) -> Option<String> {
 /// re-emitted sorted by name for a canonical form. The fragment is always
 /// dropped. An empty `allowed` list drops the whole query string.
 ///
-/// This is the privacy boundary for query params (see
-/// `store::QueryWhitelistStore`) — everything not explicitly whitelisted for
-/// the URL's domain is stripped before the URL is ever stored.
+/// This is the privacy boundary for query params — everything not explicitly
+/// allowed is stripped before the URL is ever stored. `ingest::normalize_url`
+/// is the only production caller and passes an empty `allowed`, so in
+/// practice every param is dropped; the parameter remains so a future
+/// allowlist doesn't need this rewritten.
 pub fn filter_query_params(url: &str, allowed: &[String]) -> String {
     let Some(mut parsed) = parse_lenient(url) else {
         return url.split('#').next().unwrap_or(url).to_string();
@@ -311,7 +317,10 @@ mod tests {
 
     #[test]
     fn domain_extraction_handles_missing_scheme() {
-        assert_eq!(domain_of("example.com/path"), Some("example.com".to_string()));
+        assert_eq!(
+            domain_of("example.com/path"),
+            Some("example.com".to_string())
+        );
     }
 
     #[test]
@@ -328,8 +337,14 @@ mod tests {
             url_key("https://docs.google.com/document/d/ABC/edit"),
             Some("docs.google.com/document/d/ABC/edit".to_string())
         );
-        assert_eq!(url_key("https://example.com/"), Some("example.com".to_string()));
-        assert_eq!(url_key("https://example.com"), Some("example.com".to_string()));
+        assert_eq!(
+            url_key("https://example.com/"),
+            Some("example.com".to_string())
+        );
+        assert_eq!(
+            url_key("https://example.com"),
+            Some("example.com".to_string())
+        );
     }
 
     #[test]
@@ -346,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn filter_query_params_keeps_only_whitelisted_names() {
+    fn filter_query_params_keeps_only_allowed_names() {
         let allowed = vec!["v".to_string()];
         assert_eq!(
             filter_query_params("https://youtube.com/watch?v=XYZ&list=abc", &allowed),
@@ -386,5 +401,4 @@ mod tests {
             "https://example.com/p"
         );
     }
-
 }

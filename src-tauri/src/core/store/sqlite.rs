@@ -206,6 +206,35 @@ fn migrations() -> Migrations<'static> {
                 PRIMARY KEY (work_session_id, category_id)
             );",
         ),
+        // Retires the key-wide override tier and the per-domain query
+        // whitelist, leaving `category_rules` as the only thing that decides
+        // a category (plus `sessions.category_id` as a single-activity
+        // escape hatch). The override tier was the "apply to this app/site
+        // everywhere" hint, and it worked by minting a mirror `category_rules`
+        // row alongside each override — a pairing that only existed to make
+        // the clicked-on app/site visible on the Categories page, and that
+        // `recategorize_all` then had to unpick. With rules as the sole
+        // mechanism there is nothing left to mirror.
+        //
+        // Every hand-curated row goes with it: the existing categories and
+        // rules were seeded from a small Windows-centric default list that a
+        // generated rule set replaces wholesale, so keeping them would just
+        // leave history resolved half by the old taxonomy and half by the new
+        // one. Everything referencing `categories` is cleared before the
+        // categories themselves — `work_session_categories` rows and the
+        // `sessions.category_id` pins alike. Foreign keys are off at runtime
+        // but enforced while migrating, so that ordering is load-bearing, not
+        // just tidy. Tracked `sessions`, `work_sessions` and `ignore_rules`
+        // rows are all left alone. The sequence reset keeps ids starting from
+        // 1 for the reseed.
+        M::up("DROP TABLE IF EXISTS category_overrides;
+            DROP TABLE IF EXISTS url_query_whitelist;
+            DELETE FROM work_session_categories;
+            DELETE FROM category_rules;
+            UPDATE sessions SET category_id = NULL;
+            DELETE FROM categories;
+            DELETE FROM sqlite_sequence WHERE name IN ('categories', 'category_rules');",
+        ),
     ])
 }
 
@@ -246,7 +275,6 @@ pub fn open_connection(path: &Path) -> Result<SharedConnection> {
     migrations()
         .to_latest(&mut conn)
         .context("migrating schema")?;
-    seed_default_categories(&conn).context("seeding default categories")?;
     Ok(Arc::new(Mutex::new(conn)))
 }
 
@@ -260,103 +288,6 @@ impl SqliteStore {
     pub fn new(conn: SharedConnection) -> Self {
         Self { conn }
     }
-}
-
-fn seed_default_categories(conn: &Connection) -> Result<()> {
-    let already_seeded: bool =
-        conn.query_row("SELECT EXISTS(SELECT 1 FROM categories)", [], |row| {
-            row.get(0)
-        })?;
-    if already_seeded {
-        return Ok(());
-    }
-
-    // (name, color, exe rules, domain rules)
-    const DEFAULTS: &[(&str, &str, &[&str], &[&str])] = &[
-        (
-            "Development",
-            "#6366f1",
-            &[
-                "code.exe",
-                "devenv.exe",
-                "pycharm64.exe",
-                "windowsterminal.exe",
-                "powershell.exe",
-                "pwsh.exe",
-                "cmd.exe",
-            ],
-            &[
-                "github.com",
-                "gitlab.com",
-                "stackoverflow.com",
-                "developer.mozilla.org",
-            ],
-        ),
-        (
-            "Communication",
-            "#22c55e",
-            &[
-                "slack.exe",
-                "discord.exe",
-                "teams.exe",
-                "outlook.exe",
-                "whatsapp.exe",
-                "whatsapp.root.exe",
-                "signal.exe",
-            ],
-            &["mail.google.com", "outlook.office.com"],
-        ),
-        (
-            "Entertainment",
-            "#f97316",
-            &["spotify.exe", "steam.exe", "vlc.exe"],
-            &[
-                "youtube.com",
-                "netflix.com",
-                "twitch.tv",
-                "open.spotify.com",
-            ],
-        ),
-        (
-            "Social Media",
-            "#ec4899",
-            &[],
-            &[
-                "twitter.com",
-                "x.com",
-                "facebook.com",
-                "instagram.com",
-                "reddit.com",
-            ],
-        ),
-        (
-            "Productivity",
-            "#0ea5e9",
-            &["winword.exe", "excel.exe", "powerpnt.exe", "notion.exe"],
-            &["notion.so", "docs.google.com"],
-        ),
-    ];
-
-    for (name, color, exe_patterns, domain_patterns) in DEFAULTS {
-        conn.execute(
-            "INSERT INTO categories (name, color) VALUES (?1, ?2)",
-            params![name, color],
-        )?;
-        let category_id = conn.last_insert_rowid();
-        for pattern in *exe_patterns {
-            conn.execute(
-                "INSERT INTO category_rules (key_kind, pattern, category_id) VALUES ('exe', ?1, ?2)",
-                params![pattern, category_id],
-            )?;
-        }
-        for pattern in *domain_patterns {
-            conn.execute(
-                "INSERT INTO category_rules (key_kind, pattern, category_id) VALUES ('domain', ?1, ?2)",
-                params![pattern, category_id],
-            )?;
-        }
-    }
-    Ok(())
 }
 
 impl SessionStore for SqliteStore {

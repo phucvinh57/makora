@@ -358,7 +358,7 @@ impl WorkSessionStore {
         let in_progress = now >= start && now < end;
 
         // The category-resolution join stack is exactly the one
-        // `HistoryReader::list_sessions` uses (pin → key-wide override →
+        // `HistoryReader::list_sessions` uses (per-session pin →
         // best-matching rule), so on/off-task here always agrees with the
         // category shown for the same row on the History page. Overlap
         // filtering goes through `julianday` rather than string comparison:
@@ -371,11 +371,9 @@ impl WorkSessionStore {
                     (cat.id IS NOT NULL AND cat.id IN
                         (SELECT category_id FROM work_session_categories WHERE work_session_id = ?1))
              FROM sessions s
-             LEFT JOIN category_overrides ov
-                    ON ov.key_kind = s.category_key_kind AND ov.pattern = s.category_key
              {rule_join}
              LEFT JOIN categories cat
-                    ON cat.id = COALESCE(s.category_id, ov.category_id, r.category_id)
+                    ON cat.id = COALESCE(s.category_id, r.category_id)
              WHERE julianday(COALESCE(s.end_time, ?4)) > julianday(?2)
                AND julianday(s.start_time) < julianday(?3)
              ORDER BY s.start_time ASC",
@@ -716,7 +714,9 @@ mod tests {
     fn get_returns_one_session_with_its_categories_or_none_when_deleted() {
         let (store, categories, path) = temp_store();
         let cat = categories.create_category("Focus", "#123456").unwrap();
-        let created = store.create("Deep work", None, 1800, None, &[cat.id]).unwrap();
+        let created = store
+            .create("Deep work", None, 1800, None, &[cat.id])
+            .unwrap();
 
         let fetched = store.get(created.id).unwrap().expect("session exists");
         assert_eq!(fetched.name, "Deep work");
@@ -813,13 +813,43 @@ mod tests {
             &[focus.id],
         );
         // on → off → on → off = 2 switches…
-        insert_tracked(&store, "editor64.exe", "2024-06-15T10:00:00+00:00", Some("2024-06-15T10:05:00+00:00"));
-        insert_tracked(&store, "surf.exe", "2024-06-15T10:05:00+00:00", Some("2024-06-15T10:08:00+00:00"));
-        insert_tracked(&store, "editor64.exe", "2024-06-15T10:08:00+00:00", Some("2024-06-15T10:12:00+00:00"));
-        insert_tracked(&store, "surf.exe", "2024-06-15T10:12:00+00:00", Some("2024-06-15T10:14:00+00:00"));
+        insert_tracked(
+            &store,
+            "editor64.exe",
+            "2024-06-15T10:00:00+00:00",
+            Some("2024-06-15T10:05:00+00:00"),
+        );
+        insert_tracked(
+            &store,
+            "surf.exe",
+            "2024-06-15T10:05:00+00:00",
+            Some("2024-06-15T10:08:00+00:00"),
+        );
+        insert_tracked(
+            &store,
+            "editor64.exe",
+            "2024-06-15T10:08:00+00:00",
+            Some("2024-06-15T10:12:00+00:00"),
+        );
+        insert_tracked(
+            &store,
+            "surf.exe",
+            "2024-06-15T10:12:00+00:00",
+            Some("2024-06-15T10:14:00+00:00"),
+        );
         // …then an idle gap between two on-task blocks adds none.
-        insert_tracked(&store, "editor64.exe", "2024-06-15T10:14:00+00:00", Some("2024-06-15T10:16:00+00:00"));
-        insert_tracked(&store, "editor64.exe", "2024-06-15T10:20:00+00:00", Some("2024-06-15T10:25:00+00:00"));
+        insert_tracked(
+            &store,
+            "editor64.exe",
+            "2024-06-15T10:14:00+00:00",
+            Some("2024-06-15T10:16:00+00:00"),
+        );
+        insert_tracked(
+            &store,
+            "editor64.exe",
+            "2024-06-15T10:20:00+00:00",
+            Some("2024-06-15T10:25:00+00:00"),
+        );
 
         let stats = store.stats_at(id, utc("2024-06-16T00:00:00Z")).unwrap();
         assert_eq!(stats.switch_count, 2);
@@ -876,8 +906,18 @@ mod tests {
             "2024-06-15T10:10:00+00:00",
             &[focus.id],
         );
-        insert_tracked(&store, "editor64.exe", "2024-06-15T10:00:00+00:00", Some("2024-06-15T10:03:00+00:00"));
-        insert_tracked(&store, "editor64.exe", "2024-06-15T10:03:00+00:00", Some("2024-06-15T10:10:00+00:00"));
+        insert_tracked(
+            &store,
+            "editor64.exe",
+            "2024-06-15T10:00:00+00:00",
+            Some("2024-06-15T10:03:00+00:00"),
+        );
+        insert_tracked(
+            &store,
+            "editor64.exe",
+            "2024-06-15T10:03:00+00:00",
+            Some("2024-06-15T10:10:00+00:00"),
+        );
 
         let stats = store.stats_at(id, utc("2024-06-16T00:00:00Z")).unwrap();
         assert_eq!(stats.timeline.len(), 1);

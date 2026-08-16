@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
 use crate::core::{
-    ActivityStats, CategorizePreview, Category, CategoryFilter, CategoryRule, CategoryStore,
-    HistoryReader, IgnoreRule, IgnoreStore, QueryWhitelistEntry, QueryWhitelistStore,
-    RecategorizeOutcome, SessionFilter, SessionRow, WorkSession,
+    ActivityStats, Category, CategoryFilter, CategoryRule, CategoryStore, HistoryReader,
+    IgnoreRule, IgnoreStore, RecategorizeOutcome, SessionFilter, SessionRow, WorkSession,
     WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
 };
 use chrono::{DateTime, Utc};
@@ -91,25 +90,12 @@ pub fn list_categories(categories: State<CategoryStore>) -> Result<Vec<Category>
     categories.list_categories().map_err(|e| e.to_string())
 }
 
-/// Manually assigns a category to a session — and to every other session
-/// sharing the same app/site, since that's what "always put GitHub under
-/// Development" actually expects. For categorizing just one activity, see
-/// `set_session_row_category`.
-#[tauri::command]
-pub fn set_session_category(
-    categories: State<CategoryStore>,
-    session_id: i64,
-    category_id: i64,
-) -> Result<(), String> {
-    categories
-        .set_override(session_id, category_id)
-        .map_err(|e| e.to_string())
-}
-
 /// Assigns a category to a single activity only, leaving every other
 /// session sharing its app/site key alone. `category_id: null` clears the
-/// pin, falling back to any key-wide override, then rules, then
-/// "Uncategorized".
+/// pin, falling back to the rules, then "Uncategorized".
+///
+/// This is the only manual categorization there is — to make a choice stick
+/// across an app's whole history, write a rule for it.
 #[tauri::command]
 pub fn set_session_row_category(
     categories: State<CategoryStore>,
@@ -121,48 +107,27 @@ pub fn set_session_row_category(
         .map_err(|e| e.to_string())
 }
 
-/// How many sessions share `session_id`'s app/site key, i.e. how many rows
-/// `set_session_category` would actually recategorize — for the frontend to
-/// show a "this affects N other activities" confirmation before committing.
-#[tauri::command]
-pub fn preview_session_category(
-    categories: State<CategoryStore>,
-    session_id: i64,
-) -> Result<CategorizePreview, String> {
-    categories
-        .preview_category_change(session_id)
-        .map_err(|e| e.to_string())
-}
-
 /// Manually assigns a category to many sessions at once — for
 /// batch-categorizing a filtered set of history rows in one action. Pins
 /// exactly the given sessions, leaving every other session sharing their
 /// app/site keys alone, since a selection made under a search/time filter
-/// means those rows and not "this app, forever". `apply_to_all` opts into
-/// the wider behavior instead: every past and future session sharing a
-/// selected row's key gets the category too (see
-/// `CategoryStore::set_overrides`).
+/// means those rows and not "this app, forever".
 #[tauri::command]
 pub fn set_sessions_category(
     categories: State<CategoryStore>,
     session_ids: Vec<i64>,
     category_id: i64,
-    apply_to_all: bool,
 ) -> Result<(), String> {
-    if apply_to_all {
-        categories.set_overrides(&session_ids, category_id)
-    } else {
-        categories.set_row_categories(&session_ids, Some(category_id))
-    }
-    .map_err(|e| e.to_string())
+    categories
+        .set_row_categories(&session_ids, Some(category_id))
+        .map_err(|e| e.to_string())
 }
 
-/// Re-categorizes all of history from scratch: erases every manual
-/// categorization in the database — per-session pins, key-wide overrides,
-/// and the rules those overrides minted — so the current rule set (or
-/// "Uncategorized") decides every activity again, already-categorized ones
-/// included. Returns what it erased, for the UI to report. Destructive and
-/// not undoable; the frontend confirms first.
+/// Re-categorizes all of history from scratch: clears every per-session pin
+/// so the current rule set (or "Uncategorized") decides every activity
+/// again, already-categorized ones included. Rules themselves are left
+/// alone. Returns how many pins it cleared, for the UI to report. Not
+/// undoable; the frontend confirms first.
 #[tauri::command]
 pub fn recategorize_all(categories: State<CategoryStore>) -> Result<RecategorizeOutcome, String> {
     categories.recategorize_all().map_err(|e| e.to_string())
@@ -259,38 +224,6 @@ pub fn delete_ignore_rule(ignore: State<Arc<IgnoreStore>>, id: i64) -> Result<()
     ignore.delete_rule(id).map_err(|e| e.to_string())
 }
 
-/// Per-domain query-string params kept on stored browser-tab URLs — every
-/// other param is stripped (see `ingest::normalize_url`). For the settings
-/// page.
-#[tauri::command]
-pub fn list_query_whitelist(
-    whitelist: State<Arc<QueryWhitelistStore>>,
-) -> Result<Vec<QueryWhitelistEntry>, String> {
-    whitelist.list_entries().map_err(|e| e.to_string())
-}
-
-/// Whitelists one query param for one domain, e.g. `youtube.com` + `v` so
-/// different videos become different sessions.
-#[tauri::command]
-pub fn create_query_whitelist_entry(
-    whitelist: State<Arc<QueryWhitelistStore>>,
-    domain: String,
-    param: String,
-) -> Result<QueryWhitelistEntry, String> {
-    whitelist
-        .create_entry(&domain, &param)
-        .map_err(|e| e.to_string())
-}
-
-/// Removes a domain/param entry from the whitelist.
-#[tauri::command]
-pub fn delete_query_whitelist_entry(
-    whitelist: State<Arc<QueryWhitelistStore>>,
-    id: i64,
-) -> Result<(), String> {
-    whitelist.delete_entry(id).map_err(|e| e.to_string())
-}
-
 fn parse_rfc3339(value: &str) -> Result<DateTime<Utc>, String> {
     DateTime::parse_from_rfc3339(value)
         .map(|t| t.with_timezone(&Utc))
@@ -322,7 +255,13 @@ pub fn create_work_session(
     validate_work_session(&name, target_seconds)?;
     let start = start_time.as_deref().map(parse_rfc3339).transpose()?;
     work_sessions
-        .create(name.trim(), note.as_deref(), target_seconds, start, &category_ids)
+        .create(
+            name.trim(),
+            note.as_deref(),
+            target_seconds,
+            start,
+            &category_ids,
+        )
         .map_err(|e| e.to_string())
 }
 

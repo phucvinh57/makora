@@ -6,14 +6,12 @@ import {
 } from "@tauri-apps/plugin-autostart";
 import type {
   ActivityStats,
-  CategorizePreview,
   Category,
   CategoryRule,
   IgnoreKind,
   IgnoreRule,
   KeyKind,
   MatchKind,
-  QueryWhitelistEntry,
   RecategorizeOutcome,
   SessionsPage,
   WorkSession,
@@ -55,13 +53,10 @@ export function listCategories(): Promise<Category[]> {
   return invoke("list_categories");
 }
 
-export function setSessionCategory(
-  sessionId: number,
-  categoryId: number,
-): Promise<void> {
-  return invoke("set_session_category", { sessionId, categoryId });
-}
-
+/** Categorizes exactly this one activity and nothing else. The only manual
+ * categorization there is — to make a choice stick across an app's whole
+ * history, add a rule for it on the Labelling page. `categoryId: null`
+ * clears the pin, falling back to the rules. */
 export function setSessionRowCategory(
   sessionId: number,
   categoryId: number | null,
@@ -69,31 +64,18 @@ export function setSessionRowCategory(
   return invoke("set_session_row_category", { sessionId, categoryId });
 }
 
-export function previewSessionCategory(
-  sessionId: number,
-): Promise<CategorizePreview> {
-  return invoke("preview_session_category", { sessionId });
-}
-
-/** Categorizes exactly `sessionIds` and nothing else, unless `applyToAll` —
- * which widens the choice to every past and future session sharing each
- * selected row's app/site, the same thing `setSessionCategory` does. */
+/** Categorizes exactly `sessionIds` and nothing else — the bulk form of
+ * `setSessionRowCategory`. */
 export function setSessionsCategory(
   sessionIds: number[],
   categoryId: number,
-  applyToAll: boolean,
 ): Promise<void> {
-  return invoke("set_sessions_category", {
-    sessionIds,
-    categoryId,
-    applyToAll,
-  });
+  return invoke("set_sessions_category", { sessionIds, categoryId });
 }
 
-/** Erases every manual categorization in the database — per-activity pins,
- * app/site-wide overrides, and the rules those overrides minted — so the
- * current rules decide all of history again, already-categorized activities
- * included. Destructive and not undoable; confirm before calling. */
+/** Clears every per-activity pin so the current rules decide all of history
+ * again, already-categorized activities included. Rules are left alone.
+ * Not undoable; confirm before calling. */
 export function recategorizeAll(): Promise<RecategorizeOutcome> {
   return invoke("recategorize_all");
 }
@@ -150,21 +132,6 @@ export function createIgnoreRule(
 
 export function deleteIgnoreRule(id: number): Promise<void> {
   return invoke("delete_ignore_rule", { id });
-}
-
-export function listQueryWhitelist(): Promise<QueryWhitelistEntry[]> {
-  return invoke("list_query_whitelist");
-}
-
-export function createQueryWhitelistEntry(
-  domain: string,
-  param: string,
-): Promise<QueryWhitelistEntry> {
-  return invoke("create_query_whitelist_entry", { domain, param });
-}
-
-export function deleteQueryWhitelistEntry(id: number): Promise<void> {
-  return invoke("delete_query_whitelist_entry", { id });
 }
 
 /** `startTime` (RFC 3339 UTC) omitted means "start now"; the end is derived

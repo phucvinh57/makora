@@ -33,11 +33,9 @@ async function detectBrowser() {
 }
 
 // Strips the fragment before the URL ever leaves the browser. The query
-// string is kept — the app (see src-tauri/src/ingest.rs) is the actual
-// privacy boundary for it, filtering it down to whatever params are
-// whitelisted for that domain (e.g. YouTube's video id) before anything is
-// stored, so a compromised or misbehaving build of this script can't leak
-// more than the whitelist allows.
+// string is still sent — the app (see src-tauri/src/ingest.rs) is the actual
+// privacy boundary for it and drops it entirely before anything is stored,
+// so a compromised or misbehaving build of this script can't leak it.
 function normalizeUrl(rawUrl) {
   try {
     const parsed = new URL(rawUrl);

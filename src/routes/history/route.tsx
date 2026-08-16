@@ -11,9 +11,7 @@ import {
   getWorkSession,
   listCategories,
   listSessions,
-  previewSessionCategory,
   recategorizeAll,
-  setSessionCategory,
   setSessionRowCategory,
   setSessionsCategory,
 } from "@/api";
@@ -81,14 +79,12 @@ function HistoryPage() {
   const [categoryFilter, setCategoryFilter] = useState(ALL_CATEGORIES);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [bulkCategory, setBulkCategory] = useState("");
-  const [bulkApplyToAll, setBulkApplyToAll] = useState(false);
 
-  // Drops the selection *and* the bulk bar's settings, so a one-off "apply
-  // to all" tick never carries over into a later, unrelated selection.
+  // Drops the selection *and* the bulk bar's pending category, so a
+  // half-made choice never carries over into a later, unrelated selection.
   function clearSelection() {
     setSelectedIds(new Set());
     setBulkCategory("");
-    setBulkApplyToAll(false);
   }
 
   // Debounce the search box so typing doesn't fire a query per keystroke. A
@@ -100,7 +96,6 @@ function HistoryPage() {
       setPage(0);
       setSelectedIds(new Set());
       setBulkCategory("");
-      setBulkApplyToAll(false);
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(handle);
   }, [searchInput]);
@@ -177,40 +172,18 @@ function HistoryPage() {
     queryClient.invalidateQueries({ queryKey: ["sessions"] });
   }
 
-  // Applies a category to every session sharing a key (from the toast
-  // action below, or the multi-select bulk bar) — a wider, deliberate
-  // choice, so it gets its own success toast rather than the row-level one.
-  const applyToAllMutation = useMutation({
-    mutationFn: ({
-      sessionId,
-      categoryId,
-    }: {
-      sessionId: number;
-      categoryId: number;
-      label: string;
-    }) => setSessionCategory(sessionId, categoryId),
-    onSuccess: (_, { label }) => {
-      invalidateSessions();
-      toast.success(`Applied to all ${label} activities`);
-    },
-    onError: (err) => toast.error(String(err)),
-  });
-
   // Sets (or clears) the category on just this one activity — no other
-  // session sharing its app/site is touched. On success, a toast offers a
-  // one-click way to widen the choice to every activity sharing the same
-  // key instead (via `applyToAllMutation`) — replacing an earlier
-  // confirm-before-committing dialog, which had the problem that canceling
-  // it silently left the row uncategorized.
+  // session sharing its app/site is touched, and there is no offer to widen
+  // it to one: making a choice stick across an app's whole history means
+  // writing a rule for it on the Labelling page, which is the only thing
+  // that decides future activity too.
   const categoryChangeMutation = useMutation({
     mutationFn: async ({ row, value }: { row: SessionRow; value: string }) => {
       const categoryId = value === UNCATEGORIZED ? null : Number(value);
       await setSessionRowCategory(row.id, categoryId);
-      const preview =
-        categoryId === null ? null : await previewSessionCategory(row.id);
-      return { row, categoryId, preview };
+      return { row, categoryId };
     },
-    onSuccess: ({ row, categoryId, preview }) => {
+    onSuccess: ({ row, categoryId }) => {
       invalidateSessions();
       if (categoryId === null) {
         toast.success("Cleared this activity's category");
@@ -220,67 +193,42 @@ function HistoryPage() {
         categories.find((c) => c.id === categoryId)?.name ?? "category";
       toast.success(`Set to ${categoryName}`, {
         description: row.window_title,
-        action:
-          preview && preview.affected_count > 1
-            ? {
-                label: `Apply to all ${preview.affected_count} ${preview.key} activities`,
-                onClick: () =>
-                  applyToAllMutation.mutate({
-                    sessionId: row.id,
-                    categoryId,
-                    label: preview.key,
-                  }),
-              }
-            : undefined,
       });
     },
     onError: (err) => toast.error(String(err)),
   });
 
-  // Categorizes the selected rows and only those, unless "apply to all" is
-  // ticked — a selection made under a search/time filter means "these
-  // activities" (the same site can be English study in one focus session and
-  // coding in the next), so widening it to the whole app/site, which also
-  // writes a rule covering future activity, has to be asked for.
+  // Categorizes the selected rows and only those — a selection made under a
+  // search/time filter means "these activities" (the same site can be
+  // English study in one focus session and coding in the next), so it never
+  // widens to the whole app/site.
   const bulkApplyMutation = useMutation({
-    mutationFn: () =>
-      setSessionsCategory(
-        [...selectedIds],
-        Number(bulkCategory),
-        bulkApplyToAll,
-      ),
+    mutationFn: () => setSessionsCategory([...selectedIds], Number(bulkCategory)),
     onSuccess: () => {
       const count = selectedIds.size;
       clearSelection();
       invalidateSessions();
-      toast.success(
-        bulkApplyToAll
-          ? `Categorized ${count} activities and all others from the same apps/sites`
-          : `Categorized ${count} activities`,
-      );
+      toast.success(`Categorized ${count} activities`);
     },
     onError: (err) => toast.error(String(err)),
   });
 
-  // Wipes every manual categorization in the database in one transaction —
-  // per-activity pins, app/site-wide overrides, and the rules those
-  // overrides minted — so the read-time join in `list_sessions` re-derives
-  // every activity from the current rules (or "Uncategorized"), including
-  // the ones that already had a category. Deliberately not scoped to the
-  // page's filters: this is "start over", and skipping already-categorized
-  // rows would spare exactly the rows worth redoing.
+  // Clears every per-activity pin so the read-time join in `list_sessions`
+  // re-derives every activity from the current rules (or "Uncategorized"),
+  // including the ones that already had a category. Deliberately not scoped
+  // to the page's filters: this is "start over", and skipping
+  // already-categorized rows would spare exactly the rows worth redoing.
+  // Rules are untouched — they *are* the taxonomy, not a by-product of past
+  // clicks — so the Labelling page's list stays valid.
   async function runRecategorize() {
     const toastId = toast.loading("Recategorizing all activities…");
     try {
-      const { pins_cleared, overrides_cleared } = await recategorizeAll();
+      const { pins_cleared } = await recategorizeAll();
       invalidateSessions();
-      // The pass also deletes the rules those overrides minted, so the
-      // Categories page's rule list is stale now too.
-      queryClient.invalidateQueries({ queryKey: ["categoryRules"] });
       toast.success(
-        pins_cleared + overrides_cleared === 0
-          ? "Recategorized all activities — nothing manual to erase, so your rules already decided everything."
-          : `Recategorized all activities — erased ${pins_cleared} manual activity pin${pins_cleared === 1 ? "" : "s"} and ${overrides_cleared} app/site choice${overrides_cleared === 1 ? "" : "s"}.`,
+        pins_cleared === 0
+          ? "Recategorized all activities — nothing pinned by hand, so your rules already decided everything."
+          : `Recategorized all activities — cleared ${pins_cleared} manual activity pin${pins_cleared === 1 ? "" : "s"}.`,
         { id: toastId },
       );
     } catch (err) {
@@ -291,8 +239,8 @@ function HistoryPage() {
   function handleRecategorizeClick() {
     toast("Recategorize all history from scratch?", {
       description:
-        'Erases every manual categorization — per-activity and per-app/site alike — so only your current rules, and "Uncategorized" where none match, decide. This cannot be undone.',
-      action: { label: "Erase and recategorize", onClick: runRecategorize },
+        'Clears every per-activity category you picked by hand, so only your rules, and "Uncategorized" where none match, decide. Your rules are kept. This cannot be undone.',
+      action: { label: "Clear pins and recategorize", onClick: runRecategorize },
       duration: 10000,
     });
   }
@@ -347,8 +295,6 @@ function HistoryPage() {
           categories={categories}
           bulkCategory={bulkCategory}
           onBulkCategoryChange={setBulkCategory}
-          applyToAll={bulkApplyToAll}
-          onApplyToAllChange={setBulkApplyToAll}
           onApply={() => bulkApplyMutation.mutate()}
           applyPending={bulkApplyMutation.isPending}
           onClear={clearSelection}

@@ -7,16 +7,12 @@ use crate::core::model::AppInfo;
 pub mod categories;
 pub mod ignore;
 pub mod queries;
-pub mod query_whitelist;
 pub mod sqlite;
 pub mod work_sessions;
 
-pub use categories::{
-    CategorizePreview, Category, CategoryRule, CategoryStore, RecategorizeOutcome,
-};
+pub use categories::{Category, CategoryRule, CategoryStore, RecategorizeOutcome};
 pub use ignore::{IgnoreRule, IgnoreStore};
 pub use queries::{ActivityStats, CategoryFilter, HistoryReader, SessionFilter, SessionRow};
-pub use query_whitelist::{QueryWhitelistEntry, QueryWhitelistStore};
 pub use sqlite::{open_connection, SqliteStore};
 pub use work_sessions::{WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate};
 

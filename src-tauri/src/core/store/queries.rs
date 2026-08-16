@@ -16,7 +16,7 @@ pub struct SessionRow {
     pub category_id: Option<i64>,
     pub category_name: Option<String>,
     pub category_color: Option<String>,
-    pub category_is_override: bool,
+    pub category_is_pinned: bool,
 }
 /// Total time and top breakdowns for `HistoryReader::activity_stats` over a
 /// date range — the aggregate counterpart to `list_sessions`'s raw rows.
@@ -78,11 +78,9 @@ impl HistoryReader {
         let sql = format!(
             "SELECT COUNT(*)
              FROM sessions s
-             LEFT JOIN category_overrides ov
-                    ON ov.key_kind = s.category_key_kind AND ov.pattern = s.category_key
              {rule_join}
              LEFT JOIN categories cat
-                    ON cat.id = COALESCE(s.category_id, ov.category_id, r.category_id)
+                    ON cat.id = COALESCE(s.category_id, r.category_id)
              WHERE {where_sql}",
             rule_join = category::rule_join_sql("r", "s"),
         );
@@ -93,10 +91,9 @@ impl HistoryReader {
 
     /// A page of activity rows (app focus and browser-tab rows alike)
     /// matching `filter`, newest first. Category is resolved at read time —
-    /// a per-session pin wins over a key-wide override, which wins over a
-    /// rule, via `COALESCE` — rather than stored denormalized, so editing a
-    /// rule or override re-categorizes historical sessions immediately
-    /// instead of only affecting future ones.
+    /// a per-session pin wins over a rule, via `COALESCE` — rather than
+    /// stored denormalized, so editing a rule re-categorizes historical
+    /// sessions immediately instead of only affecting future ones.
     pub fn list_sessions(
         &self,
         limit: i64,
@@ -107,13 +104,11 @@ impl HistoryReader {
         let (where_sql, mut binds) = filter.to_sql();
         let sql = format!(
             "SELECT s.id, s.app_name, s.exe_path, s.window_title, s.url, s.start_time, s.end_time,
-                    cat.id, cat.name, cat.color, (s.category_id IS NOT NULL OR ov.category_id IS NOT NULL)
+                    cat.id, cat.name, cat.color, (s.category_id IS NOT NULL)
              FROM sessions s
-             LEFT JOIN category_overrides ov
-                    ON ov.key_kind = s.category_key_kind AND ov.pattern = s.category_key
              {rule_join}
              LEFT JOIN categories cat
-                    ON cat.id = COALESCE(s.category_id, ov.category_id, r.category_id)
+                    ON cat.id = COALESCE(s.category_id, r.category_id)
              WHERE {where_sql}
              ORDER BY s.start_time DESC
              LIMIT ? OFFSET ?",
@@ -138,7 +133,7 @@ impl HistoryReader {
                     category_id: row.get(7)?,
                     category_name: row.get(8)?,
                     category_color: row.get(9)?,
-                    category_is_override: row.get(10)?,
+                    category_is_pinned: row.get(10)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -158,7 +153,7 @@ impl HistoryReader {
     /// is called while a session is focused.
     ///
     /// Category resolution reuses the exact join stack `list_sessions` uses
-    /// (per-session pin, then key-wide override, then rule, via
+    /// (per-session pin, then rule, via
     /// `category::rule_join_sql`'s deterministic single-winner subquery) so
     /// a `SUM` here can never double-count a session across categories, and
     /// a total here always agrees with what the history page would show for
@@ -178,11 +173,9 @@ impl HistoryReader {
         )?;
 
         let category_join = format!(
-            "LEFT JOIN category_overrides ov
-                    ON ov.key_kind = s.category_key_kind AND ov.pattern = s.category_key
-             {rule_join}
+            "             {rule_join}
              LEFT JOIN categories cat
-                    ON cat.id = COALESCE(s.category_id, ov.category_id, r.category_id)",
+                    ON cat.id = COALESCE(s.category_id, r.category_id)",
             rule_join = category::rule_join_sql("r", "s"),
         );
 
@@ -470,10 +463,6 @@ mod stats_tests {
     #[test]
     fn category_breakdown_resolves_via_rules_and_groups_uncategorized_separately() {
         let (reader, categories, conn, path) = temp_reader();
-        // Deliberately not one of the seeded default `exe` patterns (see
-        // `sqlite::seed_default_categories`), so this rule doesn't collide
-        // with a pre-existing one on the unique (key_kind, match_kind,
-        // pattern) index.
         let cat = categories.create_category("Dev", "#111111").unwrap();
         categories
             .create_rule("exe", "myeditor.exe", "exact", cat.id)

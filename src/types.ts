@@ -9,7 +9,7 @@ export interface SessionRow {
   category_id: number | null;
   category_name: string | null;
   category_color: string | null;
-  category_is_override: boolean;
+  category_is_pinned: boolean;
 }
 
 export interface SessionsPage {
@@ -38,14 +38,6 @@ export interface CategoryRule {
 /** What a `recategorizeAll` pass erased — see the Rust `RecategorizeOutcome`. */
 export interface RecategorizeOutcome {
   pins_cleared: number;
-  overrides_cleared: number;
-  rules_cleared: number;
-}
-
-export interface CategorizePreview {
-  key_kind: KeyKind;
-  key: string;
-  affected_count: number;
 }
 
 export type IgnoreKind = "app" | "site";
@@ -84,14 +76,6 @@ export interface ActivityStats {
   categories: CategoryStat[];
   apps: AppStat[];
   daily: DailyStat[];
-}
-
-/** A query-string param kept on stored URLs for a given domain — every
- * other param is stripped before a browser-tab session is ever recorded. */
-export interface QueryWhitelistEntry {
-  id: number;
-  domain: string;
-  param: string;
 }
 
 /** A user-created focus block. `end_time` is always set — start + target at

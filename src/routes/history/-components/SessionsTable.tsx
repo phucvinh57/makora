@@ -117,8 +117,8 @@ export function SessionsTable({
                       size="sm"
                       className="h-6 w-full min-w-0 px-1.5 text-xs"
                       title={
-                        row.category_is_override
-                          ? "Manually categorized"
+                        row.category_is_pinned
+                          ? "Pinned to this activity"
                           : undefined
                       }
                     >
