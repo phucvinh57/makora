@@ -12,7 +12,7 @@ use tauri::Manager;
 
 use crate::core::{
     open_connection, CategoryStore, FocusWatcher, HistoryReader, IgnoreStore, PlatformFocusWatcher,
-    SessionTracker, SqliteStore, WatchEvent, WorkSessionStore,
+    SessionTracker, SettingsStore, SqliteStore, WatchEvent, WorkSessionStore,
 };
 
 type SharedTracker = Arc<Mutex<SessionTracker<SqliteStore>>>;
@@ -44,6 +44,8 @@ pub fn run() {
             commands::list_category_rules,
             commands::create_category_rule,
             commands::delete_category_rule,
+            commands::get_distraction_threshold_seconds,
+            commands::set_distraction_threshold_seconds,
             commands::list_ignore_rules,
             commands::create_ignore_rule,
             commands::delete_ignore_rule,
@@ -71,6 +73,7 @@ pub fn run() {
 
             app.manage(HistoryReader::new(conn.clone()));
             app.manage(WorkSessionStore::new(conn.clone()));
+            app.manage(SettingsStore::new(conn.clone()));
             app.manage(CategoryStore::new(conn));
             app.manage(tracker.clone());
             app.manage(ignore);

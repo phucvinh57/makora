@@ -1,9 +1,10 @@
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, Result};
 use rusqlite::params;
 use serde::Serialize;
 
 use super::sqlite::SharedConnection;
-use crate::core::category::{subtree_ids_sql, KeyKind, MatchKind};
+use crate::core::category::{validate_pattern, CategoryTree, KeyKind, MatchKind};
+use crate::core::store::resolve;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Category {
@@ -11,6 +12,10 @@ pub struct Category {
     pub name: String,
     pub color: String,
     pub parent_id: Option<i64>,
+    /// Non-`NULL` on the categories the app owns rather than the user — currently only
+    /// `"distraction"`. Those cannot be renamed, moved, deleted, or given children, since
+    /// code looks them up by this key.
+    pub system_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -25,6 +30,7 @@ pub struct CategoryRule {
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct RecategorizeOutcome {
     pub pins_cleared: i64,
+    pub rows_resolved: i64,
 }
 
 pub struct CategoryStore {
@@ -60,6 +66,31 @@ fn ensure_exists(conn: &rusqlite::Connection, category_id: i64) -> Result<()> {
     Ok(())
 }
 
+fn system_key_of(conn: &rusqlite::Connection, category_id: i64) -> Result<Option<String>> {
+    Ok(conn.query_row(
+        "SELECT system_key FROM categories WHERE id = ?1",
+        params![category_id],
+        |row| row.get(0),
+    )?)
+}
+
+/// Built-in categories stay put. Their identity is a lookup key the resolver depends on,
+/// and nesting one would drag it into a subtree filter it has no business widening.
+fn ensure_not_system(conn: &rusqlite::Connection, category_id: i64, what: &str) -> Result<()> {
+    if system_key_of(conn, category_id)?.is_some() {
+        bail!("the built-in Distraction category cannot be {what}");
+    }
+    Ok(())
+}
+
+pub(super) fn load_category_tree(conn: &rusqlite::Connection) -> Result<CategoryTree> {
+    let mut stmt = conn.prepare("SELECT id, parent_id FROM categories")?;
+    let categories = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(CategoryTree::new(categories))
+}
+
 impl CategoryStore {
     pub fn new(conn: SharedConnection) -> Self {
         Self { conn }
@@ -70,7 +101,8 @@ impl CategoryStore {
     pub fn list_categories(&self) -> Result<Vec<Category>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, color, parent_id FROM categories ORDER BY name COLLATE NOCASE, id",
+            "SELECT id, name, color, parent_id, system_key FROM categories
+             ORDER BY name COLLATE NOCASE, id",
         )?;
         let rows = stmt
             .query_map([], |row| {
@@ -79,6 +111,7 @@ impl CategoryStore {
                     name: row.get(1)?,
                     color: row.get(2)?,
                     parent_id: row.get(3)?,
+                    system_key: row.get(4)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -94,6 +127,7 @@ impl CategoryStore {
         let conn = self.conn.lock().unwrap();
         if let Some(parent_id) = parent_id {
             ensure_exists(&conn, parent_id)?;
+            ensure_not_system(&conn, parent_id, "given subcategories")?;
         }
         conn.execute(
             "INSERT INTO categories (name, color, parent_id) VALUES (?1, ?2, ?3)",
@@ -105,6 +139,7 @@ impl CategoryStore {
             name: name.to_string(),
             color: color.to_string(),
             parent_id,
+            system_key: None,
         })
     }
 
@@ -116,16 +151,25 @@ impl CategoryStore {
         parent_id: Option<i64>,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        // A built-in keeps its name and its place at the root; only its colour is the
+        // user's to change.
+        if system_key_of(&conn, id)?.is_some() {
+            let (current_name, current_parent): (String, Option<i64>) = conn.query_row(
+                "SELECT name, parent_id FROM categories WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            if current_name != name || current_parent != parent_id {
+                bail!("the built-in Distraction category cannot be renamed or moved");
+            }
+        }
         if let Some(parent_id) = parent_id {
             ensure_exists(&conn, parent_id)?;
+            ensure_not_system(&conn, parent_id, "given subcategories")?;
             // Re-parenting a category under itself or under one of its own descendants would
             // cut that whole branch loose from every root.
-            let cycles: bool = conn.query_row(
-                &format!("SELECT ?2 IN ({})", subtree_ids_sql("SELECT ?1")),
-                params![id, parent_id],
-                |row| row.get(0),
-            )?;
-            if cycles {
+            let tree = load_category_tree(&conn)?;
+            if tree.descendants(id).contains(&parent_id) {
                 bail!("a category cannot be moved inside itself");
             }
         }
@@ -142,21 +186,14 @@ impl CategoryStore {
     pub fn delete_category(&self, id: i64) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
+        ensure_exists(&tx, id)?;
         // Deepest first: a parent still referenced by one of its children cannot be deleted.
-        let doomed: Vec<i64> = {
-            let mut stmt = tx.prepare(
-                "WITH RECURSIVE subtree(id, depth) AS (
-                    SELECT ?1, 0
-                    UNION
-                    SELECT c.id, subtree.depth + 1 FROM categories c JOIN subtree ON c.parent_id = subtree.id
-                )
-                SELECT id FROM subtree ORDER BY depth DESC",
-            )?;
-            let ids = stmt
-                .query_map(params![id], |row| row.get(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            ids
-        };
+        let doomed = load_category_tree(&tx)?.deletion_order(id);
+        // Check the whole branch, not just the target: an accidentally nested built-in must
+        // not be smuggled out by deleting an ancestor.
+        for category_id in &doomed {
+            ensure_not_system(&tx, *category_id, "deleted")?;
+        }
         for category_id in &doomed {
             tx.execute(
                 "DELETE FROM category_rules WHERE category_id = ?1",
@@ -166,12 +203,21 @@ impl CategoryStore {
                 "UPDATE sessions SET category_id = NULL WHERE category_id = ?1",
                 params![category_id],
             )?;
+            // Resolved labels reference categories just as hard as pins do — the delete
+            // fails outright on the foreign key without this.
+            tx.execute(
+                "UPDATE sessions SET rule_category_id = NULL WHERE rule_category_id = ?1",
+                params![category_id],
+            )?;
             tx.execute(
                 "DELETE FROM work_session_categories WHERE category_id = ?1",
                 params![category_id],
             )?;
             tx.execute("DELETE FROM categories WHERE id = ?1", params![category_id])?;
         }
+        // The branch's rules went with it, so rows they used to claim may now match a
+        // different rule — or become short-and-unmatched distractions.
+        resolve::resolve_all(&tx)?;
         tx.commit()?;
         Ok(())
     }
@@ -209,17 +255,20 @@ impl CategoryStore {
         KeyKind::parse(key_kind).ok_or_else(|| anyhow!("invalid key kind: {key_kind}"))?;
         let kind = MatchKind::parse(match_kind)
             .ok_or_else(|| anyhow!("invalid match kind: {match_kind}"))?;
-        if kind == MatchKind::Regex {
-            regex::Regex::new(pattern)
-                .with_context(|| format!("invalid regex pattern: {pattern}"))?;
-        }
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
+        validate_pattern(kind, pattern)?;
+        let mut conn = self.conn.lock().unwrap();
+        // The insert and the replay are one unit: a rule that saved while its replay failed
+        // would leave history disagreeing with the rule list until something else moved.
+        let tx = conn.transaction()?;
+        tx.execute(
             "INSERT INTO category_rules (key_kind, pattern, match_kind, category_id) VALUES (?1, ?2, ?3, ?4)",
             params![key_kind, pattern, kind.as_str(), category_id],
         )?;
+        let id = tx.last_insert_rowid();
+        resolve::resolve_all(&tx)?;
+        tx.commit()?;
         Ok(CategoryRule {
-            id: conn.last_insert_rowid(),
+            id,
             key_kind: key_kind.to_string(),
             pattern: pattern.to_string(),
             match_kind: kind.as_str().to_string(),
@@ -228,10 +277,11 @@ impl CategoryStore {
     }
 
     pub fn delete_rule(&self, id: i64) -> Result<()> {
-        self.conn
-            .lock()
-            .unwrap()
-            .execute("DELETE FROM category_rules WHERE id = ?1", params![id])?;
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM category_rules WHERE id = ?1", params![id])?;
+        resolve::resolve_all(&tx)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -256,13 +306,21 @@ impl CategoryStore {
         Ok(())
     }
 
+    /// A start-over, not a top-up: every per-activity pin goes, and history is re-derived
+    /// from the rules alone. Distraction labels survive it — they live in the resolved
+    /// column, not the pin column, so clearing pins never erases them.
     pub fn recategorize_all(&self) -> Result<RecategorizeOutcome> {
-        let pins_cleared = self.conn.lock().unwrap().execute(
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let pins_cleared = tx.execute(
             "UPDATE sessions SET category_id = NULL WHERE category_id IS NOT NULL",
             [],
         )?;
+        let rows_resolved = resolve::resolve_all(&tx)?;
+        tx.commit()?;
         Ok(RecategorizeOutcome {
             pins_cleared: pins_cleared as i64,
+            rows_resolved: rows_resolved as i64,
         })
     }
 }
@@ -291,10 +349,15 @@ mod tests {
     fn category_and_rule_crud_round_trips_through_sqlite() {
         let (store, path) = temp_store();
 
-        assert!(
-            store.list_categories().unwrap().is_empty(),
-            "a fresh database starts with no taxonomy at all — the default rules are generated, not seeded here"
+        let seeded = store.list_categories().unwrap();
+        assert_eq!(
+            seeded.len(),
+            1,
+            "a fresh database carries no taxonomy of its own — only the reserved Distraction category"
         );
+        assert_eq!(seeded[0].name, "Distraction");
+        assert_eq!(seeded[0].system_key.as_deref(), Some("distraction"));
+        assert_eq!(seeded[0].parent_id, None);
 
         let created = store.create_category("Focus", "#123456", None).unwrap();
         assert_eq!(created.name, "Focus");
@@ -341,7 +404,45 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// Ten minutes — comfortably clear of any distraction threshold a test might set, so
+    /// these rows are only ever categorized by their rules.
+    const LONG_ENOUGH_SECONDS: i64 = 600;
+
+    fn ends_after(start_time: &str, seconds: i64) -> String {
+        let start: chrono::DateTime<chrono::Utc> =
+            start_time.parse().expect("valid RFC 3339 start");
+        (start + chrono::Duration::seconds(seconds)).to_rfc3339()
+    }
+
     fn insert_session(conn: &SharedConnection, exe: &str, start_time: &str) -> i64 {
+        insert_session_lasting(conn, exe, start_time, LONG_ENOUGH_SECONDS)
+    }
+
+    /// Rows go in *closed and resolved*, the way the tracker writes them. Resolution is
+    /// materialized now, so a raw insert would sit at NULL no matter what the rules say —
+    /// and `create_rule` replays history at the moment it is called, which in most of these
+    /// tests is before the sessions even exist.
+    fn insert_session_lasting(
+        conn: &SharedConnection,
+        exe: &str,
+        start_time: &str,
+        seconds: i64,
+    ) -> i64 {
+        let conn = conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO sessions (app_name, exe_path, window_title, category_key, category_key_kind, start_time, end_time)
+             VALUES (?1, ?1, 'title', ?1, 'exe', ?2, ?3)",
+            params![exe, start_time, ends_after(start_time, seconds)],
+        )
+        .unwrap();
+        let id = conn.last_insert_rowid();
+        resolve::resolve_session(&conn, id).unwrap();
+        id
+    }
+
+    /// A row the tracker has opened but not yet closed — no duration, so it can never be a
+    /// distraction, but its rules still apply.
+    fn insert_open_session(conn: &SharedConnection, exe: &str, start_time: &str) -> i64 {
         let conn = conn.lock().unwrap();
         conn.execute(
             "INSERT INTO sessions (app_name, exe_path, window_title, category_key, category_key_kind, start_time)
@@ -349,7 +450,9 @@ mod tests {
             params![exe, start_time],
         )
         .unwrap();
-        conn.last_insert_rowid()
+        let id = conn.last_insert_rowid();
+        resolve::resolve_session(&conn, id).unwrap();
+        id
     }
 
     fn insert_browser_session(conn: &SharedConnection, url: &str, start_time: &str) -> i64 {
@@ -357,12 +460,31 @@ mod tests {
         let url_key = crate::core::category::url_key(url);
         let conn = conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO sessions (app_name, exe_path, window_title, url, category_key, category_key_kind, url_key, start_time)
-             VALUES ('chrome.exe', 'chrome.exe', 'title', ?1, ?2, ?3, ?4, ?5)",
-            params![url, key, key_kind.as_str(), url_key, start_time],
+            "INSERT INTO sessions (app_name, exe_path, window_title, url, category_key, category_key_kind, url_key, start_time, end_time)
+             VALUES ('chrome.exe', 'chrome.exe', 'title', ?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                url,
+                key,
+                key_kind.as_str(),
+                url_key,
+                start_time,
+                ends_after(start_time, LONG_ENOUGH_SECONDS)
+            ],
         )
         .unwrap();
-        conn.last_insert_rowid()
+        let id = conn.last_insert_rowid();
+        resolve::resolve_session(&conn, id).unwrap();
+        id
+    }
+
+    fn distraction_id(store: &CategoryStore) -> i64 {
+        store
+            .list_categories()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.system_key.as_deref() == Some("distraction"))
+            .expect("the reserved Distraction category is seeded by the migration")
+            .id
     }
 
     #[test]
@@ -530,7 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn regex_rule_matches_keys_against_the_compiled_pattern() {
+    fn glob_rule_matches_a_wildcard_subdomain_but_stays_anchored() {
         let (store, path) = temp_store();
         let conn = store.conn.clone();
         let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
@@ -538,27 +660,19 @@ mod tests {
 
         let cat = store.create_category("Work", "#222222", None).unwrap();
         store
-            .create_rule("domain", r"^[\w-]+\.corp\.example\.com$", "regex", cat.id)
+            .create_rule("domain", "*.corp.example.com", "glob", cat.id)
             .unwrap();
 
-        let a = insert_session(&conn, "chrome.exe", "2024-06-15T00:00:00Z");
-        {
-            let conn = conn.lock().unwrap();
-            conn.execute(
-                "UPDATE sessions SET category_key = 'wiki.corp.example.com', category_key_kind = 'domain' WHERE id = ?1",
-                params![a],
-            )
-            .unwrap();
-        }
-        let b = insert_session(&conn, "chrome.exe", "2024-06-15T00:00:01Z");
-        {
-            let conn = conn.lock().unwrap();
-            conn.execute(
-                "UPDATE sessions SET category_key = 'evil-corp.example.com.attacker.net', category_key_kind = 'domain' WHERE id = ?1",
-                params![b],
-            )
-            .unwrap();
-        }
+        let a = insert_browser_session(
+            &conn,
+            "https://wiki.corp.example.com/",
+            "2024-06-15T00:00:00Z",
+        );
+        let b = insert_browser_session(
+            &conn,
+            "https://evil-corp.example.com.attacker.net/",
+            "2024-06-15T01:00:00Z",
+        );
 
         let rows = reader.list_sessions(10, 0, &filter).unwrap();
         let category_of = |id: i64| rows.iter().find(|r| r.id == id).unwrap().category_id;
@@ -566,19 +680,56 @@ mod tests {
         assert_eq!(
             category_of(b),
             None,
-            "regex is anchored, so a lookalike suffix should not match"
+            "GLOB is anchored at both ends, so a lookalike suffix should not match"
         );
 
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
-    fn invalid_regex_pattern_is_rejected_up_front() {
+    fn glob_url_rule_matches_a_wildcard_path_segment() {
         let (store, path) = temp_store();
-        let cat = store.create_category("Bad", "#333333", None).unwrap();
-        assert!(store
-            .create_rule("exe", "(unclosed", "regex", cat.id)
-            .is_err());
+        let conn = store.conn.clone();
+        let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
+        let filter = crate::core::store::queries::SessionFilter::default();
+
+        let dev = store
+            .create_category("Development", "#111111", None)
+            .unwrap();
+        let review = store
+            .create_category("Code Review", "#222222", None)
+            .unwrap();
+        store
+            .create_rule("domain", "github.com", "exact", dev.id)
+            .unwrap();
+        store
+            .create_rule("url", "github.com/*/pulls", "glob", review.id)
+            .unwrap();
+
+        let pulls = insert_browser_session(
+            &conn,
+            "https://github.com/anthropics/claude-code/pulls",
+            "2024-06-15T00:00:00Z",
+        );
+        let issues = insert_browser_session(
+            &conn,
+            "https://github.com/anthropics/claude-code/issues",
+            "2024-06-15T01:00:00Z",
+        );
+
+        let rows = reader.list_sessions(10, 0, &filter).unwrap();
+        let category_of = |id: i64| rows.iter().find(|r| r.id == id).unwrap().category_id;
+        assert_eq!(
+            category_of(pulls),
+            Some(review.id),
+            "a url rule outranks the domain rule for the same page"
+        );
+        assert_eq!(
+            category_of(issues),
+            Some(dev.id),
+            "a page the url rule misses still falls back to the domain rule"
+        );
+
         let _ = std::fs::remove_file(&path);
     }
 
@@ -685,16 +836,16 @@ mod tests {
     }
 
     #[test]
-    fn regex_rule_loses_to_any_non_regex_match() {
+    fn glob_rule_loses_to_any_non_glob_match() {
         let (store, path) = temp_store();
         let conn = store.conn.clone();
         let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
         let filter = crate::core::store::queries::SessionFilter::default();
 
-        let regex_cat = store.create_category("Regex", "#111111", None).unwrap();
+        let glob_cat = store.create_category("Glob", "#111111", None).unwrap();
         let substring_cat = store.create_category("Substring", "#222222", None).unwrap();
         store
-            .create_rule("exe", r"^my.*\.exe$", "regex", regex_cat.id)
+            .create_rule("exe", "my*.exe", "glob", glob_cat.id)
             .unwrap();
         store
             .create_rule("exe", "myeditor", "substring", substring_cat.id)
@@ -718,7 +869,9 @@ mod tests {
         let filter = crate::core::store::queries::SessionFilter::default();
 
         let work = store.create_category("Work", "#111111", None).unwrap();
-        let english = store.create_category("English study", "#222222", None).unwrap();
+        let english = store
+            .create_category("English study", "#222222", None)
+            .unwrap();
         store
             .create_rule("domain", "docs.example.org", "exact", work.id)
             .unwrap();
@@ -791,6 +944,9 @@ mod tests {
             .unwrap();
         let pinned = insert_session(&conn, "anything.exe", "2024-06-15T00:00:00Z");
         store.set_row_category(pinned, Some(papers.id)).unwrap();
+        // A row the doomed rule had already claimed — its resolved label references the
+        // category just as hard as the pin does.
+        insert_session(&conn, "papers.exe", "2024-06-15T01:00:00Z");
 
         store.delete_category(work.id).unwrap();
 
@@ -798,20 +954,196 @@ mod tests {
             .list_categories()
             .unwrap()
             .into_iter()
+            .filter(|c| c.system_key.is_none())
             .map(|c| c.id)
             .collect();
         assert_eq!(left, vec![personal.id]);
         assert!(store.list_rules().unwrap().is_empty());
-        let still_pinned: i64 = conn
+        let still_referencing: i64 = conn
             .lock()
             .unwrap()
             .query_row(
-                "SELECT COUNT(*) FROM sessions WHERE category_id IS NOT NULL",
+                "SELECT COUNT(*) FROM sessions
+                 WHERE category_id IS NOT NULL OR rule_category_id IS NOT NULL",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(still_pinned, 0);
+        assert_eq!(
+            still_referencing, 0,
+            "both the pin and the resolved label must let go of a deleted category"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_reserved_distraction_category_cannot_be_renamed_moved_or_deleted() {
+        let (store, path) = temp_store();
+        let distraction = distraction_id(&store);
+        let work = store.create_category("Work", "#111111", None).unwrap();
+
+        assert!(
+            store
+                .update_category(distraction, "Noise", "#a1a1aa", None)
+                .is_err(),
+            "renaming would strand the lookup key the resolver depends on"
+        );
+        assert!(store
+            .update_category(distraction, "Distraction", "#a1a1aa", Some(work.id))
+            .is_err());
+        assert!(store.delete_category(distraction).is_err());
+
+        store
+            .update_category(distraction, "Distraction", "#ff0000", None)
+            .expect("recolouring a built-in is the user's call");
+
+        assert!(
+            store
+                .create_category("Nested", "#222222", Some(distraction))
+                .is_err(),
+            "children would drag the built-in into subtree filters it has no business widening"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn deleting_an_ancestor_cannot_smuggle_a_built_in_category_out() {
+        let (store, path) = temp_store();
+        let distraction = distraction_id(&store);
+        let work = store.create_category("Work", "#111111", None).unwrap();
+
+        // The guards refuse to nest it, so forge the state directly and check that
+        // delete_category still inspects the whole branch rather than just its target.
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE categories SET parent_id = ?1 WHERE id = ?2",
+                params![work.id, distraction],
+            )
+            .unwrap();
+
+        assert!(store.delete_category(work.id).is_err());
+        assert!(store
+            .list_categories()
+            .unwrap()
+            .iter()
+            .any(|c| c.id == distraction));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_short_activity_is_a_distraction_only_when_no_rule_claims_it() {
+        let (store, path) = temp_store();
+        let conn = store.conn.clone();
+        let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
+        let filter = crate::core::store::queries::SessionFilter::default();
+        let distraction = distraction_id(&store);
+
+        let work = store.create_category("Work", "#111111", None).unwrap();
+        store
+            .create_rule("exe", "code.exe", "exact", work.id)
+            .unwrap();
+
+        // Four seconds of a known tool is still that tool's work; four seconds of something
+        // nobody has ever labelled is the flicker this feature exists to absorb.
+        let quick_tool_switch =
+            insert_session_lasting(&conn, "code.exe", "2024-06-15T00:00:00Z", 4);
+        let flicker = insert_session_lasting(&conn, "random.exe", "2024-06-15T01:00:00Z", 3);
+        let real_use = insert_session(&conn, "random.exe", "2024-06-15T02:00:00Z");
+        let live = insert_open_session(&conn, "blip.exe", "2024-06-15T03:00:00Z");
+
+        let rows = reader.list_sessions(10, 0, &filter).unwrap();
+        let category_of = |id: i64| rows.iter().find(|r| r.id == id).unwrap().category_id;
+        assert_eq!(category_of(quick_tool_switch), Some(work.id));
+        assert_eq!(category_of(flicker), Some(distraction));
+        assert_eq!(category_of(real_use), None);
+        assert_eq!(
+            category_of(live),
+            None,
+            "an open row has no duration yet and must never be written off as a distraction"
+        );
+
+        let pinned = rows
+            .iter()
+            .find(|r| r.id == flicker)
+            .unwrap()
+            .category_is_pinned;
+        assert!(
+            !pinned,
+            "an automatic label must not masquerade as something the user chose"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_manual_pin_overrides_the_distraction_label_and_survives_nothing_else() {
+        let (store, path) = temp_store();
+        let conn = store.conn.clone();
+        let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
+        let filter = crate::core::store::queries::SessionFilter::default();
+        let distraction = distraction_id(&store);
+
+        let work = store.create_category("Work", "#111111", None).unwrap();
+        let flicker = insert_session_lasting(&conn, "random.exe", "2024-06-15T00:00:00Z", 3);
+        store.set_row_category(flicker, Some(work.id)).unwrap();
+
+        let category_of = |rows: &[crate::core::store::queries::SessionRow]| {
+            rows.iter().find(|r| r.id == flicker).unwrap().category_id
+        };
+        assert_eq!(
+            category_of(&reader.list_sessions(10, 0, &filter).unwrap()),
+            Some(work.id)
+        );
+
+        // Clearing pins hands the row back to the automatic label rather than to nothing:
+        // Distraction lives in the resolved column, which recategorize_all recomputes.
+        assert_eq!(store.recategorize_all().unwrap().pins_cleared, 1);
+        assert_eq!(
+            category_of(&reader.list_sessions(10, 0, &filter).unwrap()),
+            Some(distraction)
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn adding_or_removing_a_rule_relabels_existing_history_immediately() {
+        let (store, path) = temp_store();
+        let conn = store.conn.clone();
+        let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
+        let filter = crate::core::store::queries::SessionFilter::default();
+
+        let gaming = store.create_category("Gaming", "#111111", None).unwrap();
+        let played = insert_session(&conn, "steam.exe", "2024-06-15T00:00:00Z");
+
+        let category_of = |rows: &[crate::core::store::queries::SessionRow]| {
+            rows.iter().find(|r| r.id == played).unwrap().category_id
+        };
+        assert_eq!(
+            category_of(&reader.list_sessions(10, 0, &filter).unwrap()),
+            None
+        );
+
+        let rule = store
+            .create_rule("exe", "steam.exe", "exact", gaming.id)
+            .unwrap();
+        assert_eq!(
+            category_of(&reader.list_sessions(10, 0, &filter).unwrap()),
+            Some(gaming.id),
+            "a rule written today has to reach back over history it was never applied to"
+        );
+
+        store.delete_rule(rule.id).unwrap();
+        assert_eq!(
+            category_of(&reader.list_sessions(10, 0, &filter).unwrap()),
+            None
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -857,6 +1189,47 @@ mod tests {
         let (store, path) = temp_store();
         let cat = store.create_category("Cat", "#111111", None).unwrap();
         assert!(store.create_rule("bogus", "x", "exact", cat.id).is_err());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn create_rule_rejects_a_malformed_glob() {
+        let (store, path) = temp_store();
+        let category = store.create_category("Work", "#111111", None).unwrap();
+        assert!(store
+            .create_rule("exe", "unterminated[", "glob", category.id)
+            .is_err());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn malformed_legacy_glob_stays_visible_but_inactive() {
+        let (store, path) = temp_store();
+        let conn = store.conn.clone();
+        let category = store.create_category("Work", "#111111", None).unwrap();
+        conn.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO category_rules (key_kind, pattern, match_kind, category_id)
+                 VALUES ('exe', 'unterminated[', 'glob', ?1)",
+                params![category.id],
+            )
+            .unwrap();
+
+        let session = insert_session(&conn, "unterminated.exe", "2024-06-15T00:00:00Z");
+        let row = crate::core::store::queries::HistoryReader::new(conn)
+            .list_sessions(
+                10,
+                0,
+                &crate::core::store::queries::SessionFilter::default(),
+            )
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == session)
+            .unwrap();
+        assert_eq!(row.category_id, None);
+        assert_eq!(store.list_rules().unwrap().len(), 1);
+
         let _ = std::fs::remove_file(&path);
     }
 }

@@ -11,7 +11,8 @@ pub use platform::PlatformFocusWatcher;
 pub use store::{
     open_connection, ActivityStats, Category, CategoryFilter, CategoryRule, CategoryStore,
     HistoryReader, IgnoreRule, IgnoreStore, RecategorizeOutcome, SessionFilter, SessionRow,
-    SessionStore, SqliteStore, WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
+    SessionStore, SettingsStore, SqliteStore, WorkSession, WorkSessionStats, WorkSessionStore,
+    WorkSessionUpdate,
 };
 pub use tracker::SessionTracker;
 pub use watcher::FocusWatcher;

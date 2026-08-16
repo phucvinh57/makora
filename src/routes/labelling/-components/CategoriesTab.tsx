@@ -32,6 +32,7 @@ import {
   categoryPath,
   categorySubtreeIds,
   orderedCategories,
+  userCategories,
 } from "@/categories";
 import { openDialog, useDialog } from "@/hooks/useDialog";
 import type { Category } from "@/types";
@@ -71,6 +72,10 @@ export function CategoriesTab({
   function invalidateAll() {
     queryClient.invalidateQueries({ queryKey: ["categories"] });
     queryClient.invalidateQueries({ queryKey: ["categoryRules"] });
+    // Deleting a category rewrites the labels its rules had already applied to history,
+    // and a rename or recolour is denormalized into the rows these two queries hold.
+    queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    queryClient.invalidateQueries({ queryKey: ["activityStats"] });
   }
 
   const createCategoryMutation = useMutation({
@@ -234,7 +239,7 @@ export function CategoriesTab({
               }
               items={{
                 [NO_PARENT]: "No parent (top level)",
-                ...categoryValueLabels(categories),
+                ...categoryValueLabels(userCategories(categories)),
               }}
             >
               <SelectTrigger className="w-full" aria-label="Parent category">
@@ -242,7 +247,7 @@ export function CategoriesTab({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value={NO_PARENT}>No parent (top level)</SelectItem>
-                {categoryOptions(categories)}
+                {categoryOptions(userCategories(categories))}
               </SelectContent>
             </Select>
             {createCategoryMutation.isError && (

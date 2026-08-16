@@ -157,6 +157,8 @@ function HistoryPage() {
 
   function invalidateSessions() {
     queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    // The statistics page buckets the same rows, so it goes stale on the same edits.
+    queryClient.invalidateQueries({ queryKey: ["activityStats"] });
   }
 
   const categoryChangeMutation = useMutation({
@@ -213,7 +215,7 @@ function HistoryPage() {
   function handleRecategorizeClick() {
     toast("Recategorize all history from scratch?", {
       description:
-        'Clears every per-activity category you picked by hand, so only your rules, and "Uncategorized" where none match, decide. Your rules are kept. This cannot be undone.',
+        'Clears every per-activity category you picked by hand, so only your rules decide — with short unmatched activities filed as Distraction and "Uncategorized" for the rest. Your rules are kept. This cannot be undone.',
       action: {
         label: "Clear pins and recategorize",
         onClick: runRecategorize,

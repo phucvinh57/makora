@@ -1,8 +1,8 @@
 use anyhow::Result;
 use serde::Serialize;
 
+use super::categories::load_category_tree;
 use super::sqlite::SharedConnection;
-use crate::core::category;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionRow {
@@ -64,15 +64,14 @@ impl HistoryReader {
 
     pub fn count_sessions(&self, filter: &SessionFilter) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
-        let (where_sql, binds) = filter.to_sql();
+        let category_ids = expanded_category_ids(&conn, filter)?;
+        let (where_sql, binds) = filter.to_sql(category_ids.as_deref());
         let sql = format!(
             "SELECT COUNT(*)
              FROM sessions s
-             {rule_join}
              LEFT JOIN categories cat
-                    ON cat.id = COALESCE(s.category_id, r.category_id)
-             WHERE {where_sql}",
-            rule_join = category::rule_join_sql("r", "s"),
+                    ON cat.id = COALESCE(s.category_id, s.rule_category_id)
+             WHERE {where_sql}"
         );
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             binds.iter().map(|b| b.as_ref()).collect();
@@ -86,18 +85,17 @@ impl HistoryReader {
         filter: &SessionFilter,
     ) -> Result<Vec<SessionRow>> {
         let conn = self.conn.lock().unwrap();
-        let (where_sql, mut binds) = filter.to_sql();
+        let category_ids = expanded_category_ids(&conn, filter)?;
+        let (where_sql, mut binds) = filter.to_sql(category_ids.as_deref());
         let sql = format!(
             "SELECT s.id, s.app_name, s.exe_path, s.window_title, s.url, s.start_time, s.end_time,
                     cat.id, cat.name, cat.color, (s.category_id IS NOT NULL)
              FROM sessions s
-             {rule_join}
              LEFT JOIN categories cat
-                    ON cat.id = COALESCE(s.category_id, r.category_id)
+                    ON cat.id = COALESCE(s.category_id, s.rule_category_id)
              WHERE {where_sql}
              ORDER BY s.start_time DESC
-             LIMIT ? OFFSET ?",
-            rule_join = category::rule_join_sql("r", "s"),
+             LIMIT ? OFFSET ?"
         );
         binds.push(Box::new(limit));
         binds.push(Box::new(offset));
@@ -139,12 +137,8 @@ impl HistoryReader {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
 
-        let category_join = format!(
-            "             {rule_join}
-             LEFT JOIN categories cat
-                    ON cat.id = COALESCE(s.category_id, r.category_id)",
-            rule_join = category::rule_join_sql("r", "s"),
-        );
+        let category_join = "             LEFT JOIN categories cat
+                    ON cat.id = COALESCE(s.category_id, s.rule_category_id)";
 
         let mut stmt = conn.prepare(&format!(
             "SELECT cat.id, cat.name, cat.color, COALESCE(SUM({DURATION}), 0.0), COUNT(*)
@@ -235,7 +229,10 @@ pub struct SessionFilter {
 }
 
 impl SessionFilter {
-    fn to_sql(&self) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
+    fn to_sql(
+        &self,
+        expanded_category_ids: Option<&[i64]>,
+    ) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
         let mut clauses = vec!["1=1".to_string()];
         let mut binds: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
@@ -259,12 +256,23 @@ impl SessionFilter {
             CategoryFilter::All => {}
             CategoryFilter::Uncategorized => clauses.push("cat.id IS NULL".to_string()),
             // Picking a parent means "this category and everything filed under it".
-            CategoryFilter::Category(id) => {
-                clauses.push(format!(
-                    "cat.id IN ({})",
-                    category::subtree_ids_sql("SELECT ?")
-                ));
-                binds.push(Box::new(*id));
+            CategoryFilter::Category(_) => {
+                let ids = expanded_category_ids.unwrap_or_default();
+                if ids.is_empty() {
+                    clauses.push("0=1".to_string());
+                } else {
+                    clauses.push(format!(
+                        "cat.id IN ({})",
+                        std::iter::repeat_n("?", ids.len())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                    binds.extend(
+                        ids.iter()
+                            .copied()
+                            .map(|id| Box::new(id) as Box<dyn rusqlite::types::ToSql>),
+                    );
+                }
             }
         }
 
@@ -278,6 +286,16 @@ impl SessionFilter {
         }
 
         (clauses.join(" AND "), binds)
+    }
+}
+
+fn expanded_category_ids(
+    conn: &rusqlite::Connection,
+    filter: &SessionFilter,
+) -> Result<Option<Vec<i64>>> {
+    match filter.category {
+        CategoryFilter::Category(id) => Ok(Some(load_category_tree(conn)?.descendants(id))),
+        _ => Ok(None),
     }
 }
 
@@ -331,6 +349,11 @@ mod stats_tests {
                 params![app_name, url, category_key, category_key_kind, start_time, end_time],
             )
             .unwrap();
+        // Categorization is materialized at write time, so a raw insert would sit at NULL
+        // no matter what the rules say — the tracker resolves every row it writes.
+        let conn = conn.lock().unwrap();
+        let id = conn.last_insert_rowid();
+        crate::core::store::resolve::resolve_session(&conn, id).unwrap();
     }
 
     #[test]

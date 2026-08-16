@@ -53,14 +53,14 @@ const MATCH_KIND_LABEL: Record<MatchKind, string> = {
   exact: "is",
   prefix: "starts with",
   substring: "contains",
-  regex: "matches",
+  glob: "matches",
 };
 
 const MATCH_KIND_SELECT_LABEL: Record<MatchKind, string> = {
   exact: "is",
   prefix: "starts with",
   substring: "contains",
-  regex: "matches (regex)",
+  glob: "matches (wildcard)",
 };
 
 function stripSchemeAndWww(pattern: string): string {
@@ -78,10 +78,10 @@ function stripSchemeAndWww(pattern: string): string {
 }
 
 function matchKindPlaceholder(keyKind: KeyKind, matchKind: MatchKind): string {
-  if (matchKind === "regex") {
-    if (keyKind === "exe") return "^game\\d*\\.exe$";
-    if (keyKind === "domain") return "^.*\\.corp\\.example\\.com$";
-    return "^docs\\.google\\.com/document/d/.+$";
+  if (matchKind === "glob") {
+    if (keyKind === "exe") return "game*.exe";
+    if (keyKind === "domain") return "*.corp.example.com";
+    return "github.com/*/pulls";
   }
   if (keyKind === "url") {
     return matchKind === "exact"
@@ -128,6 +128,10 @@ export function RulesTab({
   function invalidateAll() {
     queryClient.invalidateQueries({ queryKey: ["categories"] });
     queryClient.invalidateQueries({ queryKey: ["categoryRules"] });
+    // Rules are applied when an activity ends and replayed over history on every edit, so
+    // a saved rule has already rewritten what these two queries hold.
+    queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    queryClient.invalidateQueries({ queryKey: ["activityStats"] });
   }
 
   const addRuleMutation = useMutation({
@@ -142,12 +146,14 @@ export function RulesTab({
       pattern: string;
       matchKind: MatchKind;
     }) => {
+      // A wildcard host is not a URL — `new URL("http://*.corp.example.com")` mangles it,
+      // so glob patterns are stored exactly as typed.
       const stripped =
-        matchKind !== "regex" && (keyKind === "domain" || keyKind === "url")
+        matchKind !== "glob" && (keyKind === "domain" || keyKind === "url")
           ? stripSchemeAndWww(pattern.trim())
           : pattern.trim();
       const normalized =
-        matchKind === "regex" || keyKind === "url"
+        matchKind === "glob" || keyKind === "url"
           ? stripped
           : stripped.toLowerCase();
       return createCategoryRule(keyKind, normalized, matchKind, categoryId);
@@ -308,12 +314,6 @@ export function RulesTab({
         </div>
       </Card>
 
-      <p className="mt-3 text-xs text-muted-foreground">
-        When several rules match the same activity, the most specific one wins:
-        a URL rule beats a site/app rule, then "is" beats "starts with" beats
-        "contains" beats "matches", then the longer pattern wins.
-      </p>
-
       <Dialog open={addRuleDialog.open} onOpenChange={addRuleDialog.setOpen}>
         <DialogContent>
           <form onSubmit={handleAddRule} className="flex flex-col gap-4">
@@ -351,7 +351,7 @@ export function RulesTab({
                   <SelectItem value="exact">is</SelectItem>
                   <SelectItem value="prefix">starts with</SelectItem>
                   <SelectItem value="substring">contains</SelectItem>
-                  <SelectItem value="regex">matches (regex)</SelectItem>
+                  <SelectItem value="glob">matches (wildcard)</SelectItem>
                 </SelectContent>
               </Select>
             </div>

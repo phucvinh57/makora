@@ -7,12 +7,15 @@ use crate::core::model::AppInfo;
 pub mod categories;
 pub mod ignore;
 pub mod queries;
+pub mod resolve;
+pub mod settings;
 pub mod sqlite;
 pub mod work_sessions;
 
 pub use categories::{Category, CategoryRule, CategoryStore, RecategorizeOutcome};
 pub use ignore::{IgnoreRule, IgnoreStore};
 pub use queries::{ActivityStats, CategoryFilter, HistoryReader, SessionFilter, SessionRow};
+pub use settings::SettingsStore;
 pub use sqlite::{open_connection, SqliteStore};
 pub use work_sessions::{WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate};
 

@@ -1,3 +1,8 @@
+use std::cmp::Reverse;
+use std::collections::{HashMap, HashSet};
+
+use anyhow::{anyhow, Result};
+use chrono::{DateTime, Duration, Utc};
 use url::Url;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,12 +31,13 @@ impl KeyKind {
     }
 }
 
+/// How a rule's pattern is compared against a session key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchKind {
     Exact,
     Prefix,
     Substring,
-    Regex,
+    Glob,
 }
 
 impl MatchKind {
@@ -40,7 +46,7 @@ impl MatchKind {
             Self::Exact => "exact",
             Self::Prefix => "prefix",
             Self::Substring => "substring",
-            Self::Regex => "regex",
+            Self::Glob => "glob",
         }
     }
 
@@ -49,58 +55,383 @@ impl MatchKind {
             "exact" => Some(Self::Exact),
             "prefix" => Some(Self::Prefix),
             "substring" => Some(Self::Substring),
-            "regex" => Some(Self::Regex),
+            "glob" => Some(Self::Glob),
             _ => None,
         }
     }
 }
 
-pub fn rule_join_sql(rule_alias: &str, sessions_alias: &str) -> String {
-    format!(
-        "LEFT JOIN category_rules {rule_alias} ON {rule_alias}.id = (
-            SELECT r2.id FROM category_rules r2
-            WHERE
-                (r2.key_kind = {sessions_alias}.category_key_kind AND (
-                    (r2.match_kind = 'exact' AND lower(r2.pattern) = lower({sessions_alias}.category_key))
-                    OR (r2.match_kind = 'prefix' AND instr(lower({sessions_alias}.category_key), lower(r2.pattern)) = 1)
-                    OR (r2.match_kind = 'substring' AND instr(lower({sessions_alias}.category_key), lower(r2.pattern)) > 0)
-                    OR (r2.match_kind = 'regex' AND {sessions_alias}.category_key REGEXP r2.pattern)
-                ))
-                OR (r2.key_kind = 'url' AND {sessions_alias}.url_key IS NOT NULL AND (
-                    (r2.match_kind = 'exact' AND lower(r2.pattern) = lower({sessions_alias}.url_key))
-                    OR (r2.match_kind = 'prefix' AND instr(lower({sessions_alias}.url_key), lower(r2.pattern)) = 1)
-                    OR (r2.match_kind = 'substring' AND instr(lower({sessions_alias}.url_key), lower(r2.pattern)) > 0)
-                    OR (r2.match_kind = 'regex' AND {sessions_alias}.url_key REGEXP r2.pattern)
-                ))
-            ORDER BY
-                CASE r2.key_kind WHEN 'url' THEN 0 ELSE 1 END,
-                CASE r2.match_kind
-                    WHEN 'exact' THEN 0
-                    WHEN 'prefix' THEN 1
-                    WHEN 'substring' THEN 2
-                    ELSE 3
-                END,
-                length(r2.pattern) DESC,
-                r2.id
-            LIMIT 1
-        )"
-    )
+/// The `system_key` of the reserved category that short, unmatched activities land in.
+pub const DISTRACTION_SYSTEM_KEY: &str = "distraction";
+
+/// Settings key holding the distraction cutoff, in seconds. `0` disables the feature.
+pub const DISTRACTION_THRESHOLD_KEY: &str = "distraction_threshold_seconds";
+
+/// Fallback used when the settings row is missing or unparsable.
+pub const DEFAULT_DISTRACTION_THRESHOLD_SECONDS: i64 = 10;
+
+#[derive(Debug, Clone)]
+enum PatternMatcher {
+    Exact(String),
+    Prefix(String),
+    Substring(String),
+    Glob(GlobPattern),
 }
 
-/// A category subtree as a `SELECT id` — the seed rows plus every descendant.
-///
-/// `seed_select` supplies the roots (`"SELECT ?"`, a lookup, …); the recursion walks
-/// `parent_id` downwards. `UNION` (not `UNION ALL`) keeps a corrupted cycle from looping
-/// forever even though [`CategoryStore::update_category`] refuses to create one.
-pub fn subtree_ids_sql(seed_select: &str) -> String {
-    format!(
-        "WITH RECURSIVE subtree(id) AS (
-            {seed_select}
-            UNION
-            SELECT c.id FROM categories c JOIN subtree ON c.parent_id = subtree.id
+impl PatternMatcher {
+    fn compile(kind: MatchKind, pattern: &str) -> Result<Self> {
+        let folded = pattern.to_ascii_lowercase();
+        Ok(match kind {
+            MatchKind::Exact => Self::Exact(folded),
+            MatchKind::Prefix => Self::Prefix(folded),
+            MatchKind::Substring => Self::Substring(folded),
+            MatchKind::Glob => Self::Glob(GlobPattern::compile(&folded)?),
+        })
+    }
+
+    fn matches(&self, candidate: &str) -> bool {
+        let candidate = candidate.to_ascii_lowercase();
+        match self {
+            Self::Exact(pattern) => candidate == *pattern,
+            Self::Prefix(pattern) => candidate.starts_with(pattern),
+            Self::Substring(pattern) => candidate.contains(pattern),
+            Self::Glob(pattern) => pattern.matches(&candidate),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GlobPattern {
+    tokens: Vec<GlobToken>,
+}
+
+#[derive(Debug, Clone)]
+enum GlobToken {
+    Literal(char),
+    AnyChar,
+    AnySequence,
+    Class(CharClass),
+}
+
+#[derive(Debug, Clone)]
+struct CharClass {
+    negated: bool,
+    items: Vec<ClassItem>,
+}
+
+#[derive(Debug, Clone)]
+enum ClassItem {
+    Literal(char),
+    Range(char, char),
+}
+
+impl GlobPattern {
+    fn compile(pattern: &str) -> Result<Self> {
+        let chars: Vec<char> = pattern.chars().collect();
+        let mut tokens = Vec::new();
+        let mut index = 0;
+        while index < chars.len() {
+            match chars[index] {
+                '*' => {
+                    if !matches!(tokens.last(), Some(GlobToken::AnySequence)) {
+                        tokens.push(GlobToken::AnySequence);
+                    }
+                    index += 1;
+                }
+                '?' => {
+                    tokens.push(GlobToken::AnyChar);
+                    index += 1;
+                }
+                '[' => {
+                    let (class, next) = CharClass::parse(&chars, index)?;
+                    tokens.push(GlobToken::Class(class));
+                    index = next;
+                }
+                literal => {
+                    tokens.push(GlobToken::Literal(literal));
+                    index += 1;
+                }
+            }
+        }
+        Ok(Self { tokens })
+    }
+
+    fn matches(&self, candidate: &str) -> bool {
+        let chars: Vec<char> = candidate.chars().collect();
+        let mut memo = HashMap::new();
+        self.matches_from(0, 0, &chars, &mut memo)
+    }
+
+    fn matches_from(
+        &self,
+        token_index: usize,
+        char_index: usize,
+        chars: &[char],
+        memo: &mut HashMap<(usize, usize), bool>,
+    ) -> bool {
+        if let Some(result) = memo.get(&(token_index, char_index)) {
+            return *result;
+        }
+        let result = match self.tokens.get(token_index) {
+            None => char_index == chars.len(),
+            Some(GlobToken::AnySequence) => {
+                self.matches_from(token_index + 1, char_index, chars, memo)
+                    || (char_index < chars.len()
+                        && self.matches_from(token_index, char_index + 1, chars, memo))
+            }
+            Some(GlobToken::AnyChar) => {
+                char_index < chars.len()
+                    && self.matches_from(token_index + 1, char_index + 1, chars, memo)
+            }
+            Some(GlobToken::Literal(expected)) => {
+                chars.get(char_index) == Some(expected)
+                    && self.matches_from(token_index + 1, char_index + 1, chars, memo)
+            }
+            Some(GlobToken::Class(class)) => {
+                chars
+                    .get(char_index)
+                    .is_some_and(|value| class.matches(*value))
+                    && self.matches_from(token_index + 1, char_index + 1, chars, memo)
+            }
+        };
+        memo.insert((token_index, char_index), result);
+        result
+    }
+}
+
+impl CharClass {
+    fn parse(chars: &[char], opening: usize) -> Result<(Self, usize)> {
+        let mut index = opening + 1;
+        let negated = chars.get(index) == Some(&'^');
+        if negated {
+            index += 1;
+        }
+
+        let mut members = Vec::new();
+        if chars.get(index) == Some(&']') {
+            members.push(']');
+            index += 1;
+        }
+        while let Some(value) = chars.get(index).copied() {
+            if value == ']' {
+                break;
+            }
+            members.push(value);
+            index += 1;
+        }
+        if chars.get(index) != Some(&']') || members.is_empty() {
+            return Err(anyhow!(
+                "invalid glob pattern: unterminated or empty character class"
+            ));
+        }
+
+        let mut items = Vec::new();
+        let mut member_index = 0;
+        while member_index < members.len() {
+            if member_index + 2 < members.len() && members[member_index + 1] == '-' {
+                let start = members[member_index];
+                let end = members[member_index + 2];
+                if start > end {
+                    return Err(anyhow!("invalid glob pattern: descending character range"));
+                }
+                items.push(ClassItem::Range(start, end));
+                member_index += 3;
+            } else {
+                items.push(ClassItem::Literal(members[member_index]));
+                member_index += 1;
+            }
+        }
+        Ok((Self { negated, items }, index + 1))
+    }
+
+    fn matches(&self, value: char) -> bool {
+        let contained = self.items.iter().any(|item| match *item {
+            ClassItem::Literal(expected) => expected == value,
+            ClassItem::Range(start, end) => (start..=end).contains(&value),
+        });
+        contained != self.negated
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RuleSpec {
+    pub id: i64,
+    pub key_kind: KeyKind,
+    pub pattern: String,
+    pub match_kind: MatchKind,
+    pub category_id: i64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CompiledRule {
+    id: i64,
+    key_kind: KeyKind,
+    pattern_len: usize,
+    match_kind: MatchKind,
+    matcher: PatternMatcher,
+    category_id: i64,
+}
+
+impl RuleSpec {
+    pub(crate) fn compile(self) -> Result<CompiledRule> {
+        Ok(CompiledRule {
+            id: self.id,
+            key_kind: self.key_kind,
+            pattern_len: self.pattern.chars().count(),
+            match_kind: self.match_kind,
+            matcher: PatternMatcher::compile(self.match_kind, &self.pattern)?,
+            category_id: self.category_id,
+        })
+    }
+}
+
+pub(crate) fn validate_pattern(kind: MatchKind, pattern: &str) -> Result<()> {
+    PatternMatcher::compile(kind, pattern).map(|_| ())
+}
+
+pub(crate) fn pattern_matches(kind: MatchKind, pattern: &str, candidate: &str) -> bool {
+    PatternMatcher::compile(kind, pattern).is_ok_and(|matcher| matcher.matches(candidate))
+}
+
+pub(crate) fn compile_rules<I>(rules: I) -> Vec<CompiledRule>
+where
+    I: IntoIterator<Item = RuleSpec>,
+{
+    let mut compiled: Vec<_> = rules
+        .into_iter()
+        // Old SQLite-backed versions accepted malformed globs. They remain visible in the
+        // rule list, but cannot prevent the rest of history from being categorized.
+        .filter_map(|rule| rule.compile().ok())
+        .collect();
+    compiled.sort_by_key(|rule| {
+        (
+            if rule.key_kind == KeyKind::Url { 0 } else { 1 },
+            match_priority(rule.match_kind),
+            Reverse(rule.pattern_len),
+            rule.id,
         )
-        SELECT id FROM subtree"
-    )
+    });
+    compiled
+}
+
+fn match_priority(kind: MatchKind) -> u8 {
+    match kind {
+        MatchKind::Exact => 0,
+        MatchKind::Prefix => 1,
+        MatchKind::Substring => 2,
+        MatchKind::Glob => 3,
+    }
+}
+
+pub(crate) struct SessionCategoryInput<'a> {
+    pub key_kind: KeyKind,
+    pub key: &'a str,
+    pub url_key: Option<&'a str>,
+    pub start_time: &'a str,
+    pub end_time: Option<&'a str>,
+}
+
+pub(crate) fn resolve_category(
+    rules: &[CompiledRule],
+    input: &SessionCategoryInput<'_>,
+    distraction_threshold_seconds: i64,
+    distraction_category_id: i64,
+) -> Option<i64> {
+    for rule in rules {
+        let candidate = match rule.key_kind {
+            KeyKind::Url => input.url_key,
+            kind if kind == input.key_kind => Some(input.key),
+            _ => None,
+        };
+        if candidate.is_some_and(|candidate| rule.matcher.matches(candidate)) {
+            return Some(rule.category_id);
+        }
+    }
+
+    if distraction_threshold_seconds <= 0 {
+        return None;
+    }
+    let end = input.end_time.and_then(parse_utc)?;
+    let start = parse_utc(input.start_time)?;
+    (end - start < Duration::seconds(distraction_threshold_seconds))
+        .then_some(distraction_category_id)
+}
+
+fn parse_utc(value: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|value| value.with_timezone(&Utc))
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CategoryTree {
+    ids: HashSet<i64>,
+    children: HashMap<i64, Vec<i64>>,
+}
+
+impl CategoryTree {
+    pub(crate) fn new<I>(categories: I) -> Self
+    where
+        I: IntoIterator<Item = (i64, Option<i64>)>,
+    {
+        let mut ids = HashSet::new();
+        let mut children: HashMap<i64, Vec<i64>> = HashMap::new();
+        for (id, parent_id) in categories {
+            ids.insert(id);
+            if let Some(parent_id) = parent_id {
+                children.entry(parent_id).or_default().push(id);
+            }
+        }
+        for child_ids in children.values_mut() {
+            child_ids.sort_unstable();
+        }
+        Self { ids, children }
+    }
+
+    pub(crate) fn contains(&self, id: i64) -> bool {
+        self.ids.contains(&id)
+    }
+
+    pub(crate) fn descendants(&self, root: i64) -> Vec<i64> {
+        if !self.contains(root) {
+            return Vec::new();
+        }
+        let mut result = Vec::new();
+        let mut visited = HashSet::new();
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            if !visited.insert(id) {
+                continue;
+            }
+            result.push(id);
+            if let Some(children) = self.children.get(&id) {
+                stack.extend(children.iter().rev().copied());
+            }
+        }
+        result
+    }
+
+    pub(crate) fn deletion_order(&self, root: i64) -> Vec<i64> {
+        let descendants = self.descendants(root);
+        let descendant_set: HashSet<_> = descendants.iter().copied().collect();
+        let mut depth = HashMap::new();
+        depth.insert(root, 0usize);
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            let next_depth = depth.get(&id).copied().unwrap_or(0) + 1;
+            if let Some(children) = self.children.get(&id) {
+                for child in children {
+                    if descendant_set.contains(child) && !depth.contains_key(child) {
+                        depth.insert(*child, next_depth);
+                        stack.push(*child);
+                    }
+                }
+            }
+        }
+        let mut ordered = descendants;
+        ordered.sort_by_key(|id| (Reverse(depth.get(id).copied().unwrap_or(0)), *id));
+        ordered
+    }
 }
 
 pub fn category_key(exe_path: &str, url: Option<&str>) -> (KeyKind, String) {
@@ -188,6 +519,139 @@ pub(crate) fn domain_of(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn match_kind_parses_glob_and_no_longer_accepts_the_retired_regex_kind() {
+        assert_eq!(MatchKind::parse("glob"), Some(MatchKind::Glob));
+        assert_eq!(MatchKind::Glob.as_str(), "glob");
+        assert_eq!(MatchKind::parse("regex"), None);
+    }
+
+    #[test]
+    fn all_match_kinds_are_ascii_case_insensitive() {
+        assert!(pattern_matches(MatchKind::Exact, "Code.EXE", "code.exe"));
+        assert!(pattern_matches(
+            MatchKind::Prefix,
+            "GITHUB",
+            "github.com/path"
+        ));
+        assert!(pattern_matches(
+            MatchKind::Substring,
+            "Hub.Com",
+            "github.com"
+        ));
+        assert!(pattern_matches(
+            MatchKind::Glob,
+            "GAME*.EXE",
+            "gameClient.exe"
+        ));
+    }
+
+    #[test]
+    fn glob_is_anchored_crosses_slashes_and_supports_classes() {
+        assert!(pattern_matches(
+            MatchKind::Glob,
+            "github.com/*/pulls",
+            "github.com/org/repo/pulls"
+        ));
+        assert!(!pattern_matches(
+            MatchKind::Glob,
+            "*.corp.example.com",
+            "corp.example.com.attacker.net"
+        ));
+        assert!(pattern_matches(
+            MatchKind::Glob,
+            "game[0-9].exe",
+            "game7.exe"
+        ));
+        assert!(pattern_matches(MatchKind::Glob, "file[^0-9]", "filex"));
+        assert!(pattern_matches(MatchKind::Glob, "[[]draft]", "[draft]"));
+        assert!(pattern_matches(
+            MatchKind::Glob,
+            "github.com/**/pulls",
+            "github.com/org/repo/pulls"
+        ));
+    }
+
+    #[test]
+    fn malformed_globs_are_rejected() {
+        assert!(validate_pattern(MatchKind::Glob, "unterminated[").is_err());
+        assert!(validate_pattern(MatchKind::Glob, "[]").is_err());
+        assert!(validate_pattern(MatchKind::Glob, "[z-a]").is_err());
+    }
+
+    #[test]
+    fn resolver_ranks_rules_before_falling_back_to_distraction() {
+        let rules = compile_rules([
+            RuleSpec {
+                id: 1,
+                key_kind: KeyKind::Domain,
+                pattern: "github.com".into(),
+                match_kind: MatchKind::Exact,
+                category_id: 10,
+            },
+            RuleSpec {
+                id: 2,
+                key_kind: KeyKind::Url,
+                pattern: "github.com/org/repo".into(),
+                match_kind: MatchKind::Prefix,
+                category_id: 20,
+            },
+        ]);
+        let input = SessionCategoryInput {
+            key_kind: KeyKind::Domain,
+            key: "github.com",
+            url_key: Some("github.com/org/repo/pulls"),
+            start_time: "2024-06-15T00:00:00Z",
+            end_time: Some("2024-06-15T00:00:01Z"),
+        };
+        assert_eq!(resolve_category(&rules, &input, 10, 30), Some(20));
+    }
+
+    #[test]
+    fn invalid_timestamps_disable_only_the_distraction_fallback() {
+        let input = SessionCategoryInput {
+            key_kind: KeyKind::Exe,
+            key: "unknown.exe",
+            url_key: None,
+            start_time: "not-a-time",
+            end_time: Some("also-not-a-time"),
+        };
+        assert_eq!(resolve_category(&[], &input, 10, 30), None);
+    }
+
+    #[test]
+    fn distraction_threshold_is_strict_and_open_rows_never_use_it() {
+        let closed = SessionCategoryInput {
+            key_kind: KeyKind::Exe,
+            key: "unknown.exe",
+            url_key: None,
+            start_time: "2024-06-15T00:00:00Z",
+            end_time: Some("2024-06-15T00:00:10Z"),
+        };
+        assert_eq!(resolve_category(&[], &closed, 10, 30), None);
+        assert_eq!(resolve_category(&[], &closed, 0, 30), None);
+
+        let open = SessionCategoryInput {
+            end_time: None,
+            ..closed
+        };
+        assert_eq!(resolve_category(&[], &open, 60, 30), None);
+    }
+
+    #[test]
+    fn category_tree_expands_descendants_and_deletes_deepest_first() {
+        let tree = CategoryTree::new([
+            (1, None),
+            (2, Some(1)),
+            (3, Some(2)),
+            (4, Some(1)),
+            (5, None),
+        ]);
+        assert_eq!(tree.descendants(1), vec![1, 2, 3, 4]);
+        assert_eq!(tree.deletion_order(1), vec![3, 2, 4, 1]);
+        assert!(tree.descendants(99).is_empty());
+    }
 
     #[test]
     fn app_focus_row_keys_on_lowercased_exe_file_name() {

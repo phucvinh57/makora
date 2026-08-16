@@ -109,6 +109,14 @@ export function deleteCategoryRule(id: number): Promise<void> {
   return invoke("delete_category_rule", { id });
 }
 
+export function getDistractionThresholdSeconds(): Promise<number> {
+  return invoke("get_distraction_threshold_seconds");
+}
+
+export function setDistractionThresholdSeconds(seconds: number): Promise<void> {
+  return invoke("set_distraction_threshold_seconds", { seconds });
+}
+
 export function listIgnoreRules(): Promise<IgnoreRule[]> {
   return invoke("list_ignore_rules");
 }

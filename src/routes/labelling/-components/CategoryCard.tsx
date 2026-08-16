@@ -14,7 +14,7 @@ import {
   categoryOptions,
   categoryValueLabels,
 } from "@/components/CategoryOptions";
-import { categorySubtreeIds } from "@/categories";
+import { categorySubtreeIds, userCategories } from "@/categories";
 import type { Category } from "@/types";
 
 export const NO_PARENT = "none";
@@ -50,10 +50,17 @@ export function CategoryCard({
   const [color, setColor] = useState(category.color);
   const [parentId, setParentId] = useState<number | null>(category.parent_id);
 
+  // Built-in categories keep their name and their place at the root — code looks them up
+  // by key. Only the colour is the user's to change.
+  const isBuiltIn = category.system_key !== null;
+
   // Moving a category inside its own branch would cut that branch loose from every root,
-  // so its own subtree is not on offer as a new parent.
+  // so its own subtree is not on offer as a new parent. Neither is a built-in, which
+  // cannot take children.
   const ownSubtree = categorySubtreeIds(category.id, categories);
-  const parentChoices = categories.filter((c) => !ownSubtree.has(c.id));
+  const parentChoices = userCategories(categories).filter(
+    (c) => !ownSubtree.has(c.id),
+  );
 
   function startEditing() {
     setName(category.name);
@@ -85,6 +92,7 @@ export function CategoryCard({
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
+              disabled={isBuiltIn}
               className="min-w-40 flex-1"
             />
             <Select
@@ -103,6 +111,7 @@ export function CategoryCard({
                 size="sm"
                 className="w-44"
                 aria-label="Parent category"
+                disabled={isBuiltIn}
               >
                 <SelectValue />
               </SelectTrigger>
@@ -130,6 +139,11 @@ export function CategoryCard({
                 style={{ backgroundColor: category.color }}
               />
               {category.name}
+              {isBuiltIn && (
+                <span className="rounded bg-muted px-1.5 py-0.5 text-xs font-normal text-muted-foreground">
+                  built-in
+                </span>
+              )}
               <button
                 type="button"
                 onClick={onShowRules}
@@ -147,31 +161,36 @@ export function CategoryCard({
               )}
             </CardTitle>
             <CardAction className="row-span-1 flex items-center gap-2 self-center">
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={`Add subcategory of ${category.name}`}
-                title="Add subcategory"
-                onClick={onAddSubcategory}
-              >
-                <PlusIcon size={16} />
-              </Button>
+              {!isBuiltIn && (
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`Add subcategory of ${category.name}`}
+                  title="Add subcategory"
+                  onClick={onAddSubcategory}
+                >
+                  <PlusIcon size={16} />
+                </Button>
+              )}
               <Button
                 variant="ghost"
                 size="icon-sm"
                 aria-label="Edit category"
+                title={isBuiltIn ? "Change colour" : "Edit category"}
                 onClick={startEditing}
               >
                 <PencilIcon size={16} />
               </Button>
-              <Button
-                variant="destructive"
-                size="icon-sm"
-                aria-label="Delete category"
-                onClick={() => onDelete(category)}
-              >
-                <Trash2Icon size={16} />
-              </Button>
+              {!isBuiltIn && (
+                <Button
+                  variant="destructive"
+                  size="icon-sm"
+                  aria-label="Delete category"
+                  onClick={() => onDelete(category)}
+                >
+                  <Trash2Icon size={16} />
+                </Button>
+              )}
             </CardAction>
           </>
         )}

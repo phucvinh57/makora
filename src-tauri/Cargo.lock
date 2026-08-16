@@ -2098,7 +2098,6 @@ dependencies = [
  "chrono",
  "core-foundation-sys",
  "objc2",
- "regex",
  "rusqlite",
  "rusqlite_migration",
  "serde",

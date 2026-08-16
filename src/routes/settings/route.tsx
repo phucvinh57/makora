@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { DistractionSection } from "./-components/DistractionSection";
 import { GeneralSection } from "./-components/GeneralSection";
 import { IgnoreListSection } from "./-components/IgnoreListSection";
 
@@ -16,6 +17,7 @@ function SettingsPage() {
         </p>
       </header>
       <GeneralSection />
+      <DistractionSection />
       <IgnoreListSection />
     </div>
   );

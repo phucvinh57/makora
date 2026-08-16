@@ -22,11 +22,21 @@ export interface Category {
   name: string;
   color: string;
   parent_id: number | null;
+  /**
+   * Set on categories the app owns rather than the user — currently only `"distraction"`.
+   * Those cannot be renamed, moved, deleted, or given children.
+   */
+  system_key: string | null;
 }
 
 export type KeyKind = "exe" | "domain" | "url";
 
-export type MatchKind = "exact" | "prefix" | "substring" | "regex";
+/**
+ * Change one, change the others: `MatchKind` in `src-tauri/src/core/category.rs`, the
+ * CHECK constraints in the migrations, and the label maps in `RulesTab.tsx` and
+ * `IgnoreListSection.tsx`. Nothing checks those four against each other.
+ */
+export type MatchKind = "exact" | "prefix" | "substring" | "glob";
 
 export interface CategoryRule {
   id: number;
@@ -38,6 +48,7 @@ export interface CategoryRule {
 
 export interface RecategorizeOutcome {
   pins_cleared: number;
+  rows_resolved: number;
 }
 
 export type IgnoreKind = "app" | "site";

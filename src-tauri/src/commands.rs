@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use crate::core::{
     ActivityStats, Category, CategoryFilter, CategoryRule, CategoryStore, HistoryReader,
-    IgnoreRule, IgnoreStore, RecategorizeOutcome, SessionFilter, SessionRow, WorkSession,
-    WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
+    IgnoreRule, IgnoreStore, RecategorizeOutcome, SessionFilter, SessionRow, SettingsStore,
+    WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -147,6 +147,23 @@ pub fn create_category_rule(
 #[tauri::command]
 pub fn delete_category_rule(categories: State<CategoryStore>, id: i64) -> Result<(), String> {
     categories.delete_rule(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_distraction_threshold_seconds(settings: State<SettingsStore>) -> Result<i64, String> {
+    settings
+        .distraction_threshold_seconds()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_distraction_threshold_seconds(
+    settings: State<SettingsStore>,
+    seconds: i64,
+) -> Result<(), String> {
+    settings
+        .set_distraction_threshold_seconds(seconds)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
