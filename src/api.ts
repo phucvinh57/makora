@@ -84,6 +84,12 @@ export function setAiCategorizationSchedule(
   return invoke("set_ai_categorization_schedule", { schedule });
 }
 
+export function setAiCategorizationConfidenceThreshold(
+  threshold: number,
+): Promise<void> {
+  return invoke("set_ai_categorization_confidence_threshold", { threshold });
+}
+
 export function createCategory(
   name: string,
   color: string,

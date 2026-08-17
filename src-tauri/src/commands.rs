@@ -182,6 +182,15 @@ pub fn set_ai_categorization_schedule(
 }
 
 #[tauri::command]
+pub fn set_ai_categorization_confidence_threshold(
+    ai: State<AiCategorizationService>,
+    threshold: f32,
+) -> Result<(), String> {
+    ai.set_confidence_threshold(threshold)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub fn list_ignore_rules(ignore: State<Arc<IgnoreStore>>) -> Result<Vec<IgnoreRule>, String> {
     ignore.list_rules().map_err(|e| e.to_string())
 }

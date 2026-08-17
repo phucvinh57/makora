@@ -28,7 +28,11 @@ rusqlite_migration = "2.6.0"
 url = "2.5.7"
 linfa = "0.8.1"
 linfa-bayes = { version = "0.8.1", features = ["serde"] }
-ndarray = "0.16"
+ndarray = "0.17.2"
+tauri-plugin-opener = "2"
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [

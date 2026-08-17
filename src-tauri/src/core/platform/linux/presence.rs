@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
+use tracing::{info, warn};
 use zbus::blocking::{fdo::DBusProxy, Connection, MessageIterator, Proxy};
 use zbus::message::Type as MessageType;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
@@ -24,14 +25,17 @@ pub fn start_presence_watcher(tx: Sender<WatchEvent>) -> Result<()> {
     let mut state = PresenceState::default();
     let initial = match WatchConnection::connect() {
         Ok(watch) => {
-            eprintln!("makora: presence watcher using systemd-logind");
+            info!("presence watcher using systemd-logind");
             if !state.apply_snapshot(watch.locked, watch.sleeping, &tx) {
                 return Ok(());
             }
             Some(watch)
         }
         Err(err) => {
-            eprintln!("makora: systemd-logind presence watcher unavailable: {err:#}; retrying");
+            warn!(
+                error = format!("{err:#}"),
+                "systemd-logind presence watcher unavailable; retrying"
+            );
             None
         }
     };
@@ -49,14 +53,17 @@ fn run(tx: Sender<WatchEvent>, mut state: PresenceState, mut initial: Option<Wat
             Some(watch) => watch,
             None => match WatchConnection::connect() {
                 Ok(watch) => {
-                    eprintln!("makora: systemd-logind presence watcher reconnected");
+                    info!("systemd-logind presence watcher reconnected");
                     if !state.apply_snapshot(watch.locked, watch.sleeping, &tx) {
                         return;
                     }
                     watch
                 }
                 Err(err) => {
-                    eprintln!("makora: systemd-logind presence watcher: {err:#}");
+                    warn!(
+                        error = format!("{err:#}"),
+                        "systemd-logind presence watcher failed to connect; retrying"
+                    );
                     thread::sleep(RETRY_DELAY);
                     continue;
                 }
@@ -64,7 +71,10 @@ fn run(tx: Sender<WatchEvent>, mut state: PresenceState, mut initial: Option<Wat
         };
 
         if let Err(err) = watch_messages(&watch, &mut state, &tx) {
-            eprintln!("makora: systemd-logind presence watcher: {err:#}");
+            warn!(
+                error = format!("{err:#}"),
+                "systemd-logind presence watcher dropped; retrying"
+            );
         }
         thread::sleep(RETRY_DELAY);
     }

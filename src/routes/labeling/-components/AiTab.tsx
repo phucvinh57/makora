@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -11,6 +13,7 @@ import {
 import {
   getClassifierStatus,
   runAiCategorization,
+  setAiCategorizationConfidenceThreshold,
   setAiCategorizationSchedule,
 } from "@/api";
 import type { AiCategorizationSchedule } from "@/types";
@@ -32,6 +35,7 @@ function formatState(state: string | undefined) {
 
 export function AiTab() {
   const queryClient = useQueryClient();
+  const [confidenceDraft, setConfidenceDraft] = useState("");
   const statusQuery = useQuery({
     queryKey: ["classifierStatus"],
     queryFn: getClassifierStatus,
@@ -53,9 +57,30 @@ export function AiTab() {
       queryClient.invalidateQueries({ queryKey: ["classifierStatus"] });
     },
   });
+  const setConfidenceThreshold = useMutation({
+    mutationFn: setAiCategorizationConfidenceThreshold,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["classifierStatus"] });
+    },
+  });
   const status = statusQuery.data;
 
+  useEffect(() => {
+    if (status) {
+      setConfidenceDraft(String(status.confidence_threshold * 100));
+    }
+  }, [status?.confidence_threshold, status]);
+
   const busy = status?.state === "queued" || status?.state === "running";
+  const confidencePercent = Number(confidenceDraft);
+  const confidenceIsValid =
+    confidenceDraft.trim() !== "" &&
+    Number.isFinite(confidencePercent) &&
+    confidencePercent >= 50 &&
+    confidencePercent <= 99;
+  const confidenceIsUnchanged =
+    status !== undefined &&
+    Math.abs(confidencePercent / 100 - status.confidence_threshold) < 0.000001;
 
   return (
     <Card size="sm" className="max-w-xl">
@@ -105,12 +130,55 @@ export function AiTab() {
             </SelectContent>
           </Select>
         </div>
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-3">
+            <label htmlFor="ai-confidence" className="text-muted-foreground">
+              Confidence threshold
+            </label>
+            <Input
+              id="ai-confidence"
+              className="w-24"
+              type="number"
+              min={50}
+              max={99}
+              step={1}
+              value={confidenceDraft}
+              disabled={
+                statusQuery.isLoading || setConfidenceThreshold.isPending
+              }
+              onChange={(event) => setConfidenceDraft(event.target.value)}
+              aria-describedby="ai-confidence-help"
+            />
+            <span className="text-muted-foreground">%</span>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={
+                statusQuery.isLoading ||
+                setConfidenceThreshold.isPending ||
+                !confidenceIsValid ||
+                confidenceIsUnchanged
+              }
+              onClick={() =>
+                setConfidenceThreshold.mutate(confidencePercent / 100)
+              }
+            >
+              Save
+            </Button>
+          </div>
+          <p id="ai-confidence-help" className="text-xs text-muted-foreground">
+            Lower values categorize more activity with greater error risk.
+            Changes apply on the next AI run.
+          </p>
+        </div>
         {status?.last_error && (
           <p className="text-xs text-destructive">{status.last_error}</p>
         )}
-        {(run.error || setSchedule.error) && (
+        {(run.error || setSchedule.error || setConfidenceThreshold.error) && (
           <p className="text-xs text-destructive">
-            {String(run.error ?? setSchedule.error)}
+            {String(
+              run.error ?? setSchedule.error ?? setConfidenceThreshold.error,
+            )}
           </p>
         )}
         <Button

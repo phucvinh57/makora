@@ -234,8 +234,29 @@ fn migrations() -> Migrations<'static> {
              ALTER TABLE categories DROP COLUMN system_key;",
         )
         .foreign_key_check(),
+        M::up(
+            "INSERT OR IGNORE INTO settings (key, value)
+                VALUES ('ai_categorization_confidence_threshold', '0.75');",
+        ),
+        // Sub-second blocks are event noise, never activity. Existing history is purged once
+        // here; `end_session` keeps new ones out.
+        //
+        // `unixepoch(…, 'subsec')` rather than the `julianday` arithmetic the read queries
+        // use: a julianday difference is a fraction of a day, so a row of exactly one second
+        // comes back as 0.9999999… and would be deleted by a `< 1.0` test.
+        M::up(
+            "DELETE FROM sessions
+             WHERE end_time IS NOT NULL
+               AND unixepoch(end_time, 'subsec') - unixepoch(start_time, 'subsec') < 1.0;",
+        ),
     ])
 }
+
+/// A focus or tab change that is undone within a second never was activity: a page redirects,
+/// a browser reports a tab before its title has loaded and corrects itself, a window flashes
+/// past on the way somewhere else. Rows that short are deleted instead of closed, so no query
+/// downstream has to filter by duration.
+const MIN_SESSION_SECONDS: i64 = 1;
 
 pub fn open_connection(path: &Path) -> Result<SharedConnection> {
     if let Some(parent) = path.parent() {
@@ -278,6 +299,26 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+/// A row whose `start_time` is missing or unparseable is left alone — an unreadable timestamp
+/// is a reason to keep the row, not to throw it away.
+fn is_too_short(tx: &rusqlite::Transaction<'_>, id: i64, at: DateTime<Utc>) -> Result<bool> {
+    let start: Option<String> = tx
+        .query_row(
+            "SELECT start_time FROM sessions WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(start) = start.as_deref().and_then(|start| {
+        DateTime::parse_from_rfc3339(start)
+            .ok()
+            .map(|start| start.with_timezone(&Utc))
+    }) else {
+        return Ok(false);
+    };
+    Ok(at.signed_duration_since(start).num_milliseconds() < MIN_SESSION_SECONDS * 1000)
+}
+
 pub struct SqliteStore {
     conn: SharedConnection,
 }
@@ -311,11 +352,17 @@ impl SessionStore for SqliteStore {
         Ok(id)
     }
 
-    /// Closes the row and derives its category in Rust in one transaction.
+    /// Closes the row and derives its category in Rust in one transaction, unless the block
+    /// lasted less than [`MIN_SESSION_SECONDS`], in which case the row is dropped instead.
     fn end_session(&mut self, id: i64, at: DateTime<Utc>) -> Result<()> {
         let end_time = at.to_rfc3339();
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
+        if is_too_short(&tx, id, at)? {
+            tx.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+            tx.commit()?;
+            return Ok(());
+        }
         let category_id = resolve::resolve_session_category(&tx, id)?;
         tx.execute(
             "UPDATE sessions SET end_time = ?1, rule_category_id = ?2 WHERE id = ?3",
@@ -512,6 +559,15 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ai_schedule, "manual");
+
+        let ai_confidence_threshold: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'ai_categorization_confidence_threshold'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ai_confidence_threshold, "0.75");
 
         let resolved_column_count: i64 = conn
             .query_row(
@@ -772,6 +828,131 @@ mod tests {
             )
             .unwrap();
         assert_eq!(obsolete_schema, 0);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn migration_20_drops_sub_second_history_and_keeps_open_rows() {
+        let path = temp_db_path();
+        let mut conn = Connection::open(&path).unwrap();
+        migrations().to_version(&mut conn, 19).unwrap();
+        conn.execute_batch(
+            "INSERT INTO sessions (
+                 app_name, exe_path, window_title, category_key, category_key_kind,
+                 start_time, end_time
+             ) VALUES
+                ('chrome', 'chrome', 'https://a.example/', 'a.example', 'domain',
+                 '2024-06-15T00:00:00+00:00', '2024-06-15T00:00:00.400+00:00'),
+                ('chrome', 'chrome', 'Real title', 'a.example', 'domain',
+                 '2024-06-15T00:01:00+00:00', '2024-06-15T00:01:01+00:00'),
+                ('code', 'code', 'main.rs', 'code', 'exe',
+                 '2024-06-15T00:02:00+00:00', '2024-06-15T00:12:00+00:00');
+             INSERT INTO sessions (
+                 app_name, exe_path, window_title, category_key, category_key_kind, start_time
+             ) VALUES ('code', 'code', 'still open', 'code', 'exe', '2024-06-15T00:20:00+00:00');",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let surviving: Vec<String> = conn
+            .prepare("SELECT window_title FROM sessions ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            surviving,
+            vec![
+                "Real title".to_string(),
+                "main.rs".to_string(),
+                "still open".to_string(),
+            ],
+            "only the sub-second block goes; a row still open has no duration to judge yet"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ending_a_sub_second_block_deletes_the_row_instead_of_closing_it() {
+        let path = temp_db_path();
+        let conn = open_connection(&path).unwrap();
+        let mut store = SqliteStore::new(conn.clone());
+        let app = AppInfo {
+            process_id: 1,
+            exe_path: "chrome.exe".to_string(),
+            app_name: "chrome".to_string(),
+        };
+        let start = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+
+        let blip = store
+            .start_session(
+                &app,
+                "https://a.example/",
+                Some("https://a.example/"),
+                start,
+            )
+            .unwrap();
+        store
+            .end_session(blip, start + chrono::Duration::milliseconds(400))
+            .unwrap();
+        let kept = store
+            .start_session(&app, "Real title", Some("https://b.example/"), start)
+            .unwrap();
+        store
+            .end_session(kept, start + chrono::Duration::seconds(1))
+            .unwrap();
+
+        let surviving: Vec<(i64, String)> = conn
+            .lock()
+            .unwrap()
+            .prepare("SELECT id, window_title FROM sessions ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            surviving,
+            vec![(kept, "Real title".to_string())],
+            "exactly one second is long enough to keep; anything under it is noise"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn migration_19_adds_the_ai_confidence_threshold_without_overwriting_settings() {
+        let path = temp_db_path();
+        let mut conn = Connection::open(&path).unwrap();
+        migrations().to_version(&mut conn, 18).unwrap();
+        conn.execute(
+            "UPDATE settings SET value = 'daily' WHERE key = 'ai_categorization_schedule'",
+            [],
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let threshold: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'ai_categorization_confidence_threshold'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let schedule: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'ai_categorization_schedule'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(threshold, "0.75");
+        assert_eq!(schedule, "daily");
 
         let _ = std::fs::remove_file(&path);
     }

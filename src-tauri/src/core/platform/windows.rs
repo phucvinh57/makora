@@ -59,7 +59,7 @@ fn run_event_loop(tx: Sender<WatchEvent>) {
             WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
         );
         if hook.is_null() {
-            eprintln!("makora: SetWinEventHook failed; app-usage tracking is disabled");
+            tracing::error!("SetWinEventHook failed; app-usage tracking is disabled");
             return;
         }
 

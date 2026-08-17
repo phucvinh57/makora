@@ -9,6 +9,7 @@ use std::thread;
 
 use anyhow::{anyhow, Result};
 use chrono::Utc;
+use tracing::{error, info};
 
 use crate::core::model::{FocusEvent, WatchEvent};
 use crate::core::watcher::FocusWatcher;
@@ -53,27 +54,23 @@ fn select_and_run(tx: Sender<WatchEvent>) {
     };
 
     if let Some(provider) = gnome::GnomeProvider::probe() {
-        eprintln!(
-            "makora: focus watcher using the {} provider",
-            gnome::GnomeProvider::NAME
+        info!(
+            provider = gnome::GnomeProvider::NAME,
+            "focus watcher started"
         );
         provider.run(&mut emit);
         return;
     }
 
     if let Some(provider) = wlr::WlrProvider::probe() {
-        eprintln!(
-            "makora: focus watcher using the {} provider",
-            wlr::WlrProvider::NAME
-        );
+        info!(provider = wlr::WlrProvider::NAME, "focus watcher started");
         provider.run(&mut emit);
         return;
     }
 
-    eprintln!(
-        "makora: no supported focus source on this desktop \
-         (XDG_CURRENT_DESKTOP={:?}) — app usage will not be recorded. \
-         On GNOME, install the shell extension from gnome-extension/.",
-        std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default()
+    error!(
+        desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(),
+        "no supported focus source on this desktop — app usage will not be recorded. \
+         On GNOME, install the shell extension from gnome-extension/."
     );
 }

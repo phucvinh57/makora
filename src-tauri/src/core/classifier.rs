@@ -12,6 +12,7 @@ use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use tracing::{error, info};
 use url::Url;
 
 use super::store::sqlite::SharedConnection;
@@ -21,10 +22,11 @@ type CompletionCallback = Arc<dyn Fn() + Send + Sync>;
 const MIN_EXAMPLES: usize = 5;
 const MAX_VOCABULARY: usize = 4096;
 const VECTOR_VERSION: u32 = 1;
-const MIN_CONFIDENCE: f32 = 0.75;
+const DEFAULT_CONFIDENCE_THRESHOLD: f32 = 0.75;
 const MIN_LEAD: f32 = 0.15;
 const SCHEDULE_SETTING_KEY: &str = "ai_categorization_schedule";
 const LAST_COMPLETED_SETTING_KEY: &str = "ai_categorization_last_completed_at";
+const CONFIDENCE_THRESHOLD_SETTING_KEY: &str = "ai_categorization_confidence_threshold";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -93,6 +95,7 @@ pub struct ClassifierStatus {
     pub last_error: Option<String>,
     pub schedule: String,
     pub next_scheduled_at: Option<String>,
+    pub confidence_threshold: f32,
 }
 
 impl ClassifierStatus {
@@ -100,6 +103,7 @@ impl ClassifierStatus {
         artifact: Option<&Artifact>,
         schedule: AiCategorizationSchedule,
         last_completed_at: Option<String>,
+        confidence_threshold: f32,
         intervals: &ScheduleIntervals,
     ) -> Self {
         Self {
@@ -112,6 +116,7 @@ impl ClassifierStatus {
             last_error: None,
             schedule: schedule.as_str().into(),
             next_scheduled_at: next_scheduled_at(schedule, intervals),
+            confidence_threshold,
         }
     }
 }
@@ -119,6 +124,7 @@ impl ClassifierStatus {
 enum ServiceMessage {
     Run,
     SetSchedule(AiCategorizationSchedule),
+    SetConfidenceThreshold(f32),
 }
 
 #[derive(Clone)]
@@ -152,6 +158,7 @@ impl AiCategorizationService {
     ) -> Result<Self> {
         let artifact = load_artifact(&artifact_path).ok().flatten();
         let schedule = load_schedule(&conn)?;
+        let confidence_threshold = load_confidence_threshold(&conn)?;
         let last_completed_at = read_setting(&conn, LAST_COMPLETED_SETTING_KEY)?;
         let (tx, rx) = mpsc::channel();
         let generation = Arc::new(AtomicU64::new(0));
@@ -159,6 +166,7 @@ impl AiCategorizationService {
             artifact.as_ref(),
             schedule,
             last_completed_at,
+            confidence_threshold,
             &intervals,
         )));
         let service = Self {
@@ -177,6 +185,7 @@ impl AiCategorizationService {
                         artifact_path,
                         artifact,
                         schedule,
+                        confidence_threshold,
                         intervals,
                         generation,
                         status,
@@ -219,6 +228,19 @@ impl AiCategorizationService {
             .send(ServiceMessage::SetSchedule(schedule))
             .context("AI categorization worker is unavailable")
     }
+
+    pub fn set_confidence_threshold(&self, threshold: f32) -> Result<()> {
+        validate_confidence_threshold(threshold)?;
+        write_setting(
+            &self.conn,
+            CONFIDENCE_THRESHOLD_SETTING_KEY,
+            &threshold.to_string(),
+        )?;
+        self.status.lock().unwrap().confidence_threshold = threshold;
+        self.tx
+            .send(ServiceMessage::SetConfidenceThreshold(threshold))
+            .context("AI categorization worker is unavailable")
+    }
 }
 
 struct ServiceRuntime {
@@ -226,6 +248,7 @@ struct ServiceRuntime {
     artifact_path: PathBuf,
     artifact: Option<Artifact>,
     schedule: AiCategorizationSchedule,
+    confidence_threshold: f32,
     intervals: ScheduleIntervals,
     generation: Arc<AtomicU64>,
     status: Arc<Mutex<ClassifierStatus>>,
@@ -238,6 +261,7 @@ fn run_service(runtime: ServiceRuntime, rx: mpsc::Receiver<ServiceMessage>) {
         artifact_path,
         mut artifact,
         mut schedule,
+        mut confidence_threshold,
         intervals,
         generation,
         status,
@@ -274,12 +298,17 @@ fn run_service(runtime: ServiceRuntime, rx: mpsc::Receiver<ServiceMessage>) {
                     .map(|delay| Instant::now() + delay);
                 update_schedule_status(&status, schedule, &intervals);
             }
+            ServiceMessage::SetConfidenceThreshold(next) => {
+                confidence_threshold = next;
+            }
             ServiceMessage::Run => {
                 // Collapse triggers that arrived before work began. Schedule changes still take
                 // effect immediately and the latest generation owns the eventual database write.
                 while let Ok(message) = rx.try_recv() {
                     if let ServiceMessage::SetSchedule(next) = message {
                         schedule = next;
+                    } else if let ServiceMessage::SetConfidenceThreshold(next) = message {
+                        confidence_threshold = next;
                     }
                 }
                 deadline = schedule
@@ -293,6 +322,7 @@ fn run_service(runtime: ServiceRuntime, rx: mpsc::Receiver<ServiceMessage>) {
                     &generation,
                     &status,
                     &on_completed,
+                    confidence_threshold,
                 );
             }
         }
@@ -306,15 +336,24 @@ fn execute_job(
     generation: &AtomicU64,
     status: &Mutex<ClassifierStatus>,
     on_completed: &CompletionCallback,
+    confidence_threshold: f32,
 ) {
     let target = generation.load(Ordering::SeqCst);
+    info!(generation = target, "AI categorization job started");
     {
         let mut s = status.lock().unwrap();
         s.state = "running".into();
         s.generation = target;
         s.last_error = None;
     }
-    let result = update(conn, artifact, target, generation, artifact_path);
+    let result = update(
+        conn,
+        artifact,
+        target,
+        generation,
+        artifact_path,
+        confidence_threshold,
+    );
     let current_generation = generation.load(Ordering::SeqCst);
     let mut s = status.lock().unwrap();
     s.generation = current_generation;
@@ -346,6 +385,11 @@ fn execute_job(
             on_completed,
         ),
         Ok(UpdateResult::Stale) => {
+            info!(
+                generation = target,
+                current = current_generation,
+                "AI categorization job superseded"
+            );
             s.state = if current_generation == target {
                 "idle"
             } else {
@@ -354,6 +398,11 @@ fn execute_job(
             .into();
         }
         Err(error) => {
+            error!(
+                generation = target,
+                error = format!("{error:#}"),
+                "AI categorization job failed"
+            );
             s.state = "error".into();
             s.last_error = Some(error.to_string());
         }
@@ -370,6 +419,13 @@ fn complete_job(
     on_completed: &CompletionCallback,
 ) {
     let completed_at = Utc::now().to_rfc3339();
+    info!(
+        state,
+        examples,
+        categories,
+        kind = kind.as_str(),
+        "AI categorization job finished"
+    );
     match write_setting(conn, LAST_COMPLETED_SETTING_KEY, &completed_at) {
         Ok(()) => {
             status.state = state.into();
@@ -380,6 +436,10 @@ fn complete_job(
             on_completed();
         }
         Err(error) => {
+            error!(
+                error = format!("{error:#}"),
+                "recording the AI categorization completion time failed"
+            );
             status.state = "error".into();
             status.last_error = Some(error.to_string());
         }
@@ -436,11 +496,38 @@ fn load_schedule(conn: &SharedConnection) -> Result<AiCategorizationSchedule> {
         .unwrap_or(Ok(AiCategorizationSchedule::Manual))
 }
 
+fn validate_confidence_threshold(threshold: f32) -> Result<()> {
+    if !threshold.is_finite() || !(0.50..=0.99).contains(&threshold) {
+        bail!("AI categorization confidence threshold must be between 0.50 and 0.99");
+    }
+    Ok(())
+}
+
+fn load_confidence_threshold(conn: &SharedConnection) -> Result<f32> {
+    match read_setting(conn, CONFIDENCE_THRESHOLD_SETTING_KEY)? {
+        Some(value) => {
+            let threshold = value
+                .parse::<f32>()
+                .context("reading AI categorization confidence threshold")?;
+            validate_confidence_threshold(threshold)?;
+            Ok(threshold)
+        }
+        None => Ok(DEFAULT_CONFIDENCE_THRESHOLD),
+    }
+}
+
 #[derive(Debug, Clone)]
 struct Example {
     id: i64,
     category_id: i64,
     document: String,
+    source: ExampleSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExampleSource {
+    Manual,
+    Rule,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -501,6 +588,7 @@ fn update(
     target: u64,
     generation: &AtomicU64,
     artifact_path: &PathBuf,
+    confidence_threshold: f32,
 ) -> Result<UpdateResult> {
     let examples = snapshot_examples(conn)?;
     let (deduped, total_categories) = deduplicate(examples);
@@ -522,7 +610,14 @@ fn update(
     let mut model = None;
     let mut update_kind = UpdateKind::FullRebuild;
     if let Some(current) = artifact.as_ref() {
-        if current.vectorizer_version == VECTOR_VERSION {
+        let eligible_category_ids = eligible_categories(&deduped)
+            .into_iter()
+            .collect::<Vec<_>>();
+        if current.vectorizer_version == VECTOR_VERSION
+            // Incremental fitting cannot add a new class. Rebuild when the eligible class set
+            // changes, including when rule evidence newly reaches the five-example minimum.
+            && current.category_ids == eligible_category_ids
+        {
             let old: HashMap<i64, (i64, String)> = current
                 .labels
                 .iter()
@@ -574,7 +669,7 @@ fn update(
     if generation.load(Ordering::SeqCst) != target {
         return Ok(UpdateResult::Stale);
     }
-    score_predictions(conn, &model)?;
+    score_predictions(conn, &model, confidence_threshold)?;
     if generation.load(Ordering::SeqCst) != target {
         return Ok(UpdateResult::Stale);
     }
@@ -589,18 +684,28 @@ fn update(
 
 fn snapshot_examples(conn: &SharedConnection) -> Result<Vec<Example>> {
     let conn = conn.lock().unwrap();
-    let mut stmt = conn.prepare("SELECT id, category_id, app_name, exe_path, window_title, url FROM sessions WHERE category_id IS NOT NULL")?;
+    let mut stmt = conn.prepare(
+        "SELECT id, category_id, rule_category_id, app_name, exe_path, window_title, url
+         FROM sessions
+         WHERE category_id IS NOT NULL OR rule_category_id IS NOT NULL",
+    )?;
     let examples = stmt
         .query_map([], |row| {
+            let manual_category: Option<i64> = row.get(1)?;
             Ok(Example {
                 id: row.get(0)?,
-                category_id: row.get(1)?,
+                category_id: manual_category.or(row.get(2)?).expect("row is labeled"),
                 document: document(
-                    &row.get::<_, String>(2)?,
                     &row.get::<_, String>(3)?,
                     &row.get::<_, String>(4)?,
-                    row.get::<_, Option<String>>(5)?.as_deref(),
+                    &row.get::<_, String>(5)?,
+                    row.get::<_, Option<String>>(6)?.as_deref(),
                 ),
+                source: if manual_category.is_some() {
+                    ExampleSource::Manual
+                } else {
+                    ExampleSource::Rule
+                },
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -623,6 +728,12 @@ fn deduplicate(examples: Vec<Example>) -> (Vec<Example>, usize) {
     let unique = grouped
         .into_values()
         .filter_map(|mut group| {
+            // Pins are authoritative evidence for a document. Rules only participate when
+            // there are no pins; conflicts within the winning source discard the document.
+            let has_manual = group.iter().any(|x| x.source == ExampleSource::Manual);
+            if has_manual {
+                group.retain(|x| x.source == ExampleSource::Manual);
+            }
             let labels = group.iter().map(|x| x.category_id).collect::<HashSet<_>>();
             if labels.len() == 1 {
                 group.sort_by_key(|x| x.id);
@@ -720,7 +831,11 @@ fn incorporate(artifact: &mut Artifact, examples: &[Example]) {
     }
 }
 
-fn score_predictions(conn: &SharedConnection, model: &Artifact) -> Result<()> {
+fn score_predictions(
+    conn: &SharedConnection,
+    model: &Artifact,
+    confidence_threshold: f32,
+) -> Result<()> {
     let candidates = {
         let conn = conn.lock().unwrap();
         let mut stmt = conn.prepare("SELECT id, app_name, exe_path, window_title, url FROM sessions WHERE end_time IS NOT NULL AND category_id IS NULL AND rule_category_id IS NULL")?;
@@ -744,7 +859,7 @@ fn score_predictions(conn: &SharedConnection, model: &Artifact) -> Result<()> {
     tx.execute("UPDATE sessions SET ml_category_id = NULL, ml_confidence = NULL, ml_model_version = NULL WHERE category_id IS NOT NULL OR rule_category_id IS NOT NULL", [])?;
     let mut write = tx.prepare("UPDATE sessions SET ml_category_id = ?1, ml_confidence = ?2, ml_model_version = ?3 WHERE id = ?4")?;
     for (id, doc) in candidates {
-        let result = predict(model, &doc);
+        let result = predict(model, &doc, confidence_threshold);
         match result {
             Some((category, confidence)) => {
                 write.execute(params![category, confidence, model.model_version, id])?;
@@ -768,7 +883,7 @@ fn clear_predictions(conn: &SharedConnection) -> Result<()> {
     Ok(())
 }
 
-fn predict(model: &Artifact, doc: &str) -> Option<(i64, f32)> {
+fn predict(model: &Artifact, doc: &str, confidence_threshold: f32) -> Option<(i64, f32)> {
     let vector = vectorize(doc, &model.vocabulary, &model.idf);
     if vector.is_empty() {
         return None;
@@ -802,7 +917,7 @@ fn predict(model: &Artifact, doc: &str) -> Option<(i64, f32)> {
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
     let (class, confidence) = ranked[0];
     let next = ranked.get(1).map(|x| x.1).unwrap_or(0.0);
-    (confidence >= MIN_CONFIDENCE && confidence - next >= MIN_LEAD)
+    (confidence >= confidence_threshold && confidence - next >= MIN_LEAD)
         .then_some((model.category_ids[class], confidence))
 }
 
@@ -937,6 +1052,49 @@ mod tests {
         }
     }
 
+    fn wait_for_generation(service: &AiCategorizationService, generation: u64) -> ClassifierStatus {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let status = service.status();
+            if status.generation >= generation
+                && matches!(
+                    status.state.as_str(),
+                    "ready" | "insufficient_data" | "error"
+                )
+            {
+                return status;
+            }
+            assert!(Instant::now() < deadline, "AI job did not complete in time");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn insert_labeled_session(
+        conn: &SharedConnection,
+        app: &str,
+        title: &str,
+        category_id: Option<i64>,
+        rule_category_id: Option<i64>,
+    ) {
+        conn.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions (
+                    app_name, exe_path, window_title, category_key, category_key_kind,
+                    start_time, end_time, category_id, rule_category_id
+                 ) VALUES (?1, ?2, ?3, ?2, 'exe', '2024-06-15T00:00:00Z',
+                    '2024-06-15T00:10:00Z', ?4, ?5)",
+                params![
+                    app,
+                    app.to_lowercase(),
+                    title,
+                    category_id,
+                    rule_category_id
+                ],
+            )
+            .unwrap();
+    }
+
     #[test]
     fn a_category_named_distraction_is_an_ordinary_training_label() {
         let (service, conn, db_path, artifact_path) = temp_service(
@@ -993,14 +1151,275 @@ mod tests {
                 id: 1,
                 category_id: 1,
                 document: "same".into(),
+                source: ExampleSource::Manual,
             },
             Example {
                 id: 2,
                 category_id: 2,
                 document: "same".into(),
+                source: ExampleSource::Manual,
             },
         ]);
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn manual_examples_override_conflicting_rule_examples_for_a_document() {
+        let (rows, _) = deduplicate(vec![
+            Example {
+                id: 1,
+                category_id: 1,
+                document: "same".into(),
+                source: ExampleSource::Rule,
+            },
+            Example {
+                id: 2,
+                category_id: 2,
+                document: "same".into(),
+                source: ExampleSource::Manual,
+            },
+            Example {
+                id: 3,
+                category_id: 2,
+                document: "same".into(),
+                source: ExampleSource::Rule,
+            },
+        ]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].category_id, 2);
+        assert_eq!(rows[0].source, ExampleSource::Manual);
+    }
+
+    #[test]
+    fn conflicting_rule_only_documents_are_discarded_and_repeats_count_once() {
+        let (conflicted, _) = deduplicate(vec![
+            Example {
+                id: 1,
+                category_id: 1,
+                document: "same".into(),
+                source: ExampleSource::Rule,
+            },
+            Example {
+                id: 2,
+                category_id: 2,
+                document: "same".into(),
+                source: ExampleSource::Rule,
+            },
+        ]);
+        assert!(conflicted.is_empty());
+
+        let (repeated, _) = deduplicate(vec![
+            Example {
+                id: 1,
+                category_id: 1,
+                document: "same".into(),
+                source: ExampleSource::Rule,
+            },
+            Example {
+                id: 2,
+                category_id: 1,
+                document: "same".into(),
+                source: ExampleSource::Rule,
+            },
+        ]);
+        assert_eq!(repeated.len(), 1);
+    }
+
+    #[test]
+    fn confidence_threshold_is_strictly_validated_and_changes_prediction_cutoff() {
+        for threshold in [0.49, 1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(validate_confidence_threshold(threshold).is_err());
+        }
+        assert!(validate_confidence_threshold(0.50).is_ok());
+        assert!(validate_confidence_threshold(0.99).is_ok());
+
+        let model = Artifact {
+            vectorizer_version: VECTOR_VERSION,
+            model_version: 1,
+            vocabulary: vec!["app:x".into()],
+            idf: vec![1.0],
+            category_ids: vec![1, 2],
+            class_documents: vec![9.0, 1.0],
+            feature_counts: vec![vec![9.0], vec![0.0]],
+            feature_totals: vec![9.0, 0.0],
+            labels: vec![],
+            incremental_additions: 0,
+        };
+        assert_eq!(predict(&model, "app=x", 0.75).map(|x| x.0), Some(1));
+        assert_eq!(predict(&model, "app=x", 0.95), None);
+    }
+
+    #[test]
+    fn rescoring_with_a_new_threshold_clears_predictions_that_no_longer_qualify() {
+        let (service, conn, db_path, artifact_path) = temp_service(
+            AiCategorizationSchedule::Manual,
+            ScheduleIntervals::default(),
+        );
+        conn.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO categories (id, name, color) VALUES
+                    (1, 'One', '#111111'), (2, 'Two', '#222222');",
+            )
+            .unwrap();
+        insert_labeled_session(&conn, "x", "candidate", None, None);
+        let candidate = conn.lock().unwrap().last_insert_rowid();
+        let model = Artifact {
+            vectorizer_version: VECTOR_VERSION,
+            model_version: 1,
+            vocabulary: vec!["app:x".into()],
+            idf: vec![1.0],
+            category_ids: vec![1, 2],
+            class_documents: vec![9.0, 1.0],
+            feature_counts: vec![vec![9.0], vec![0.0]],
+            feature_totals: vec![9.0, 0.0],
+            labels: vec![],
+            incremental_additions: 0,
+        };
+
+        score_predictions(&conn, &model, 0.75).unwrap();
+        let predicted: Option<i64> = conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT ml_category_id FROM sessions WHERE id = ?1",
+                params![candidate],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(predicted, Some(1));
+
+        score_predictions(&conn, &model, 0.95).unwrap();
+        let predicted: Option<i64> = conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT ml_category_id FROM sessions WHERE id = ?1",
+                params![candidate],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(predicted, None);
+
+        drop(service);
+        let _ = fs::remove_file(db_path);
+        let _ = fs::remove_file(artifact_path);
+    }
+
+    #[test]
+    fn saving_confidence_persists_without_queuing_a_run() {
+        let (service, conn, db_path, artifact_path) = temp_service(
+            AiCategorizationSchedule::Manual,
+            ScheduleIntervals::default(),
+        );
+        service.set_confidence_threshold(0.9).unwrap();
+        assert!(service.set_confidence_threshold(f32::NAN).is_err());
+        assert_eq!(service.status().confidence_threshold, 0.9);
+        assert_eq!(service.status().generation, 0);
+        assert_eq!(
+            read_setting(&conn, CONFIDENCE_THRESHOLD_SETTING_KEY)
+                .unwrap()
+                .as_deref(),
+            Some("0.9")
+        );
+
+        drop(service);
+        let restarted = AiCategorizationService::new_with_intervals(
+            conn.clone(),
+            artifact_path.clone(),
+            ScheduleIntervals::default(),
+            Arc::new(|| {}),
+        )
+        .unwrap();
+        assert_eq!(restarted.status().confidence_threshold, 0.9);
+        assert_eq!(restarted.status().generation, 0);
+
+        drop(restarted);
+        let _ = fs::remove_file(db_path);
+        let _ = fs::remove_file(artifact_path);
+    }
+
+    #[test]
+    fn rule_only_examples_train_and_a_newly_eligible_rule_category_rebuilds() {
+        let (service, conn, db_path, artifact_path) = temp_service(
+            AiCategorizationSchedule::Manual,
+            ScheduleIntervals::default(),
+        );
+        let categories = {
+            let conn = conn.lock().unwrap();
+            for name in ["Development", "Music", "Reading"] {
+                conn.execute(
+                    "INSERT INTO categories (name, color) VALUES (?1, '#111111')",
+                    params![name],
+                )
+                .unwrap();
+            }
+            let categories = conn
+                .prepare("SELECT id FROM categories ORDER BY id")
+                .unwrap()
+                .query_map([], |row| row.get::<_, i64>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            categories
+        };
+        for index in 0..5 {
+            insert_labeled_session(
+                &conn,
+                "Code",
+                &format!("rust compiler workspace {index}"),
+                None,
+                Some(categories[0]),
+            );
+            insert_labeled_session(
+                &conn,
+                "Spotify",
+                &format!("music playlist album {index}"),
+                None,
+                Some(categories[1]),
+            );
+        }
+        let examples = snapshot_examples(&conn).unwrap();
+        assert!(examples
+            .iter()
+            .all(|example| example.source == ExampleSource::Rule));
+        insert_labeled_session(&conn, "Code", "rust compiler workspace", None, None);
+        let candidate = conn.lock().unwrap().last_insert_rowid();
+
+        service.run_now().unwrap();
+        let first = wait_for_generation(&service, 1);
+        assert_eq!(first.state, "ready");
+        assert_eq!(first.update_kind.as_deref(), Some("full_rebuild"));
+        assert_eq!(first.trained_category_count, 2);
+        let predicted: Option<i64> = conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT ml_category_id FROM sessions WHERE id = ?1",
+                params![candidate],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(predicted, Some(categories[0]));
+
+        for index in 0..5 {
+            insert_labeled_session(
+                &conn,
+                "Reader",
+                &format!("book chapter notes {index}"),
+                None,
+                Some(categories[2]),
+            );
+        }
+        service.run_now().unwrap();
+        let second = wait_for_generation(&service, 2);
+        assert_eq!(second.state, "ready");
+        assert_eq!(second.update_kind.as_deref(), Some("full_rebuild"));
+        assert_eq!(second.trained_category_count, 3);
+
+        drop(service);
+        let _ = fs::remove_file(db_path);
+        let _ = fs::remove_file(artifact_path);
     }
 
     #[test]

@@ -37,6 +37,15 @@ Database: `makora.sqlite` in Tauri's app-data dir (`~/.local/share/dev.phucvinh5
 
 Closing/minimizing hides to the tray and keeps tracking. Only tray "Quit" exits, closing the open session first.
 
+### Logging
+
+`tracing`, installed by `logging::init` as the first thing in `setup` (it is process-wide state, so the same rule applies). Use `tracing::{info, warn, error}` — **no `println!`/`eprintln!` anywhere except the bootstrap fallback in `lib.rs`**, which fires when the subscriber itself failed to install.
+
+- Debug builds log to stderr with ANSI; `bun tauri dev` shows them in the terminal.
+- Release builds have no terminal (`windows_subsystem = "windows"`), so they log to `<app-data>/logs/makora.<yyyy-mm-dd>.log`, rolled daily by `tracing-appender` and pruned to the newest 30 files.
+- Default filters are `makora=debug,warn` (dev) and `makora=info,warn` (release) — third-party crates stay at `warn` so tao/wry chatter doesn't drown the app's own events. `RUST_LOG` overrides both.
+- The non-blocking writer's `WorkerGuard` is parked in a `static OnceLock`; dropping it kills the writer thread, so it must live as long as the process.
+
 ### Linux focus
 
 Wayland gives clients no way to ask what's focused, and GNOME blocks the usual workarounds. So there's one provider per desktop stack behind `ToplevelProvider` (`core/platform/linux/provider.rs`), probed in order:
@@ -56,7 +65,9 @@ The extension POSTs `{ browser, url, title }` to `127.0.0.1:47632` (`src-tauri/s
 
 Table `sessions`: `id`, `app_name` (exe file stem), `exe_path`, `window_title` (at start, not updated), `url` (origin + path only — fragment and query string are stripped in `ingest::normalize_url`; `NULL` for non-browser rows), `start_time`, `end_time` (`NULL` while open).
 
-A row still open at startup means the last run crashed; it's closed at its own `start_time` (undercount rather than inflate).
+A row still open at startup means the last run crashed; it's deleted rather than closed at a guessed time (undercount rather than inflate).
+
+**Blocks shorter than one second are deleted, not closed.** A redirect, a tab reported before its title has loaded, or a window flashing past on the way somewhere else all open and close a row within the same second, and none of them are activity. `SqliteStore::end_session` drops such a row instead of setting `end_time`; migration 20 purged the ones already recorded. Because no sub-second row can exist, **no query filters by duration** — don't add a `WHERE duration >= …` anywhere, and if the threshold ever changes, the migration and `MIN_SESSION_SECONDS` have to move together.
 
 Categorization (`core/category.rs`, `core/store/categories.rs`):
 

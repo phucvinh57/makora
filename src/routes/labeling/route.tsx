@@ -1,19 +1,23 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CategoriesTab } from "./-components/CategoriesTab";
-import { ALL_CATEGORIES, RulesTab } from "./-components/RulesTab";
+import { RulesTab } from "./-components/RulesTab";
 import { AiTab } from "./-components/AiTab";
+import { useLabelingStore, type LabelingTab } from "@/stores/labeling";
 
 export const Route = createFileRoute("/labeling")({
   component: LabelingPage,
 });
 
 function LabelingPage() {
-  const [tab, setTab] = useState("categories");
-  const [rulesCategoryFilter, setRulesCategoryFilter] = useState<
-    number | typeof ALL_CATEGORIES
-  >(ALL_CATEGORIES);
+  const tab = useLabelingStore((state) => state.tab);
+  const rulesCategoryFilter = useLabelingStore(
+    (state) => state.rulesCategoryFilter,
+  );
+  const setTab = useLabelingStore((state) => state.setTab);
+  const setRulesCategoryFilter = useLabelingStore(
+    (state) => state.setRulesCategoryFilter,
+  );
 
   return (
     <div className="flex h-full flex-col box-border">
@@ -24,7 +28,7 @@ function LabelingPage() {
 
       <Tabs
         value={tab}
-        onValueChange={(value) => setTab(value as string)}
+        onValueChange={(value) => setTab(value as LabelingTab)}
         className="flex min-h-0 flex-1 flex-col"
       >
         <TabsList className="mb-4 self-start">

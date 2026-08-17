@@ -66,7 +66,7 @@ fn handle_request<S: SessionStore>(
     };
 
     if let Err(err) = tracker.lock().unwrap().handle_tab_event(event) {
-        eprintln!("makora: failed to record tab event: {err:#}");
+        tracing::error!(error = format!("{err:#}"), "failed to record tab event");
         return 500;
     }
     204

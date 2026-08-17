@@ -51,7 +51,7 @@ pub fn show_main_window(app: &AppHandle) {
         .find(|config| config.label == "main")
         .cloned()
     else {
-        eprintln!("makora: no \"main\" window config to rebuild the window from");
+        tracing::error!("no \"main\" window config to rebuild the window from");
         return;
     };
 
@@ -60,7 +60,10 @@ pub fn show_main_window(app: &AppHandle) {
     {
         Ok(window) => window,
         Err(err) => {
-            eprintln!("makora: failed to rebuild main window: {err:#}");
+            tracing::error!(
+                error = format!("{err:#}"),
+                "failed to rebuild the main window"
+            );
             return;
         }
     };

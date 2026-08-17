@@ -67,6 +67,7 @@ export interface ClassifierStatus {
   last_error: string | null;
   schedule: AiCategorizationSchedule;
   next_scheduled_at: string | null;
+  confidence_threshold: number;
 }
 
 export type IgnoreKind = "app" | "site";

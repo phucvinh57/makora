@@ -1,6 +1,7 @@
 mod commands;
 mod core;
 mod ingest;
+mod logging;
 mod tray;
 
 use std::sync::mpsc;
@@ -9,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context;
 use chrono::Utc;
 use tauri::{Emitter, Manager};
+use tracing::{error, info};
 
 use crate::core::{
     open_connection, AiCategorizationService, CategoryStore, FocusWatcher, HistoryReader,
@@ -18,8 +20,9 @@ use crate::core::{
 type SharedTracker = Arc<Mutex<SessionTracker<SqliteStore>>>;
 
 pub fn run() {
-    let mut builder =
-        tauri::Builder::default().plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tray::show_main_window(app);
         }));
 
@@ -47,6 +50,7 @@ pub fn run() {
             commands::get_classifier_status,
             commands::run_ai_categorization,
             commands::set_ai_categorization_schedule,
+            commands::set_ai_categorization_confidence_threshold,
             commands::list_ignore_rules,
             commands::create_ignore_rule,
             commands::delete_ignore_rule,
@@ -60,9 +64,15 @@ pub fn run() {
             commands::work_session_stats,
         ])
         .setup(|app| {
-            let db_path =
-                database_path(app.handle()).context("resolving application data directory")?;
-            eprintln!("makora: writing sessions to {}", db_path.display());
+            let data_dir = app_data_dir(app.handle())?;
+            match logging::init(&data_dir) {
+                Ok(Some(dir)) => info!(directory = %dir.display(), "writing logs"),
+                Ok(None) => {}
+                Err(err) => eprintln!("makora: failed to start logging: {err:#}"),
+            }
+
+            let db_path = data_dir.join("makora.sqlite");
+            info!(path = %db_path.display(), "writing sessions");
 
             let conn = open_connection(&db_path).context("opening database")?;
             let ignore = Arc::new(IgnoreStore::new(conn.clone()));
@@ -110,17 +120,14 @@ pub fn run() {
                             }
                         };
                         if let Err(err) = result {
-                            eprintln!("makora: failed to record session: {err:#}");
+                            error!(error = format!("{err:#}"), "failed to record session");
                         }
                     }
                 })
                 .context("spawning activity-tracker thread")?;
 
             ingest::spawn(tracker).context("starting tab-ingest server")?;
-            eprintln!(
-                "makora: listening for tab events on http://127.0.0.1:{}",
-                ingest::PORT
-            );
+            info!(port = ingest::PORT, "listening for tab events");
 
             tray::build(app.handle())?;
 
@@ -137,17 +144,18 @@ pub fn run() {
                 if let Some(tracker) = app_handle.try_state::<SharedTracker>() {
                     let result = tracker.lock().unwrap().close_current(Utc::now());
                     if let Err(err) = result {
-                        eprintln!("makora: failed to close session on shutdown: {err:#}");
+                        error!(
+                            error = format!("{err:#}"),
+                            "failed to close session on shutdown"
+                        );
                     }
                 }
             }
         });
 }
 
-fn database_path(app: &tauri::AppHandle) -> anyhow::Result<std::path::PathBuf> {
-    let dir = app
-        .path()
+fn app_data_dir(app: &tauri::AppHandle) -> anyhow::Result<std::path::PathBuf> {
+    app.path()
         .app_data_dir()
-        .context("could not resolve a per-user application data directory")?;
-    Ok(dir.join("makora.sqlite"))
+        .context("could not resolve a per-user application data directory")
 }

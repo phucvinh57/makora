@@ -2,6 +2,7 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use tracing::{info, warn};
 use zbus::blocking::{fdo::DBusProxy, Connection, MessageIterator, Proxy};
 use zbus::message::Type as MessageType;
 use zbus::MatchRule;
@@ -34,7 +35,10 @@ impl ToplevelProvider for GnomeProvider {
     fn run(self, emit: &mut dyn FnMut(WindowObservation)) {
         loop {
             if let Err(err) = watch(emit) {
-                eprintln!("makora: GNOME focus provider: {err:#}");
+                warn!(
+                    error = format!("{err:#}"),
+                    "GNOME focus provider failed; retrying"
+                );
             }
             thread::sleep(RETRY_DELAY);
         }
@@ -57,9 +61,9 @@ fn watch(emit: &mut dyn FnMut(WindowObservation)) -> Result<()> {
         check_protocol_version(&proxy);
         sync_focused_window(&proxy, emit);
     } else {
-        eprintln!(
-            "makora: the Makora GNOME extension is not running — tracking starts \
-             as soon as it is enabled. Install it from gnome-extension/ and run: \
+        warn!(
+            "the Makora GNOME extension is not running — tracking starts as soon as it is \
+             enabled. Install it from gnome-extension/ and run: \
              gnome-extensions enable makora@phucvinh57.dev"
         );
     }
@@ -82,7 +86,7 @@ fn watch(emit: &mut dyn FnMut(WindowObservation)) -> Result<()> {
                     .deserialize()
                     .context("decoding a NameOwnerChanged signal")?;
                 if !new_owner.is_empty() {
-                    eprintln!("makora: the Makora GNOME extension is now running");
+                    info!("the Makora GNOME extension is now running");
                     check_protocol_version(&proxy);
                     sync_focused_window(&proxy, emit);
                 }
@@ -124,19 +128,20 @@ fn sync_focused_window(proxy: &Proxy<'_>, emit: &mut dyn FnMut(WindowObservation
                 emit(observation);
             }
         }
-        Err(err) => eprintln!("makora: could not read the focused window: {err}"),
+        Err(err) => warn!(error = %err, "could not read the focused window"),
     }
 }
 
 fn check_protocol_version(proxy: &Proxy<'_>) {
     match proxy.get_property::<u32>("Version") {
         Ok(version) if version == PROTOCOL_VERSION => {}
-        Ok(version) => eprintln!(
-            "makora: the installed GNOME extension speaks protocol v{version}, this build \
-             expects v{PROTOCOL_VERSION} — reinstall it from gnome-extension/ if focus \
-             tracking misbehaves"
+        Ok(version) => warn!(
+            installed = version,
+            expected = PROTOCOL_VERSION,
+            "the installed GNOME extension speaks a different protocol version — reinstall it \
+             from gnome-extension/ if focus tracking misbehaves"
         ),
-        Err(err) => eprintln!("makora: could not read the GNOME extension version: {err}"),
+        Err(err) => warn!(error = %err, "could not read the GNOME extension version"),
     }
 }
 

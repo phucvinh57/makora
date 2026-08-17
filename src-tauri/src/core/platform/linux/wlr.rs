@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use tracing::error;
 use wayland_client::backend::ObjectId;
 use wayland_client::protocol::wl_registry;
 use wayland_client::{event_created_child, Connection, Dispatch, Proxy, QueueHandle};
@@ -38,14 +39,14 @@ impl ToplevelProvider for WlrProvider {
         let mut state = Toplevels::default();
         loop {
             if let Err(err) = queue.blocking_dispatch(&mut state) {
-                eprintln!("makora: wlr focus provider: {err}");
+                error!(error = %err, "wlr focus provider stopped");
                 return;
             }
             for observation in state.emitted.drain(..) {
                 emit(observation);
             }
             if state.finished {
-                eprintln!("makora: the compositor stopped reporting toplevels");
+                error!("the compositor stopped reporting toplevels");
                 return;
             }
         }
