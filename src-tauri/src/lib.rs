@@ -8,11 +8,11 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use chrono::Utc;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use crate::core::{
-    open_connection, CategoryStore, FocusWatcher, HistoryReader, IgnoreStore, PlatformFocusWatcher,
-    SessionTracker, SettingsStore, SqliteStore, WatchEvent, WorkSessionStore,
+    open_connection, AiCategorizationService, CategoryStore, FocusWatcher, HistoryReader,
+    IgnoreStore, PlatformFocusWatcher, SessionTracker, SqliteStore, WatchEvent, WorkSessionStore,
 };
 
 type SharedTracker = Arc<Mutex<SessionTracker<SqliteStore>>>;
@@ -44,8 +44,9 @@ pub fn run() {
             commands::list_category_rules,
             commands::create_category_rule,
             commands::delete_category_rule,
-            commands::get_distraction_threshold_seconds,
-            commands::set_distraction_threshold_seconds,
+            commands::get_classifier_status,
+            commands::run_ai_categorization,
+            commands::set_ai_categorization_schedule,
             commands::list_ignore_rules,
             commands::create_ignore_rule,
             commands::delete_ignore_rule,
@@ -65,6 +66,15 @@ pub fn run() {
 
             let conn = open_connection(&db_path).context("opening database")?;
             let ignore = Arc::new(IgnoreStore::new(conn.clone()));
+            let event_app = app.handle().clone();
+            let ai = AiCategorizationService::new_with_completion(
+                conn.clone(),
+                db_path.with_file_name("classifier.json"),
+                Arc::new(move || {
+                    let _ = event_app.emit("ai-categorization-completed", ());
+                }),
+            )
+            .context("starting AI categorization service")?;
             let store = SqliteStore::new(conn.clone());
             let tracker: SharedTracker = Arc::new(Mutex::new(
                 SessionTracker::with_ignore_policy(store, ignore.clone())
@@ -73,11 +83,10 @@ pub fn run() {
 
             app.manage(HistoryReader::new(conn.clone()));
             app.manage(WorkSessionStore::new(conn.clone()));
-            app.manage(SettingsStore::new(conn.clone()));
             app.manage(CategoryStore::new(conn));
+            app.manage(ai);
             app.manage(tracker.clone());
             app.manage(ignore);
-
             let (tx, rx) = mpsc::channel::<WatchEvent>();
 
             #[cfg(target_os = "linux")]

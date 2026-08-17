@@ -2,7 +2,6 @@ use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, Duration, Utc};
 use url::Url;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,15 +59,6 @@ impl MatchKind {
         }
     }
 }
-
-/// The `system_key` of the reserved category that short, unmatched activities land in.
-pub const DISTRACTION_SYSTEM_KEY: &str = "distraction";
-
-/// Settings key holding the distraction cutoff, in seconds. `0` disables the feature.
-pub const DISTRACTION_THRESHOLD_KEY: &str = "distraction_threshold_seconds";
-
-/// Fallback used when the settings row is missing or unparsable.
-pub const DEFAULT_DISTRACTION_THRESHOLD_SECONDS: i64 = 10;
 
 #[derive(Debug, Clone)]
 enum PatternMatcher {
@@ -327,15 +317,11 @@ pub(crate) struct SessionCategoryInput<'a> {
     pub key_kind: KeyKind,
     pub key: &'a str,
     pub url_key: Option<&'a str>,
-    pub start_time: &'a str,
-    pub end_time: Option<&'a str>,
 }
 
 pub(crate) fn resolve_category(
     rules: &[CompiledRule],
     input: &SessionCategoryInput<'_>,
-    distraction_threshold_seconds: i64,
-    distraction_category_id: i64,
 ) -> Option<i64> {
     for rule in rules {
         let candidate = match rule.key_kind {
@@ -348,19 +334,7 @@ pub(crate) fn resolve_category(
         }
     }
 
-    if distraction_threshold_seconds <= 0 {
-        return None;
-    }
-    let end = input.end_time.and_then(parse_utc)?;
-    let start = parse_utc(input.start_time)?;
-    (end - start < Duration::seconds(distraction_threshold_seconds))
-        .then_some(distraction_category_id)
-}
-
-fn parse_utc(value: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value)
-        .ok()
-        .map(|value| value.with_timezone(&Utc))
+    None
 }
 
 #[derive(Debug, Clone)]
@@ -581,7 +555,7 @@ mod tests {
     }
 
     #[test]
-    fn resolver_ranks_rules_before_falling_back_to_distraction() {
+    fn resolver_uses_the_highest_ranked_matching_rule() {
         let rules = compile_rules([
             RuleSpec {
                 id: 1,
@@ -602,41 +576,18 @@ mod tests {
             key_kind: KeyKind::Domain,
             key: "github.com",
             url_key: Some("github.com/org/repo/pulls"),
-            start_time: "2024-06-15T00:00:00Z",
-            end_time: Some("2024-06-15T00:00:01Z"),
         };
-        assert_eq!(resolve_category(&rules, &input, 10, 30), Some(20));
+        assert_eq!(resolve_category(&rules, &input), Some(20));
     }
 
     #[test]
-    fn invalid_timestamps_disable_only_the_distraction_fallback() {
+    fn unmatched_sessions_remain_uncategorized() {
         let input = SessionCategoryInput {
             key_kind: KeyKind::Exe,
             key: "unknown.exe",
             url_key: None,
-            start_time: "not-a-time",
-            end_time: Some("also-not-a-time"),
         };
-        assert_eq!(resolve_category(&[], &input, 10, 30), None);
-    }
-
-    #[test]
-    fn distraction_threshold_is_strict_and_open_rows_never_use_it() {
-        let closed = SessionCategoryInput {
-            key_kind: KeyKind::Exe,
-            key: "unknown.exe",
-            url_key: None,
-            start_time: "2024-06-15T00:00:00Z",
-            end_time: Some("2024-06-15T00:00:10Z"),
-        };
-        assert_eq!(resolve_category(&[], &closed, 10, 30), None);
-        assert_eq!(resolve_category(&[], &closed, 0, 30), None);
-
-        let open = SessionCategoryInput {
-            end_time: None,
-            ..closed
-        };
-        assert_eq!(resolve_category(&[], &open, 60, 30), None);
+        assert_eq!(resolve_category(&[], &input), None);
     }
 
     #[test]

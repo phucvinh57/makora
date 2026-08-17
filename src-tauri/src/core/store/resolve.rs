@@ -3,8 +3,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::core::category::{
     compile_rules, resolve_category, CompiledRule, KeyKind, MatchKind, RuleSpec,
-    SessionCategoryInput, DEFAULT_DISTRACTION_THRESHOLD_SECONDS, DISTRACTION_SYSTEM_KEY,
-    DISTRACTION_THRESHOLD_KEY,
+    SessionCategoryInput,
 };
 
 #[derive(Debug)]
@@ -13,14 +12,10 @@ struct StoredSession {
     key_kind: KeyKind,
     key: String,
     url_key: Option<String>,
-    start_time: String,
-    end_time: Option<String>,
 }
 
 struct ResolutionContext {
     rules: Vec<CompiledRule>,
-    distraction_threshold_seconds: i64,
-    distraction_category_id: i64,
 }
 
 /// Re-derives `rule_category_id` for every session in Rust.
@@ -36,7 +31,7 @@ pub fn resolve_all(conn: &Connection) -> Result<usize> {
          WHERE id = ?2 AND rule_category_id IS NOT ?1",
     )?;
     for session in sessions {
-        let resolved = resolve_stored_session(&context, &session, None);
+        let resolved = resolve_stored_session(&context, &session);
         update.execute(params![resolved, session.id])?;
     }
     Ok(rows_resolved)
@@ -45,7 +40,7 @@ pub fn resolve_all(conn: &Connection) -> Result<usize> {
 /// Re-derives one stored session, used immediately after opening a row and by tests that insert
 /// fixtures directly.
 pub fn resolve_session(conn: &Connection, id: i64) -> Result<()> {
-    let resolved = resolve_session_category(conn, id, None)?;
+    let resolved = resolve_session_category(conn, id)?;
     conn.execute(
         "UPDATE sessions SET rule_category_id = ?1 WHERE id = ?2",
         params![resolved, id],
@@ -53,20 +48,11 @@ pub fn resolve_session(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
-/// Computes one session's automatic category without writing it. `end_time_override` lets
-/// `SqliteStore::end_session` decide the closing row before persisting both fields together.
-pub fn resolve_session_category(
-    conn: &Connection,
-    id: i64,
-    end_time_override: Option<&str>,
-) -> Result<Option<i64>> {
+/// Computes one session's automatic category without writing it.
+pub fn resolve_session_category(conn: &Connection, id: i64) -> Result<Option<i64>> {
     let context = load_context(conn)?;
     let session = load_session(conn, id)?.with_context(|| format!("session {id} not found"))?;
-    Ok(resolve_stored_session(
-        &context,
-        &session,
-        end_time_override,
-    ))
+    Ok(resolve_stored_session(&context, &session))
 }
 
 fn load_context(conn: &Connection) -> Result<ResolutionContext> {
@@ -97,32 +83,12 @@ fn load_context(conn: &Connection) -> Result<ResolutionContext> {
         },
     ));
 
-    let raw_threshold: Option<String> = conn
-        .query_row(
-            "SELECT value FROM settings WHERE key = ?1",
-            params![DISTRACTION_THRESHOLD_KEY],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let distraction_threshold_seconds = raw_threshold
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(DEFAULT_DISTRACTION_THRESHOLD_SECONDS);
-    let distraction_category_id = conn.query_row(
-        "SELECT id FROM categories WHERE system_key = ?1",
-        params![DISTRACTION_SYSTEM_KEY],
-        |row| row.get(0),
-    )?;
-
-    Ok(ResolutionContext {
-        rules,
-        distraction_threshold_seconds,
-        distraction_category_id,
-    })
+    Ok(ResolutionContext { rules })
 }
 
 fn load_sessions(conn: &Connection) -> Result<Vec<StoredSession>> {
     let mut stmt = conn.prepare(
-        "SELECT id, category_key_kind, category_key, url_key, start_time, end_time
+        "SELECT id, category_key_kind, category_key, url_key
          FROM sessions",
     )?;
     let rows = stmt
@@ -134,7 +100,7 @@ fn load_sessions(conn: &Connection) -> Result<Vec<StoredSession>> {
 fn load_session(conn: &Connection, id: i64) -> Result<Option<StoredSession>> {
     Ok(conn
         .query_row(
-            "SELECT id, category_key_kind, category_key, url_key, start_time, end_time
+            "SELECT id, category_key_kind, category_key, url_key
              FROM sessions WHERE id = ?1",
             params![id],
             stored_session_from_row,
@@ -151,26 +117,16 @@ fn stored_session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSe
         key_kind: KeyKind::parse(&raw_kind).unwrap_or(KeyKind::Exe),
         key: row.get(2)?,
         url_key: row.get(3)?,
-        start_time: row.get(4)?,
-        end_time: row.get(5)?,
     })
 }
 
-fn resolve_stored_session(
-    context: &ResolutionContext,
-    session: &StoredSession,
-    end_time_override: Option<&str>,
-) -> Option<i64> {
+fn resolve_stored_session(context: &ResolutionContext, session: &StoredSession) -> Option<i64> {
     resolve_category(
         &context.rules,
         &SessionCategoryInput {
             key_kind: session.key_kind,
             key: &session.key,
             url_key: session.url_key.as_deref(),
-            start_time: &session.start_time,
-            end_time: end_time_override.or(session.end_time.as_deref()),
         },
-        context.distraction_threshold_seconds,
-        context.distraction_category_id,
     )
 }

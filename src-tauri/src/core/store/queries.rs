@@ -17,6 +17,8 @@ pub struct SessionRow {
     pub category_name: Option<String>,
     pub category_color: Option<String>,
     pub category_is_pinned: bool,
+    pub category_source: Option<String>,
+    pub category_confidence: Option<f32>,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct ActivityStats {
@@ -70,7 +72,7 @@ impl HistoryReader {
             "SELECT COUNT(*)
              FROM sessions s
              LEFT JOIN categories cat
-                    ON cat.id = COALESCE(s.category_id, s.rule_category_id)
+                    ON cat.id = COALESCE(s.category_id, s.rule_category_id, s.ml_category_id)
              WHERE {where_sql}"
         );
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
@@ -89,10 +91,18 @@ impl HistoryReader {
         let (where_sql, mut binds) = filter.to_sql(category_ids.as_deref());
         let sql = format!(
             "SELECT s.id, s.app_name, s.exe_path, s.window_title, s.url, s.start_time, s.end_time,
-                    cat.id, cat.name, cat.color, (s.category_id IS NOT NULL)
+                    cat.id, cat.name, cat.color, (s.category_id IS NOT NULL),
+                    CASE
+                      WHEN s.category_id IS NOT NULL THEN 'manual'
+                      WHEN s.rule_category_id IS NOT NULL THEN 'rule'
+                      WHEN s.ml_category_id IS NOT NULL THEN 'ai'
+                      ELSE NULL
+                    END,
+                    CASE WHEN s.category_id IS NULL AND s.rule_category_id IS NULL
+                         THEN s.ml_confidence ELSE NULL END
              FROM sessions s
              LEFT JOIN categories cat
-                    ON cat.id = COALESCE(s.category_id, s.rule_category_id)
+                    ON cat.id = COALESCE(s.category_id, s.rule_category_id, s.ml_category_id)
              WHERE {where_sql}
              ORDER BY s.start_time DESC
              LIMIT ? OFFSET ?"
@@ -117,6 +127,8 @@ impl HistoryReader {
                     category_name: row.get(8)?,
                     category_color: row.get(9)?,
                     category_is_pinned: row.get(10)?,
+                    category_source: row.get(11)?,
+                    category_confidence: row.get(12)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -138,7 +150,7 @@ impl HistoryReader {
         )?;
 
         let category_join = "             LEFT JOIN categories cat
-                    ON cat.id = COALESCE(s.category_id, s.rule_category_id)";
+                    ON cat.id = COALESCE(s.category_id, s.rule_category_id, s.ml_category_id)";
 
         let mut stmt = conn.prepare(&format!(
             "SELECT cat.id, cat.name, cat.color, COALESCE(SUM({DURATION}), 0.0), COUNT(*)
@@ -221,9 +233,18 @@ pub enum CategoryFilter {
 }
 
 #[derive(Debug, Clone, Default)]
+pub enum CategorySourceFilter {
+    #[default]
+    All,
+    Manual,
+    Ai,
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct SessionFilter {
     pub search: Option<String>,
     pub category: CategoryFilter,
+    pub source: CategorySourceFilter,
     pub start: Option<String>,
     pub end: Option<String>,
 }
@@ -273,6 +294,19 @@ impl SessionFilter {
                             .map(|id| Box::new(id) as Box<dyn rusqlite::types::ToSql>),
                     );
                 }
+            }
+        }
+
+        match self.source {
+            CategorySourceFilter::All => {}
+            CategorySourceFilter::Manual => {
+                clauses.push("s.category_id IS NOT NULL".to_string());
+            }
+            CategorySourceFilter::Ai => {
+                clauses.push(
+                    "s.category_id IS NULL AND s.rule_category_id IS NULL AND s.ml_category_id IS NOT NULL"
+                        .to_string(),
+                );
             }
         }
 
@@ -530,6 +564,59 @@ mod stats_tests {
             ..Default::default()
         };
         assert_eq!(reader.count_sessions(&leaf_only).unwrap(), 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn source_filter_distinguishes_effective_manual_and_ai_categories() {
+        let (reader, categories, conn, path) = temp_reader();
+        let manual = categories
+            .create_category("Manual", "#111111", None)
+            .unwrap();
+        let predicted = categories
+            .create_category("Predicted", "#222222", None)
+            .unwrap();
+        let conn = conn.lock().unwrap();
+        conn.execute_batch(&format!(
+            "INSERT INTO sessions (
+                 app_name, exe_path, window_title, category_key, category_key_kind,
+                 start_time, end_time, category_id, rule_category_id, ml_category_id
+             ) VALUES
+                 ('manual.exe', 'manual.exe', 't', 'manual.exe', 'exe',
+                  '2024-06-15T10:00:00Z', '2024-06-15T10:10:00Z', {manual_id}, NULL, NULL),
+                 ('rule.exe', 'rule.exe', 't', 'rule.exe', 'exe',
+                  '2024-06-15T11:00:00Z', '2024-06-15T11:10:00Z', NULL, {manual_id}, {predicted_id}),
+                 ('ai.exe', 'ai.exe', 't', 'ai.exe', 'exe',
+                  '2024-06-15T12:00:00Z', '2024-06-15T12:10:00Z', NULL, NULL, {predicted_id}),
+                 ('both.exe', 'both.exe', 't', 'both.exe', 'exe',
+                  '2024-06-15T13:00:00Z', '2024-06-15T13:10:00Z', {manual_id}, NULL, {predicted_id}),
+                 ('none.exe', 'none.exe', 't', 'none.exe', 'exe',
+                  '2024-06-15T14:00:00Z', '2024-06-15T14:10:00Z', NULL, NULL, NULL);",
+            manual_id = manual.id,
+            predicted_id = predicted.id,
+        ))
+        .unwrap();
+        drop(conn);
+
+        let manual_filter = SessionFilter {
+            source: CategorySourceFilter::Manual,
+            ..Default::default()
+        };
+        let manual_rows = reader.list_sessions(50, 0, &manual_filter).unwrap();
+        assert_eq!(reader.count_sessions(&manual_filter).unwrap(), 2);
+        assert!(manual_rows
+            .iter()
+            .all(|row| row.category_source.as_deref() == Some("manual")));
+
+        let ai_filter = SessionFilter {
+            source: CategorySourceFilter::Ai,
+            ..Default::default()
+        };
+        let ai_rows = reader.list_sessions(50, 0, &ai_filter).unwrap();
+        assert_eq!(reader.count_sessions(&ai_filter).unwrap(), 1);
+        assert_eq!(ai_rows[0].app_name, "ai.exe");
+        assert_eq!(ai_rows[0].category_source.as_deref(), Some("ai"));
 
         let _ = std::fs::remove_file(&path);
     }

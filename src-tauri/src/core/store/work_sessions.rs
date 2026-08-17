@@ -331,7 +331,7 @@ impl WorkSessionStore {
                     cat.color, cat.id
              FROM sessions s
              LEFT JOIN categories cat
-                    ON cat.id = COALESCE(s.category_id, s.rule_category_id)
+                    ON cat.id = COALESCE(s.category_id, s.rule_category_id, s.ml_category_id)
              WHERE julianday(COALESCE(s.end_time, ?3)) > julianday(?1)
                AND julianday(s.start_time) < julianday(?2)
              ORDER BY s.start_time ASC";
@@ -792,7 +792,7 @@ mod tests {
     }
 
     #[test]
-    fn a_short_unmatched_activity_counts_as_off_task_time_inside_a_focus_session() {
+    fn an_unmatched_activity_counts_as_off_task_time_inside_a_focus_session() {
         let (store, categories, path) = temp_store();
         let work = categories.create_category("Work", "#123456", None).unwrap();
         categories
@@ -811,7 +811,7 @@ mod tests {
             "2024-06-15T10:00:00+00:00",
             Some("2024-06-15T10:09:55+00:00"),
         );
-        // Five seconds of something nobody labelled — the flicker Distraction absorbs.
+        // Five seconds of something no rule labels remains uncategorized and off-task.
         insert_tracked(
             &store,
             "random.exe",
@@ -823,14 +823,14 @@ mod tests {
         assert_eq!(stats.on_task_seconds, 595.0);
         assert_eq!(
             stats.off_task_seconds, 5.0,
-            "a distraction is categorized, but into a category the session never marked on-task"
+            "unmatched tracked time still counts as off-task"
         );
         assert!(
             stats
                 .apps
                 .iter()
                 .any(|app| app.label == "random.exe" && !app.on_task),
-            "the distraction still shows up by name, not swallowed into the on-task block"
+            "the unmatched app still shows up by name"
         );
 
         let _ = std::fs::remove_file(&path);

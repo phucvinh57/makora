@@ -32,7 +32,6 @@ import {
   categoryPath,
   categorySubtreeIds,
   orderedCategories,
-  userCategories,
 } from "@/categories";
 import { openDialog, useDialog } from "@/hooks/useDialog";
 import type { Category } from "@/types";
@@ -239,7 +238,7 @@ export function CategoriesTab({
               }
               items={{
                 [NO_PARENT]: "No parent (top level)",
-                ...categoryValueLabels(userCategories(categories)),
+                ...categoryValueLabels(categories),
               }}
             >
               <SelectTrigger className="w-full" aria-label="Parent category">
@@ -247,7 +246,7 @@ export function CategoriesTab({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value={NO_PARENT}>No parent (top level)</SelectItem>
-                {categoryOptions(userCategories(categories))}
+                {categoryOptions(categories)}
               </SelectContent>
             </Select>
             {createCategoryMutation.isError && (

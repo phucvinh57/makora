@@ -22,9 +22,10 @@ import {
 } from "@/components/ui/tooltip";
 import { categoryOptions } from "@/components/CategoryOptions";
 import { categoryPath } from "@/categories";
+import { Badge } from "@/components/ui/badge";
 import { formatDuration, formatTimestamp } from "@/duration";
 import type { Category, SessionRow } from "@/types";
-import { ALL_CATEGORIES, UNCATEGORIZED } from "./constants";
+import { ALL_CATEGORIES, ALL_SOURCES, UNCATEGORIZED } from "./constants";
 
 function exeFileName(exePath: string): string {
   const segments = exePath.split(/[\\/]/);
@@ -37,6 +38,7 @@ export function SessionsTable({
   loading,
   search,
   categoryFilter,
+  sourceFilter,
   selectedIds,
   onToggleRow,
   onToggleAllVisible,
@@ -47,6 +49,7 @@ export function SessionsTable({
   loading: boolean;
   search: string;
   categoryFilter: string;
+  sourceFilter: string;
   selectedIds: Set<number>;
   onToggleRow: (id: number, checked: boolean) => void;
   onToggleAllVisible: (checked: boolean) => void;
@@ -144,6 +147,18 @@ export function SessionsTable({
                             <span className="truncate">
                               {row.category_name ?? "Uncategorized"}
                             </span>
+                            {row.category_source === "ai" && (
+                              <Badge
+                                variant="secondary"
+                                className="h-4 px-1 text-[9px]"
+                              >
+                                AI{" "}
+                                {Math.round(
+                                  (row.category_confidence ?? 0) * 100,
+                                )}
+                                %
+                              </Badge>
+                            )}
                           </span>
                         </SelectValue>
                       </SelectTrigger>
@@ -186,7 +201,9 @@ export function SessionsTable({
                   colSpan={7}
                   className="py-8 text-center text-muted-foreground"
                 >
-                  {search || categoryFilter !== ALL_CATEGORIES
+                  {search ||
+                  categoryFilter !== ALL_CATEGORIES ||
+                  sourceFilter !== ALL_SOURCES
                     ? "No sessions match this filter."
                     : "No sessions recorded yet."}
                 </TableCell>

@@ -10,6 +10,8 @@ export interface SessionRow {
   category_name: string | null;
   category_color: string | null;
   category_is_pinned: boolean;
+  category_source: "manual" | "rule" | "ai" | null;
+  category_confidence: number | null;
 }
 
 export interface SessionsPage {
@@ -22,11 +24,6 @@ export interface Category {
   name: string;
   color: string;
   parent_id: number | null;
-  /**
-   * Set on categories the app owns rather than the user — currently only `"distraction"`.
-   * Those cannot be renamed, moved, deleted, or given children.
-   */
-  system_key: string | null;
 }
 
 export type KeyKind = "exe" | "domain" | "url";
@@ -47,8 +44,29 @@ export interface CategoryRule {
 }
 
 export interface RecategorizeOutcome {
-  pins_cleared: number;
+  manual_categories_preserved: number;
+  ai_predictions_cleared: number;
   rows_resolved: number;
+}
+
+export type AiCategorizationSchedule = "manual" | "hourly" | "daily" | "weekly";
+
+export interface ClassifierStatus {
+  state:
+    | "idle"
+    | "queued"
+    | "running"
+    | "ready"
+    | "insufficient_data"
+    | "error";
+  generation: number;
+  update_kind: "cached" | "incremental" | "full_rebuild" | null;
+  training_example_count: number;
+  trained_category_count: number;
+  last_completed_at: string | null;
+  last_error: string | null;
+  schedule: AiCategorizationSchedule;
+  next_scheduled_at: string | null;
 }
 
 export type IgnoreKind = "app" | "site";

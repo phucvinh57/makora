@@ -6,7 +6,9 @@ import {
 } from "@tauri-apps/plugin-autostart";
 import type {
   ActivityStats,
+  AiCategorizationSchedule,
   Category,
+  ClassifierStatus,
   CategoryRule,
   IgnoreKind,
   IgnoreRule,
@@ -24,6 +26,7 @@ export function listSessions(
   pageSize: number,
   search?: string,
   category?: string,
+  source?: "manual" | "ai",
   start?: string,
   end?: string,
 ): Promise<SessionsPage> {
@@ -32,6 +35,7 @@ export function listSessions(
     pageSize,
     search,
     category,
+    source,
     start,
     end,
   });
@@ -64,6 +68,20 @@ export function setSessionsCategory(
 
 export function recategorizeAll(): Promise<RecategorizeOutcome> {
   return invoke("recategorize_all");
+}
+
+export function getClassifierStatus(): Promise<ClassifierStatus> {
+  return invoke("get_classifier_status");
+}
+
+export function runAiCategorization(): Promise<void> {
+  return invoke("run_ai_categorization");
+}
+
+export function setAiCategorizationSchedule(
+  schedule: AiCategorizationSchedule,
+): Promise<void> {
+  return invoke("set_ai_categorization_schedule", { schedule });
 }
 
 export function createCategory(
@@ -107,14 +125,6 @@ export function createCategoryRule(
 
 export function deleteCategoryRule(id: number): Promise<void> {
   return invoke("delete_category_rule", { id });
-}
-
-export function getDistractionThresholdSeconds(): Promise<number> {
-  return invoke("get_distraction_threshold_seconds");
-}
-
-export function setDistractionThresholdSeconds(seconds: number): Promise<void> {
-  return invoke("set_distraction_threshold_seconds", { seconds });
 }
 
 export function listIgnoreRules(): Promise<IgnoreRule[]> {

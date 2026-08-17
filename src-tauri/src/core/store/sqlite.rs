@@ -213,6 +213,27 @@ fn migrations() -> Migrations<'static> {
             "INSERT OR IGNORE INTO settings (key, value)
                 VALUES ('category_resolver_version', '0');",
         ),
+        M::up(
+            "ALTER TABLE sessions ADD COLUMN ml_category_id INTEGER REFERENCES categories(id);
+             ALTER TABLE sessions ADD COLUMN ml_confidence REAL;
+             ALTER TABLE sessions ADD COLUMN ml_model_version INTEGER;
+             CREATE INDEX IF NOT EXISTS idx_sessions_ml_category ON sessions(ml_category_id);",
+        ),
+        M::up(
+            "INSERT OR IGNORE INTO settings (key, value)
+                VALUES ('ai_categorization_schedule', 'manual');",
+        ),
+        M::up(
+            "UPDATE sessions
+             SET rule_category_id = NULL
+             WHERE rule_category_id IN (
+                 SELECT id FROM categories WHERE system_key = 'distraction'
+             );
+             DROP INDEX IF EXISTS idx_categories_system_key;
+             DELETE FROM settings WHERE key = 'distraction_threshold_seconds';
+             ALTER TABLE categories DROP COLUMN system_key;",
+        )
+        .foreign_key_check(),
     ])
 }
 
@@ -238,7 +259,6 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     result?;
 
     let tx = conn.transaction()?;
-    let system_category_created = ensure_distraction_category(&tx)?;
     let resolver_version: Option<String> = tx
         .query_row(
             "SELECT value FROM settings WHERE key = 'category_resolver_version'",
@@ -246,57 +266,16 @@ fn migrate(conn: &mut Connection) -> Result<()> {
             |row| row.get(0),
         )
         .optional()?;
-    if resolver_version.as_deref() != Some("1") || system_category_created {
+    if resolver_version.as_deref() != Some("2") {
         resolve::resolve_all(&tx)?;
         tx.execute(
-            "INSERT INTO settings (key, value) VALUES ('category_resolver_version', '1')
+            "INSERT INTO settings (key, value) VALUES ('category_resolver_version', '2')
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             [],
         )?;
     }
     tx.commit()?;
     Ok(())
-}
-
-fn ensure_distraction_category(conn: &Connection) -> Result<bool> {
-    let existing: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM categories WHERE system_key = ?1",
-            params![crate::core::category::DISTRACTION_SYSTEM_KEY],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if existing.is_some() {
-        return Ok(false);
-    }
-
-    let categories = {
-        let mut stmt = conn.prepare("SELECT id, name, parent_id FROM categories ORDER BY id")?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, Option<i64>>(2)?,
-                ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows
-    };
-    if let Some((id, _, _)) = categories.iter().find(|(_, name, parent_id)| {
-        parent_id.is_none() && name.eq_ignore_ascii_case("Distraction")
-    }) {
-        conn.execute(
-            "UPDATE categories SET system_key = ?1 WHERE id = ?2",
-            params![crate::core::category::DISTRACTION_SYSTEM_KEY, id],
-        )?;
-    } else {
-        conn.execute(
-            "INSERT INTO categories (name, color, system_key) VALUES ('Distraction', '#a1a1aa', ?1)",
-            params![crate::core::category::DISTRACTION_SYSTEM_KEY],
-        )?;
-    }
-    Ok(true)
 }
 
 pub struct SqliteStore {
@@ -337,7 +316,7 @@ impl SessionStore for SqliteStore {
         let end_time = at.to_rfc3339();
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        let category_id = resolve::resolve_session_category(&tx, id, Some(&end_time))?;
+        let category_id = resolve::resolve_session_category(&tx, id)?;
         tx.execute(
             "UPDATE sessions SET end_time = ?1, rule_category_id = ?2 WHERE id = ?3",
             params![end_time, category_id, id],
@@ -358,6 +337,8 @@ impl SessionStore for SqliteStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    type MigratedResolution = (i64, Option<i64>, Option<i64>, Option<i64>);
 
     fn temp_db_path() -> std::path::PathBuf {
         let unique = std::time::SystemTime::now()
@@ -429,7 +410,7 @@ mod tests {
         migrate(&mut conn).unwrap();
 
         let surviving: Vec<(i64, String)> = conn
-            .prepare("SELECT id, name FROM categories WHERE system_key IS NULL ORDER BY id")
+            .prepare("SELECT id, name FROM categories ORDER BY id")
             .unwrap()
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
             .unwrap()
@@ -514,14 +495,23 @@ mod tests {
             "regex was retired; the CHECK is what keeps a stale client from reintroducing it"
         );
 
-        let threshold: String = conn
+        let threshold_count: i64 = conn
             .query_row(
-                "SELECT value FROM settings WHERE key = 'distraction_threshold_seconds'",
+                "SELECT COUNT(*) FROM settings WHERE key = 'distraction_threshold_seconds'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(threshold, "10");
+        assert_eq!(threshold_count, 0);
+
+        let ai_schedule: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'ai_categorization_schedule'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ai_schedule, "manual");
 
         let resolved_column_count: i64 = conn
             .query_row(
@@ -532,14 +522,21 @@ mod tests {
             .unwrap();
         assert_eq!(resolved_column_count, 1);
 
-        let built_ins: Vec<String> = conn
-            .prepare("SELECT name FROM categories WHERE system_key = 'distraction'")
-            .unwrap()
-            .query_map([], |row| row.get(0))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
+        let system_key_column_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('categories') WHERE name = 'system_key'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
-        assert_eq!(built_ins, vec!["Distraction".to_string()]);
+        assert_eq!(system_key_column_count, 0);
+        let category_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM categories", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            category_count, 1,
+            "only the Test category inserted by this test exists"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -600,13 +597,6 @@ mod tests {
                 VALUES ('code.exe', 'code.exe', 't', 'code.exe', 'exe', '2024-06-15T04:00:00Z');",
         );
 
-        let distraction: i64 = conn
-            .query_row(
-                "SELECT id FROM categories WHERE system_key = 'distraction'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
         let resolved: Vec<Option<i64>> = conn
             .prepare("SELECT rule_category_id FROM sessions ORDER BY id")
             .unwrap()
@@ -616,34 +606,32 @@ mod tests {
             .unwrap();
         assert_eq!(
             resolved,
-            vec![Some(1), Some(1), None, Some(distraction), Some(1)],
-            "long matched, short but matched, long unmatched, short unmatched, still open"
+            vec![Some(1), Some(1), None, None, Some(1)],
+            "rules apply regardless of duration; unmatched rows remain uncategorized"
         );
 
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
-    fn migration_14_adopts_a_category_the_user_already_named_distraction() {
-        // A blind INSERT would collide with idx_categories_name, roll the migration back,
-        // and leave the app unable to open its own database.
+    fn migration_keeps_a_category_the_user_already_named_distraction() {
         let (conn, path) = migrated_from_v13(
             "INSERT INTO categories (id, name, color) VALUES (7, 'Distraction', '#ff0000');
              INSERT INTO category_rules (key_kind, pattern, match_kind, category_id)
                 VALUES ('domain', 'reddit.com', 'exact', 7);",
         );
 
-        let adopted: Vec<(i64, String, String)> = conn
-            .prepare("SELECT id, name, color FROM categories WHERE system_key = 'distraction'")
+        let kept: Vec<(i64, String, String)> = conn
+            .prepare("SELECT id, name, color FROM categories WHERE name = 'Distraction'")
             .unwrap()
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert_eq!(
-            adopted,
+            kept,
             vec![(7, "Distraction".to_string(), "#ff0000".to_string())],
-            "the user's own row is claimed in place, keeping its id, colour and rules"
+            "an ordinary category keeps its id, colour and rules"
         );
 
         let rules_kept: i64 = conn
@@ -687,6 +675,103 @@ mod tests {
             })
             .unwrap();
         assert_eq!(resolved, Some(1));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn migration_18_clears_only_automatic_distraction_assignments() {
+        let path = temp_db_path();
+        let mut conn = Connection::open(&path).unwrap();
+        migrations().to_version(&mut conn, 17).unwrap();
+        conn.execute_batch(
+            "INSERT INTO categories (id, name, color, system_key)
+                VALUES (1, 'Work', '#111111', NULL),
+                       (2, 'Distraction', '#a1a1aa', 'distraction');
+             INSERT INTO category_rules (key_kind, pattern, match_kind, category_id)
+                VALUES ('exe', 'noise.exe', 'exact', 2);
+             INSERT INTO sessions (
+                 id, app_name, exe_path, window_title, category_key, category_key_kind,
+                 start_time, end_time, category_id, rule_category_id, ml_category_id,
+                 ml_confidence, ml_model_version
+             ) VALUES
+                (1, 'random.exe', 'random.exe', 't', 'random.exe', 'exe',
+                 '2024-06-15T00:00:00Z', '2024-06-15T00:00:03Z', NULL, 2, NULL, NULL, NULL),
+                (2, 'noise.exe', 'noise.exe', 't', 'noise.exe', 'exe',
+                 '2024-06-15T01:00:00Z', '2024-06-15T01:00:03Z', NULL, 2, NULL, NULL, NULL),
+                (3, 'manual.exe', 'manual.exe', 't', 'manual.exe', 'exe',
+                 '2024-06-15T02:00:00Z', '2024-06-15T02:00:03Z', 2, 2, NULL, NULL, NULL),
+                (4, 'predicted.exe', 'predicted.exe', 't', 'predicted.exe', 'exe',
+                 '2024-06-15T03:00:00Z', '2024-06-15T03:00:03Z', NULL, 2, 2, 0.9, 7);
+             INSERT INTO work_sessions (
+                 id, name, target_seconds, start_time, end_time, created_at
+             ) VALUES (
+                 1, 'Focus', 600, '2024-06-15T00:00:00Z',
+                 '2024-06-15T00:10:00Z', '2024-06-15T00:00:00Z'
+             );
+             INSERT INTO work_session_categories (work_session_id, category_id) VALUES (1, 2);",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let categories: Vec<(i64, String, String)> = conn
+            .prepare("SELECT id, name, color FROM categories ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            categories,
+            vec![
+                (1, "Work".to_string(), "#111111".to_string()),
+                (2, "Distraction".to_string(), "#a1a1aa".to_string()),
+            ]
+        );
+
+        let resolved: Vec<MigratedResolution> = conn
+            .prepare(
+                "SELECT id, category_id, rule_category_id, ml_category_id
+                 FROM sessions ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            resolved,
+            vec![
+                (1, None, None, None),
+                (2, None, Some(2), None),
+                (3, Some(2), None, None),
+                (4, None, None, Some(2)),
+            ],
+            "fallback labels are cleared, while rule, manual and AI assignments remain"
+        );
+
+        let work_session_link: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM work_session_categories
+                 WHERE work_session_id = 1 AND category_id = 2",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(work_session_link, 1);
+        let obsolete_schema: i64 = conn
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM pragma_table_info('categories') WHERE name = 'system_key') +
+                    (SELECT COUNT(*) FROM settings WHERE key = 'distraction_threshold_seconds')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(obsolete_schema, 0);
 
         let _ = std::fs::remove_file(&path);
     }

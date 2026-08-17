@@ -23,7 +23,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/statistics", label: "Statistics", icon: BarChart3 },
   { to: "/focus", label: "Focus", icon: Target },
   { to: "/history", label: "History", icon: History },
-  { to: "/labelling", label: "Labelling", icon: Tags },
+  { to: "/labeling", label: "Labeling", icon: Tags },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 

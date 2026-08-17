@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use crate::core::{
-    ActivityStats, Category, CategoryFilter, CategoryRule, CategoryStore, HistoryReader,
-    IgnoreRule, IgnoreStore, RecategorizeOutcome, SessionFilter, SessionRow, SettingsStore,
-    WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
+    ActivityStats, AiCategorizationSchedule, AiCategorizationService, Category, CategoryFilter,
+    CategoryRule, CategorySourceFilter, CategoryStore, ClassifierStatus, HistoryReader, IgnoreRule,
+    IgnoreStore, RecategorizeOutcome, SessionFilter, SessionRow, WorkSession, WorkSessionStats,
+    WorkSessionStore, WorkSessionUpdate,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -16,12 +17,14 @@ pub struct SessionsPage {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn list_sessions(
     reader: State<HistoryReader>,
     page: i64,
     page_size: i64,
     search: Option<String>,
     category: Option<String>,
+    source: Option<String>,
     start: Option<String>,
     end: Option<String>,
 ) -> Result<SessionsPage, String> {
@@ -32,6 +35,7 @@ pub fn list_sessions(
     let filter = SessionFilter {
         search,
         category: parse_category_filter(category.as_deref())?,
+        source: parse_category_source_filter(source.as_deref())?,
         start: start.map(|t| t.to_rfc3339()),
         end: end.map(|t| t.to_rfc3339()),
     };
@@ -40,6 +44,15 @@ pub fn list_sessions(
         .map_err(|e| e.to_string())?;
     let total = reader.count_sessions(&filter).map_err(|e| e.to_string())?;
     Ok(SessionsPage { rows, total })
+}
+
+fn parse_category_source_filter(source: Option<&str>) -> Result<CategorySourceFilter, String> {
+    match source {
+        None => Ok(CategorySourceFilter::All),
+        Some("manual") => Ok(CategorySourceFilter::Manual),
+        Some("ai") => Ok(CategorySourceFilter::Ai),
+        Some(value) => Err(format!("invalid category source filter: {value}")),
+    }
 }
 
 #[tauri::command]
@@ -150,20 +163,22 @@ pub fn delete_category_rule(categories: State<CategoryStore>, id: i64) -> Result
 }
 
 #[tauri::command]
-pub fn get_distraction_threshold_seconds(settings: State<SettingsStore>) -> Result<i64, String> {
-    settings
-        .distraction_threshold_seconds()
-        .map_err(|e| e.to_string())
+pub fn get_classifier_status(ai: State<AiCategorizationService>) -> ClassifierStatus {
+    ai.status()
 }
 
 #[tauri::command]
-pub fn set_distraction_threshold_seconds(
-    settings: State<SettingsStore>,
-    seconds: i64,
+pub fn run_ai_categorization(ai: State<AiCategorizationService>) -> Result<(), String> {
+    ai.run_now().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn set_ai_categorization_schedule(
+    ai: State<AiCategorizationService>,
+    schedule: String,
 ) -> Result<(), String> {
-    settings
-        .set_distraction_threshold_seconds(seconds)
-        .map_err(|e| e.to_string())
+    let schedule = AiCategorizationSchedule::parse(&schedule).map_err(|error| error.to_string())?;
+    ai.set_schedule(schedule).map_err(|error| error.to_string())
 }
 
 #[tauri::command]

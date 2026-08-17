@@ -20,6 +20,7 @@ import type { SessionRow } from "@/types";
 import { BulkActionsBar } from "./-components/BulkActionsBar";
 import {
   ALL_CATEGORIES,
+  ALL_SOURCES,
   PAGE_SIZE,
   SEARCH_DEBOUNCE_MS,
   UNCATEGORIZED,
@@ -73,6 +74,7 @@ function HistoryPage() {
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState(ALL_CATEGORIES);
+  const [sourceFilter, setSourceFilter] = useState(ALL_SOURCES);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [bulkCategory, setBulkCategory] = useState("");
 
@@ -93,6 +95,12 @@ function HistoryPage() {
 
   function handleCategoryFilterChange(value: string) {
     setCategoryFilter(value);
+    setPage(0);
+    clearSelection();
+  }
+
+  function handleSourceFilterChange(value: string) {
+    setSourceFilter(value);
     setPage(0);
     clearSelection();
   }
@@ -125,6 +133,7 @@ function HistoryPage() {
       PAGE_SIZE,
       search,
       categoryFilter === ALL_CATEGORIES ? undefined : categoryFilter,
+      sourceFilter === ALL_SOURCES ? undefined : sourceFilter,
       start,
       end,
     ],
@@ -134,6 +143,9 @@ function HistoryPage() {
         PAGE_SIZE,
         search || undefined,
         categoryFilter === ALL_CATEGORIES ? undefined : categoryFilter,
+        sourceFilter === ALL_SOURCES
+          ? undefined
+          : (sourceFilter as "manual" | "ai"),
         start,
         end,
       ),
@@ -199,12 +211,12 @@ function HistoryPage() {
   async function runRecategorize() {
     const toastId = toast.loading("Recategorizing all activities…");
     try {
-      const { pins_cleared } = await recategorizeAll();
+      const { manual_categories_preserved } = await recategorizeAll();
       invalidateSessions();
       toast.success(
-        pins_cleared === 0
-          ? "Recategorized all activities — nothing pinned by hand, so your rules already decided everything."
-          : `Recategorized all activities — cleared ${pins_cleared} manual activity pin${pins_cleared === 1 ? "" : "s"}.`,
+        manual_categories_preserved === 0
+          ? "Recategorized all activities."
+          : `Recategorized all activities and preserved ${manual_categories_preserved} manual categorization${manual_categories_preserved === 1 ? "" : "s"}.`,
         { id: toastId },
       );
     } catch (err) {
@@ -213,11 +225,11 @@ function HistoryPage() {
   }
 
   function handleRecategorizeClick() {
-    toast("Recategorize all history from scratch?", {
+    toast("Recategorize all history?", {
       description:
-        'Clears every per-activity category you picked by hand, so only your rules decide — with short unmatched activities filed as Distraction and "Uncategorized" for the rest. Your rules are kept. This cannot be undone.',
+        "Reapplies your rules to all activities and clears derived AI predictions. Categories you picked by hand are preserved and continue to take precedence.",
       action: {
-        label: "Clear pins and recategorize",
+        label: "Recategorize",
         onClick: runRecategorize,
       },
       duration: 10000,
@@ -246,6 +258,8 @@ function HistoryPage() {
         onSearchInputChange={setSearchInput}
         categoryFilter={categoryFilter}
         onCategoryFilterChange={handleCategoryFilterChange}
+        sourceFilter={sourceFilter}
+        onSourceFilterChange={handleSourceFilterChange}
         categories={categories}
         range={range}
         rangeSession={rangeSession}
@@ -286,6 +300,7 @@ function HistoryPage() {
         loading={loading}
         search={search}
         categoryFilter={categoryFilter}
+        sourceFilter={sourceFilter}
         selectedIds={selectedIds}
         onToggleRow={toggleRow}
         onToggleAllVisible={toggleAllVisible}

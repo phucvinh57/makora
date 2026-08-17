@@ -12,10 +12,6 @@ pub struct Category {
     pub name: String,
     pub color: String,
     pub parent_id: Option<i64>,
-    /// Non-`NULL` on the categories the app owns rather than the user — currently only
-    /// `"distraction"`. Those cannot be renamed, moved, deleted, or given children, since
-    /// code looks them up by this key.
-    pub system_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -29,7 +25,8 @@ pub struct CategoryRule {
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct RecategorizeOutcome {
-    pub pins_cleared: i64,
+    pub manual_categories_preserved: i64,
+    pub ai_predictions_cleared: i64,
     pub rows_resolved: i64,
 }
 
@@ -66,23 +63,6 @@ fn ensure_exists(conn: &rusqlite::Connection, category_id: i64) -> Result<()> {
     Ok(())
 }
 
-fn system_key_of(conn: &rusqlite::Connection, category_id: i64) -> Result<Option<String>> {
-    Ok(conn.query_row(
-        "SELECT system_key FROM categories WHERE id = ?1",
-        params![category_id],
-        |row| row.get(0),
-    )?)
-}
-
-/// Built-in categories stay put. Their identity is a lookup key the resolver depends on,
-/// and nesting one would drag it into a subtree filter it has no business widening.
-fn ensure_not_system(conn: &rusqlite::Connection, category_id: i64, what: &str) -> Result<()> {
-    if system_key_of(conn, category_id)?.is_some() {
-        bail!("the built-in Distraction category cannot be {what}");
-    }
-    Ok(())
-}
-
 pub(super) fn load_category_tree(conn: &rusqlite::Connection) -> Result<CategoryTree> {
     let mut stmt = conn.prepare("SELECT id, parent_id FROM categories")?;
     let categories = stmt
@@ -101,7 +81,7 @@ impl CategoryStore {
     pub fn list_categories(&self) -> Result<Vec<Category>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, color, parent_id, system_key FROM categories
+            "SELECT id, name, color, parent_id FROM categories
              ORDER BY name COLLATE NOCASE, id",
         )?;
         let rows = stmt
@@ -111,7 +91,6 @@ impl CategoryStore {
                     name: row.get(1)?,
                     color: row.get(2)?,
                     parent_id: row.get(3)?,
-                    system_key: row.get(4)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -127,7 +106,6 @@ impl CategoryStore {
         let conn = self.conn.lock().unwrap();
         if let Some(parent_id) = parent_id {
             ensure_exists(&conn, parent_id)?;
-            ensure_not_system(&conn, parent_id, "given subcategories")?;
         }
         conn.execute(
             "INSERT INTO categories (name, color, parent_id) VALUES (?1, ?2, ?3)",
@@ -139,7 +117,6 @@ impl CategoryStore {
             name: name.to_string(),
             color: color.to_string(),
             parent_id,
-            system_key: None,
         })
     }
 
@@ -151,21 +128,8 @@ impl CategoryStore {
         parent_id: Option<i64>,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        // A built-in keeps its name and its place at the root; only its colour is the
-        // user's to change.
-        if system_key_of(&conn, id)?.is_some() {
-            let (current_name, current_parent): (String, Option<i64>) = conn.query_row(
-                "SELECT name, parent_id FROM categories WHERE id = ?1",
-                params![id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?;
-            if current_name != name || current_parent != parent_id {
-                bail!("the built-in Distraction category cannot be renamed or moved");
-            }
-        }
         if let Some(parent_id) = parent_id {
             ensure_exists(&conn, parent_id)?;
-            ensure_not_system(&conn, parent_id, "given subcategories")?;
             // Re-parenting a category under itself or under one of its own descendants would
             // cut that whole branch loose from every root.
             let tree = load_category_tree(&conn)?;
@@ -189,11 +153,6 @@ impl CategoryStore {
         ensure_exists(&tx, id)?;
         // Deepest first: a parent still referenced by one of its children cannot be deleted.
         let doomed = load_category_tree(&tx)?.deletion_order(id);
-        // Check the whole branch, not just the target: an accidentally nested built-in must
-        // not be smuggled out by deleting an ancestor.
-        for category_id in &doomed {
-            ensure_not_system(&tx, *category_id, "deleted")?;
-        }
         for category_id in &doomed {
             tx.execute(
                 "DELETE FROM category_rules WHERE category_id = ?1",
@@ -210,13 +169,17 @@ impl CategoryStore {
                 params![category_id],
             )?;
             tx.execute(
+                "UPDATE sessions SET ml_category_id = NULL, ml_confidence = NULL, ml_model_version = NULL WHERE ml_category_id = ?1",
+                params![category_id],
+            )?;
+            tx.execute(
                 "DELETE FROM work_session_categories WHERE category_id = ?1",
                 params![category_id],
             )?;
             tx.execute("DELETE FROM categories WHERE id = ?1", params![category_id])?;
         }
         // The branch's rules went with it, so rows they used to claim may now match a
-        // different rule — or become short-and-unmatched distractions.
+        // different rule or become uncategorized.
         resolve::resolve_all(&tx)?;
         tx.commit()?;
         Ok(())
@@ -287,7 +250,12 @@ impl CategoryStore {
 
     pub fn set_row_category(&self, session_id: i64, category_id: Option<i64>) -> Result<()> {
         self.conn.lock().unwrap().execute(
-            "UPDATE sessions SET category_id = ?1 WHERE id = ?2",
+            "UPDATE sessions
+             SET category_id = ?1,
+                 ml_category_id = NULL,
+                 ml_confidence = NULL,
+                 ml_model_version = NULL
+             WHERE id = ?2",
             params![category_id, session_id],
         )?;
         Ok(())
@@ -298,7 +266,12 @@ impl CategoryStore {
         let tx = conn.transaction()?;
         for session_id in session_ids {
             tx.execute(
-                "UPDATE sessions SET category_id = ?1 WHERE id = ?2",
+                "UPDATE sessions
+                 SET category_id = ?1,
+                     ml_category_id = NULL,
+                     ml_confidence = NULL,
+                     ml_model_version = NULL
+                 WHERE id = ?2",
                 params![category_id, session_id],
             )?;
         }
@@ -306,20 +279,26 @@ impl CategoryStore {
         Ok(())
     }
 
-    /// A start-over, not a top-up: every per-activity pin goes, and history is re-derived
-    /// from the rules alone. Distraction labels survive it — they live in the resolved
-    /// column, not the pin column, so clearing pins never erases them.
+    /// Replays automatic categorization without disturbing categories chosen by hand.
+    /// Derived AI values are cleared, then every rule label is recomputed; manual pins keep
+    /// taking precedence over the refreshed automatic result.
     pub fn recategorize_all(&self) -> Result<RecategorizeOutcome> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        let pins_cleared = tx.execute(
-            "UPDATE sessions SET category_id = NULL WHERE category_id IS NOT NULL",
+        let manual_categories_preserved: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE category_id IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        let ai_predictions_cleared = tx.execute(
+            "UPDATE sessions SET ml_category_id = NULL, ml_confidence = NULL, ml_model_version = NULL WHERE ml_category_id IS NOT NULL",
             [],
         )?;
         let rows_resolved = resolve::resolve_all(&tx)?;
         tx.commit()?;
         Ok(RecategorizeOutcome {
-            pins_cleared: pins_cleared as i64,
+            manual_categories_preserved,
+            ai_predictions_cleared: ai_predictions_cleared as i64,
             rows_resolved: rows_resolved as i64,
         })
     }
@@ -349,15 +328,10 @@ mod tests {
     fn category_and_rule_crud_round_trips_through_sqlite() {
         let (store, path) = temp_store();
 
-        let seeded = store.list_categories().unwrap();
-        assert_eq!(
-            seeded.len(),
-            1,
-            "a fresh database carries no taxonomy of its own — only the reserved Distraction category"
+        assert!(
+            store.list_categories().unwrap().is_empty(),
+            "a fresh database starts with no taxonomy"
         );
-        assert_eq!(seeded[0].name, "Distraction");
-        assert_eq!(seeded[0].system_key.as_deref(), Some("distraction"));
-        assert_eq!(seeded[0].parent_id, None);
 
         let created = store.create_category("Focus", "#123456", None).unwrap();
         assert_eq!(created.name, "Focus");
@@ -404,8 +378,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// Ten minutes — comfortably clear of any distraction threshold a test might set, so
-    /// these rows are only ever categorized by their rules.
+    /// Ten minutes, used where a test does not care about the row's exact duration.
     const LONG_ENOUGH_SECONDS: i64 = 600;
 
     fn ends_after(start_time: &str, seconds: i64) -> String {
@@ -440,8 +413,7 @@ mod tests {
         id
     }
 
-    /// A row the tracker has opened but not yet closed — no duration, so it can never be a
-    /// distraction, but its rules still apply.
+    /// A row the tracker has opened but not yet closed. Rules apply to open and closed rows alike.
     fn insert_open_session(conn: &SharedConnection, exe: &str, start_time: &str) -> i64 {
         let conn = conn.lock().unwrap();
         conn.execute(
@@ -477,18 +449,8 @@ mod tests {
         id
     }
 
-    fn distraction_id(store: &CategoryStore) -> i64 {
-        store
-            .list_categories()
-            .unwrap()
-            .into_iter()
-            .find(|c| c.system_key.as_deref() == Some("distraction"))
-            .expect("the reserved Distraction category is seeded by the migration")
-            .id
-    }
-
     #[test]
-    fn recategorize_all_erases_pins_and_leaves_rules_deciding() {
+    fn recategorize_all_preserves_pins_while_replaying_rules() {
         let (store, path) = temp_store();
         let conn = store.conn.clone();
         let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
@@ -507,18 +469,34 @@ mod tests {
         store
             .set_row_category(pinned_over_rule, Some(manual.id))
             .unwrap();
+        conn.lock()
+            .unwrap()
+            .execute("UPDATE sessions SET rule_category_id = NULL", [])
+            .unwrap();
 
-        assert_eq!(store.recategorize_all().unwrap().pins_cleared, 2);
+        let outcome = store.recategorize_all().unwrap();
+        assert_eq!(outcome.manual_categories_preserved, 2);
+        assert_eq!(outcome.rows_resolved, 3);
 
         let rows = reader.list_sessions(10, 0, &filter).unwrap();
         let category_of = |id: i64| rows.iter().find(|r| r.id == id).unwrap().category_id;
         assert_eq!(category_of(by_rule), Some(ruled.id));
-        assert_eq!(category_of(by_pin), None);
+        assert_eq!(category_of(by_pin), Some(manual.id));
         assert_eq!(
             category_of(pinned_over_rule),
-            Some(ruled.id),
-            "a pinned row falls back to what the rules say, not to nothing"
+            Some(manual.id),
+            "a manual category must continue to override the refreshed rule label"
         );
+        let refreshed_rule: Option<i64> = conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT rule_category_id FROM sessions WHERE id = ?1",
+                params![pinned_over_rule],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(refreshed_rule, Some(ruled.id));
 
         assert!(store
             .list_rules()
@@ -526,7 +504,13 @@ mod tests {
             .iter()
             .any(|r| r.pattern == "ruled.exe"));
 
-        assert_eq!(store.recategorize_all().unwrap().pins_cleared, 0);
+        assert_eq!(
+            store
+                .recategorize_all()
+                .unwrap()
+                .manual_categories_preserved,
+            2
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -603,16 +587,64 @@ mod tests {
     }
 
     #[test]
-    fn recategorize_all_clears_bulk_pins_across_every_app_and_site() {
+    fn changing_or_clearing_a_manual_label_removes_the_rows_old_ai_prediction() {
+        let (store, path) = temp_store();
+        let conn = store.conn.clone();
+        let manual = store.create_category("Manual", "#111111", None).unwrap();
+        let predicted = store.create_category("Predicted", "#222222", None).unwrap();
+        let row = insert_session(&conn, "editor.exe", "2024-06-15T00:00:00Z");
+
+        conn.lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions
+                 SET ml_category_id = ?1, ml_confidence = 0.9, ml_model_version = 7
+                 WHERE id = ?2",
+                params![predicted.id, row],
+            )
+            .unwrap();
+        store.set_row_category(row, Some(manual.id)).unwrap();
+        store.set_row_category(row, None).unwrap();
+
+        let ai_values: (Option<i64>, Option<f32>, Option<i64>) = conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT ml_category_id, ml_confidence, ml_model_version
+                 FROM sessions WHERE id = ?1",
+                params![row],
+                |result| Ok((result.get(0)?, result.get(1)?, result.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(ai_values, (None, None, None));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn recategorize_all_preserves_bulk_pins_and_clears_ai_predictions() {
         let (store, path) = temp_store();
         let conn = store.conn.clone();
 
         let pin_cat = store.create_category("PinCat", "#333333", None).unwrap();
+        let predicted = store.create_category("Predicted", "#444444", None).unwrap();
         let a = insert_session(&conn, "pinned.exe", "2024-06-15T00:00:00Z");
         let b = insert_browser_session(&conn, "https://chatgpt.com/c/AAA", "2024-06-15T01:00:00Z");
+        let c = insert_session(&conn, "predicted.exe", "2024-06-15T02:00:00Z");
         store.set_row_categories(&[a, b], Some(pin_cat.id)).unwrap();
+        conn.lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions
+                 SET ml_category_id = ?1, ml_confidence = 0.9, ml_model_version = 7
+                 WHERE id = ?2",
+                params![predicted.id, c],
+            )
+            .unwrap();
 
-        assert_eq!(store.recategorize_all().unwrap().pins_cleared, 2);
+        let outcome = store.recategorize_all().unwrap();
+        assert_eq!(outcome.manual_categories_preserved, 2);
+        assert_eq!(outcome.ai_predictions_cleared, 1);
 
         let still_pinned: i64 = conn
             .lock()
@@ -623,7 +655,18 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(still_pinned, 0);
+        assert_eq!(still_pinned, 2);
+
+        let remaining_predictions: i64 = conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE ml_category_id IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining_predictions, 0);
 
         let _ = std::fs::remove_file(&path);
     }
@@ -954,7 +997,6 @@ mod tests {
             .list_categories()
             .unwrap()
             .into_iter()
-            .filter(|c| c.system_key.is_none())
             .map(|c| c.id)
             .collect();
         assert_eq!(left, vec![personal.id]);
@@ -978,135 +1020,92 @@ mod tests {
     }
 
     #[test]
-    fn the_reserved_distraction_category_cannot_be_renamed_moved_or_deleted() {
+    fn a_category_named_distraction_has_full_category_crud() {
         let (store, path) = temp_store();
-        let distraction = distraction_id(&store);
         let work = store.create_category("Work", "#111111", None).unwrap();
-
-        assert!(
-            store
-                .update_category(distraction, "Noise", "#a1a1aa", None)
-                .is_err(),
-            "renaming would strand the lookup key the resolver depends on"
-        );
-        assert!(store
-            .update_category(distraction, "Distraction", "#a1a1aa", Some(work.id))
-            .is_err());
-        assert!(store.delete_category(distraction).is_err());
-
-        store
-            .update_category(distraction, "Distraction", "#ff0000", None)
-            .expect("recolouring a built-in is the user's call");
-
-        assert!(
-            store
-                .create_category("Nested", "#222222", Some(distraction))
-                .is_err(),
-            "children would drag the built-in into subtree filters it has no business widening"
-        );
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn deleting_an_ancestor_cannot_smuggle_a_built_in_category_out() {
-        let (store, path) = temp_store();
-        let distraction = distraction_id(&store);
-        let work = store.create_category("Work", "#111111", None).unwrap();
-
-        // The guards refuse to nest it, so forge the state directly and check that
-        // delete_category still inspects the whole branch rather than just its target.
-        store
-            .conn
-            .lock()
-            .unwrap()
-            .execute(
-                "UPDATE categories SET parent_id = ?1 WHERE id = ?2",
-                params![work.id, distraction],
-            )
+        let distraction = store
+            .create_category("Distraction", "#a1a1aa", None)
             .unwrap();
 
-        assert!(store.delete_category(work.id).is_err());
-        assert!(store
-            .list_categories()
-            .unwrap()
+        store
+            .update_category(distraction.id, "Noise", "#ff0000", Some(work.id))
+            .unwrap();
+        let child = store
+            .create_category("Nested", "#222222", Some(distraction.id))
+            .unwrap();
+        assert_eq!(
+            store
+                .list_categories()
+                .unwrap()
+                .into_iter()
+                .find(|category| category.id == distraction.id)
+                .unwrap()
+                .parent_id,
+            Some(work.id)
+        );
+        store.delete_category(distraction.id).unwrap();
+        let remaining = store.list_categories().unwrap();
+        assert!(remaining
             .iter()
-            .any(|c| c.id == distraction));
+            .all(|category| category.id != distraction.id));
+        assert!(remaining.iter().all(|category| category.id != child.id));
+        assert!(remaining.iter().any(|category| category.id == work.id));
 
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
-    fn a_short_activity_is_a_distraction_only_when_no_rule_claims_it() {
+    fn activity_duration_never_changes_rule_resolution() {
         let (store, path) = temp_store();
         let conn = store.conn.clone();
         let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
         let filter = crate::core::store::queries::SessionFilter::default();
-        let distraction = distraction_id(&store);
 
         let work = store.create_category("Work", "#111111", None).unwrap();
         store
             .create_rule("exe", "code.exe", "exact", work.id)
             .unwrap();
 
-        // Four seconds of a known tool is still that tool's work; four seconds of something
-        // nobody has ever labelled is the flicker this feature exists to absorb.
         let quick_tool_switch =
             insert_session_lasting(&conn, "code.exe", "2024-06-15T00:00:00Z", 4);
-        let flicker = insert_session_lasting(&conn, "random.exe", "2024-06-15T01:00:00Z", 3);
-        let real_use = insert_session(&conn, "random.exe", "2024-06-15T02:00:00Z");
-        let live = insert_open_session(&conn, "blip.exe", "2024-06-15T03:00:00Z");
+        let short_unmatched =
+            insert_session_lasting(&conn, "random.exe", "2024-06-15T01:00:00Z", 3);
+        let long_unmatched = insert_session(&conn, "random.exe", "2024-06-15T02:00:00Z");
+        let open_unmatched = insert_open_session(&conn, "blip.exe", "2024-06-15T03:00:00Z");
 
         let rows = reader.list_sessions(10, 0, &filter).unwrap();
         let category_of = |id: i64| rows.iter().find(|r| r.id == id).unwrap().category_id;
         assert_eq!(category_of(quick_tool_switch), Some(work.id));
-        assert_eq!(category_of(flicker), Some(distraction));
-        assert_eq!(category_of(real_use), None);
-        assert_eq!(
-            category_of(live),
-            None,
-            "an open row has no duration yet and must never be written off as a distraction"
-        );
-
-        let pinned = rows
-            .iter()
-            .find(|r| r.id == flicker)
-            .unwrap()
-            .category_is_pinned;
-        assert!(
-            !pinned,
-            "an automatic label must not masquerade as something the user chose"
-        );
+        assert_eq!(category_of(short_unmatched), None);
+        assert_eq!(category_of(long_unmatched), None);
+        assert_eq!(category_of(open_unmatched), None);
 
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
-    fn a_manual_pin_overrides_the_distraction_label_and_survives_nothing_else() {
+    fn clearing_a_manual_pin_leaves_an_unmatched_activity_uncategorized() {
         let (store, path) = temp_store();
         let conn = store.conn.clone();
         let reader = crate::core::store::queries::HistoryReader::new(conn.clone());
         let filter = crate::core::store::queries::SessionFilter::default();
-        let distraction = distraction_id(&store);
 
         let work = store.create_category("Work", "#111111", None).unwrap();
-        let flicker = insert_session_lasting(&conn, "random.exe", "2024-06-15T00:00:00Z", 3);
-        store.set_row_category(flicker, Some(work.id)).unwrap();
+        let row = insert_session_lasting(&conn, "random.exe", "2024-06-15T00:00:00Z", 3);
+        store.set_row_category(row, Some(work.id)).unwrap();
 
         let category_of = |rows: &[crate::core::store::queries::SessionRow]| {
-            rows.iter().find(|r| r.id == flicker).unwrap().category_id
+            rows.iter().find(|r| r.id == row).unwrap().category_id
         };
         assert_eq!(
             category_of(&reader.list_sessions(10, 0, &filter).unwrap()),
             Some(work.id)
         );
 
-        // Clearing pins hands the row back to the automatic label rather than to nothing:
-        // Distraction lives in the resolved column, which recategorize_all recomputes.
-        assert_eq!(store.recategorize_all().unwrap().pins_cleared, 1);
+        store.set_row_category(row, None).unwrap();
         assert_eq!(
             category_of(&reader.list_sessions(10, 0, &filter).unwrap()),
-            Some(distraction)
+            None
         );
 
         let _ = std::fs::remove_file(&path);

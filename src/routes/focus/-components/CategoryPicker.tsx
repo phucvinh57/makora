@@ -1,8 +1,4 @@
-import {
-  categorySubtreeIds,
-  orderedCategories,
-  userCategories,
-} from "@/categories";
+import { categorySubtreeIds, orderedCategories } from "@/categories";
 import { cn } from "@/lib/utils";
 import type { Category } from "@/types";
 
@@ -17,10 +13,7 @@ export function CategoryPicker({
   selected: number[];
   onChange: (ids: number[]) => void;
 }) {
-  // This picker only ever marks categories *on-task*, and calling Distraction on-task is
-  // a contradiction — so the built-in never appears here, unlike everywhere a person
-  // files an activity by hand.
-  const categories = userCategories(allCategories);
+  const categories = allCategories;
 
   function toggle(id: number) {
     onChange(
@@ -33,7 +26,7 @@ export function CategoryPicker({
   if (categories.length === 0) {
     return (
       <p className="m-0 text-sm text-muted-foreground">
-        No categories yet — create one on the Labelling page first.
+        No categories yet — create one on the Labeling page first.
       </p>
     );
   }

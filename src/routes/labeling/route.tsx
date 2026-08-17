@@ -3,12 +3,13 @@ import { useState } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CategoriesTab } from "./-components/CategoriesTab";
 import { ALL_CATEGORIES, RulesTab } from "./-components/RulesTab";
+import { AiTab } from "./-components/AiTab";
 
-export const Route = createFileRoute("/labelling")({
-  component: LabellingPage,
+export const Route = createFileRoute("/labeling")({
+  component: LabelingPage,
 });
 
-function LabellingPage() {
+function LabelingPage() {
   const [tab, setTab] = useState("categories");
   const [rulesCategoryFilter, setRulesCategoryFilter] = useState<
     number | typeof ALL_CATEGORIES
@@ -17,7 +18,7 @@ function LabellingPage() {
   return (
     <div className="flex h-full flex-col box-border">
       <header className="mb-4">
-        <h1 className="m-0 text-lg font-semibold">Labelling</h1>
+        <h1 className="m-0 text-lg font-semibold">Labeling</h1>
         <p className="m-0 text-sm text-muted-foreground">Categories & rules</p>
       </header>
 
@@ -29,6 +30,7 @@ function LabellingPage() {
         <TabsList className="mb-4 self-start">
           <TabsTrigger value="categories">Categories</TabsTrigger>
           <TabsTrigger value="rules">Rules</TabsTrigger>
+          <TabsTrigger value="ai">AI</TabsTrigger>
         </TabsList>
         <TabsContent value="categories" className="flex min-h-0 flex-col">
           <CategoriesTab
@@ -43,6 +45,9 @@ function LabellingPage() {
             categoryFilter={rulesCategoryFilter}
             onCategoryFilterChange={setRulesCategoryFilter}
           />
+        </TabsContent>
+        <TabsContent value="ai" className="flex min-h-0 flex-col">
+          <AiTab />
         </TabsContent>
       </Tabs>
     </div>

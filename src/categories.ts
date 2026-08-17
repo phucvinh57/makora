@@ -72,17 +72,6 @@ export function categoryPath(
   return names.join(" / ");
 }
 
-/**
- * Only the categories the user made — drops built-ins like Distraction.
- *
- * Used where offering a built-in would be nonsense (nothing can nest under it; marking
- * "Distraction" on-task defeats the point), not as a blanket filter: it stays pickable
- * anywhere a person might legitimately file an activity there by hand.
- */
-export function userCategories(categories: Category[]): Category[] {
-  return categories.filter((category) => category.system_key === null);
-}
-
 /** A category plus everything nested under it — what picking it now covers. */
 export function categorySubtreeIds(
   rootId: number,

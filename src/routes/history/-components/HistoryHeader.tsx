@@ -13,7 +13,13 @@ import {
   categoryValueLabels,
 } from "@/components/CategoryOptions";
 import type { Category, WorkSession } from "@/types";
-import { ALL_CATEGORIES, UNCATEGORIZED } from "./constants";
+import {
+  AI_SOURCE,
+  ALL_CATEGORIES,
+  ALL_SOURCES,
+  MANUAL_SOURCE,
+  UNCATEGORIZED,
+} from "./constants";
 import type { TimeRange } from "./timeRange";
 import { TimeRangeFilter } from "./TimeRangeFilter";
 
@@ -22,6 +28,8 @@ export function HistoryHeader({
   onSearchInputChange,
   categoryFilter,
   onCategoryFilterChange,
+  sourceFilter,
+  onSourceFilterChange,
   categories,
   range,
   rangeSession,
@@ -34,6 +42,8 @@ export function HistoryHeader({
   onSearchInputChange: (value: string) => void;
   categoryFilter: string;
   onCategoryFilterChange: (value: string) => void;
+  sourceFilter: string;
+  onSourceFilterChange: (value: string) => void;
   categories: Category[];
   range: TimeRange;
   rangeSession?: WorkSession | null;
@@ -77,6 +87,24 @@ export function HistoryHeader({
           <SelectItem value={ALL_CATEGORIES}>All categories</SelectItem>
           <SelectItem value={UNCATEGORIZED}>Uncategorized</SelectItem>
           {categoryOptions(categories)}
+        </SelectContent>
+      </Select>
+      <Select
+        value={sourceFilter}
+        onValueChange={(value) => onSourceFilterChange(value ?? ALL_SOURCES)}
+        items={{
+          [ALL_SOURCES]: "All sources",
+          [MANUAL_SOURCE]: "Manual",
+          [AI_SOURCE]: "AI",
+        }}
+      >
+        <SelectTrigger size="sm" className="w-32" aria-label="Category source">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={ALL_SOURCES}>All sources</SelectItem>
+          <SelectItem value={MANUAL_SOURCE}>Manual</SelectItem>
+          <SelectItem value={AI_SOURCE}>AI</SelectItem>
         </SelectContent>
       </Select>
       <TimeRangeFilter
