@@ -39,6 +39,7 @@ export function CategoryCard({
     category: Category,
     name: string,
     color: string,
+    description: string | null,
     parentId: number | null,
   ) => void;
   onDelete: (category: Category) => void;
@@ -48,6 +49,7 @@ export function CategoryCard({
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(category.name);
   const [color, setColor] = useState(category.color);
+  const [description, setDescription] = useState(category.description ?? "");
   const [parentId, setParentId] = useState<number | null>(category.parent_id);
 
   // Moving a category inside its own branch would cut that branch loose from every root,
@@ -58,13 +60,20 @@ export function CategoryCard({
   function startEditing() {
     setName(category.name);
     setColor(category.color);
+    setDescription(category.description ?? "");
     setParentId(category.parent_id);
     setEditing(true);
   }
 
   function saveEditing() {
     if (name.trim()) {
-      onSave(category, name.trim(), color, parentId);
+      onSave(
+        category,
+        name.trim(),
+        color,
+        description.trim() || null,
+        parentId,
+      );
     }
     setEditing(false);
   }
@@ -86,6 +95,13 @@ export function CategoryCard({
               value={name}
               onChange={(e) => setName(e.target.value)}
               className="min-w-40 flex-1"
+            />
+            <Input
+              type="text"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="What this category means to the AI"
+              className="min-w-56 flex-1"
             />
             <Select
               value={parentId === null ? NO_PARENT : String(parentId)}
@@ -146,6 +162,11 @@ export function CategoryCard({
                 </span>
               )}
             </CardTitle>
+            {category.description && (
+              <p className="text-xs text-muted-foreground">
+                {category.description}
+              </p>
+            )}
             <CardAction className="row-span-1 flex items-center gap-2 self-center">
               <Button
                 variant="ghost"

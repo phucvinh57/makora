@@ -8,6 +8,7 @@ import type {
   ActivityStats,
   AiCategorizationSchedule,
   Category,
+  CategorySuggestion,
   ClassifierStatus,
   CategoryRule,
   IgnoreKind,
@@ -16,6 +17,7 @@ import type {
   MatchKind,
   RecategorizeOutcome,
   SessionsPage,
+  SeedTaxonomy,
   WorkSession,
   WorkSessionStats,
   WorkSessionUpdate,
@@ -93,22 +95,50 @@ export function setAiCategorizationConfidenceThreshold(
 export function createCategory(
   name: string,
   color: string,
+  description: string | null,
   parentId: number | null,
 ): Promise<Category> {
-  return invoke("create_category", { name, color, parentId });
+  return invoke("create_category", { name, color, description, parentId });
 }
 
 export function updateCategory(
   id: number,
   name: string,
   color: string,
+  description: string | null,
   parentId: number | null,
 ): Promise<void> {
-  return invoke("update_category", { id, name, color, parentId });
+  return invoke("update_category", { id, name, color, description, parentId });
 }
 
 export function deleteCategory(id: number): Promise<void> {
   return invoke("delete_category", { id });
+}
+
+export function listCategorySuggestions(): Promise<CategorySuggestion[]> {
+  return invoke("list_category_suggestions");
+}
+
+export function acceptCategorySuggestions(
+  ids: number[],
+  overrideCategory?: number,
+): Promise<void> {
+  return invoke("accept_category_suggestions", {
+    ids,
+    overrideCategory: overrideCategory ?? null,
+  });
+}
+
+export function dismissCategorySuggestions(ids: number[]): Promise<void> {
+  return invoke("dismiss_category_suggestions", { ids });
+}
+
+export function applySeedTaxonomy(): Promise<void> {
+  return invoke("apply_seed_taxonomy");
+}
+
+export function getSeedTaxonomyPreview(): Promise<SeedTaxonomy> {
+  return invoke("get_seed_taxonomy_preview");
 }
 
 export function listCategoryRules(): Promise<CategoryRule[]> {

@@ -249,6 +249,41 @@ fn migrations() -> Migrations<'static> {
              WHERE end_time IS NOT NULL
                AND unixepoch(end_time, 'subsec') - unixepoch(start_time, 'subsec') < 1.0;",
         ),
+        M::up(
+            "ALTER TABLE categories ADD COLUMN description TEXT;
+
+             CREATE TABLE category_suggestions (
+                 id            INTEGER PRIMARY KEY,
+                 key_kind      TEXT NOT NULL CHECK(key_kind IN ('exe', 'domain')),
+                 key           TEXT NOT NULL,
+                 category_id   INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+                 confidence    REAL NOT NULL,
+                 seconds       REAL NOT NULL,
+                 model_version INTEGER NOT NULL,
+                 created_at    TEXT NOT NULL,
+                 status        TEXT NOT NULL DEFAULT 'pending'
+                               CHECK(status IN ('pending', 'dismissed')),
+                 UNIQUE(key_kind, key)
+             );
+
+             CREATE TABLE key_embeddings (
+                 key_kind TEXT NOT NULL,
+                 key      TEXT NOT NULL,
+                 doc_hash TEXT NOT NULL,
+                 model_id TEXT NOT NULL,
+                 vector   BLOB NOT NULL,
+                 PRIMARY KEY (key_kind, key)
+             );
+
+             INSERT OR IGNORE INTO settings (key, value)
+                 VALUES ('ai_categorization_model_version', '0');
+
+             UPDATE sessions
+                SET ml_category_id = NULL,
+                    ml_confidence = NULL,
+                    ml_model_version = NULL;",
+        )
+        .foreign_key_check(),
     ])
 }
 
@@ -578,6 +613,33 @@ mod tests {
             .unwrap();
         assert_eq!(resolved_column_count, 1);
 
+        let description_column_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('categories') WHERE name = 'description'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(description_column_count, 1);
+        let model_version: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'ai_categorization_model_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(model_version, "0");
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name IN ('category_suggestions', 'key_embeddings')",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            2
+        );
+
         let system_key_column_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('categories') WHERE name = 'system_key'",
@@ -804,7 +866,7 @@ mod tests {
                 (1, None, None, None),
                 (2, None, Some(2), None),
                 (3, Some(2), None, None),
-                (4, None, None, Some(2)),
+                (4, None, None, None),
             ],
             "fallback labels are cleared, while rule, manual and AI assignments remain"
         );

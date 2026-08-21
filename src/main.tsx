@@ -23,8 +23,7 @@ function AiCategorizationEvents() {
     let stopListening: (() => void) | undefined;
     listen("ai-categorization-completed", () => {
       queryClient.invalidateQueries({ queryKey: ["classifierStatus"] });
-      queryClient.invalidateQueries({ queryKey: ["sessions"] });
-      queryClient.invalidateQueries({ queryKey: ["activityStats"] });
+      queryClient.invalidateQueries({ queryKey: ["categorySuggestions"] });
       queryClient.invalidateQueries({ queryKey: ["workSessionStats"] });
     }).then((unlisten) => {
       if (disposed) unlisten();

@@ -44,6 +44,11 @@ pub fn run() {
             commands::create_category,
             commands::update_category,
             commands::delete_category,
+            commands::list_category_suggestions,
+            commands::accept_category_suggestions,
+            commands::dismiss_category_suggestions,
+            commands::apply_seed_taxonomy,
+            commands::get_seed_taxonomy_preview,
             commands::list_category_rules,
             commands::create_category_rule,
             commands::delete_category_rule,
@@ -79,7 +84,6 @@ pub fn run() {
             let event_app = app.handle().clone();
             let ai = AiCategorizationService::new_with_completion(
                 conn.clone(),
-                db_path.with_file_name("classifier.json"),
                 Arc::new(move || {
                     let _ = event_app.emit("ai-categorization-completed", ());
                 }),

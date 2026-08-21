@@ -227,7 +227,7 @@ function HistoryPage() {
   function handleRecategorizeClick() {
     toast("Recategorize all history?", {
       description:
-        "Reapplies your rules to all activities and clears derived AI predictions. Categories you picked by hand are preserved and continue to take precedence.",
+        "Reapplies your rules to all activities. Categories you picked by hand are preserved and continue to take precedence.",
       action: {
         label: "Recategorize",
         onClick: runRecategorize,

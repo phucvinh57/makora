@@ -22,6 +22,7 @@ import {
   categoryValueLabels,
 } from "@/components/CategoryOptions";
 import {
+  applySeedTaxonomy,
   createCategory,
   deleteCategory,
   listCategories,
@@ -47,6 +48,7 @@ export function CategoriesTab({
   const queryClient = useQueryClient();
   const [newName, setNewName] = useState("");
   const [newColor, setNewColor] = useState(DEFAULT_COLOR);
+  const [newDescription, setNewDescription] = useState("");
   const [newParentId, setNewParentId] = useState<number | null>(null);
   const addCategoryDialog = useDialog("add-category");
 
@@ -75,13 +77,23 @@ export function CategoriesTab({
     // and a rename or recolour is denormalized into the rows these two queries hold.
     queryClient.invalidateQueries({ queryKey: ["sessions"] });
     queryClient.invalidateQueries({ queryKey: ["activityStats"] });
+    queryClient.invalidateQueries({ queryKey: ["workSessionStats"] });
+    queryClient.invalidateQueries({ queryKey: ["categorySuggestions"] });
+    queryClient.invalidateQueries({ queryKey: ["classifierStatus"] });
   }
 
   const createCategoryMutation = useMutation({
-    mutationFn: () => createCategory(newName.trim(), newColor, newParentId),
+    mutationFn: () =>
+      createCategory(
+        newName.trim(),
+        newColor,
+        newDescription.trim() || null,
+        newParentId,
+      ),
     onSuccess: () => {
       setNewName("");
       setNewColor(DEFAULT_COLOR);
+      setNewDescription("");
       setNewParentId(null);
       addCategoryDialog.setOpen(false);
       invalidateAll();
@@ -94,18 +106,26 @@ export function CategoriesTab({
       name,
       color,
       parentId,
+      description,
     }: {
       category: Category;
       name: string;
       color: string;
+      description: string | null;
       parentId: number | null;
-    }) => updateCategory(category.id, name, color, parentId),
+    }) => updateCategory(category.id, name, color, description, parentId),
     onSuccess: invalidateAll,
     onError: (err) => toast.error(String(err)),
   });
 
   const deleteCategoryMutation = useMutation({
     mutationFn: (category: Category) => deleteCategory(category.id),
+    onSuccess: invalidateAll,
+    onError: (err) => toast.error(String(err)),
+  });
+
+  const applySeedMutation = useMutation({
+    mutationFn: applySeedTaxonomy,
     onSuccess: invalidateAll,
     onError: (err) => toast.error(String(err)),
   });
@@ -119,6 +139,7 @@ export function CategoriesTab({
   function startAddSubcategory(parent: Category) {
     setNewName("");
     setNewColor(parent.color);
+    setNewDescription("");
     setNewParentId(parent.id);
     openDialog("add-category");
   }
@@ -161,6 +182,7 @@ export function CategoriesTab({
           onClick={() => {
             setNewParentId(null);
             setNewColor(DEFAULT_COLOR);
+            setNewDescription("");
             openDialog("add-category");
           }}
         >
@@ -170,7 +192,16 @@ export function CategoriesTab({
 
       <div className="flex-1 overflow-y-auto subtle-scrollbar">
         {!loading && categories.length === 0 && (
-          <p className="text-sm text-muted-foreground">No categories yet.</p>
+          <div className="flex flex-col items-start gap-2 text-sm text-muted-foreground">
+            <p>No categories yet. Start with a small starter taxonomy.</p>
+            <Button
+              variant="outline"
+              onClick={() => applySeedMutation.mutate()}
+              disabled={applySeedMutation.isPending}
+            >
+              Apply starter taxonomy
+            </Button>
+          </div>
         )}
         <div className="flex flex-col gap-3">
           {tree.map(({ category, depth, children }) => (
@@ -183,11 +214,12 @@ export function CategoriesTab({
                 rules.filter((r) => r.category_id === category.id).length
               }
               categories={categories}
-              onSave={(cat, name, color, parentId) =>
+              onSave={(cat, name, color, description, parentId) =>
                 saveCategoryMutation.mutate({
                   category: cat,
                   name,
                   color,
+                  description,
                   parentId,
                 })
               }
@@ -229,6 +261,20 @@ export function CategoriesTab({
                 autoFocus
               />
             </div>
+            <Input
+              type="text"
+              value={newDescription}
+              onChange={(e) => setNewDescription(e.target.value)}
+              placeholder="Description for AI suggestions"
+              aria-describedby="category-description-help"
+            />
+            <p
+              id="category-description-help"
+              className="text-xs text-muted-foreground"
+            >
+              Describe what belongs here; the AI uses this when suggesting new
+              rules.
+            </p>
             <Select
               value={newParentId === null ? NO_PARENT : String(newParentId)}
               onValueChange={(value) =>

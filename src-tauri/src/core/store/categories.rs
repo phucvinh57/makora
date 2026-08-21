@@ -1,6 +1,6 @@
-use anyhow::{anyhow, bail, Result};
-use rusqlite::params;
-use serde::Serialize;
+use anyhow::{anyhow, bail, Context, Result};
+use rusqlite::{params, OptionalExtension};
+use serde::{Deserialize, Serialize};
 
 use super::sqlite::SharedConnection;
 use crate::core::category::{validate_pattern, CategoryTree, KeyKind, MatchKind};
@@ -12,6 +12,41 @@ pub struct Category {
     pub name: String,
     pub color: String,
     pub parent_id: Option<i64>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CategorySuggestion {
+    pub id: i64,
+    pub key_kind: String,
+    pub key: String,
+    pub category_id: i64,
+    pub category_name: String,
+    pub confidence: f32,
+    pub seconds: f64,
+    pub model_version: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeedTaxonomy {
+    pub categories: Vec<SeedCategory>,
+    pub rules: Vec<SeedRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeedCategory {
+    pub name: String,
+    pub color: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeedRule {
+    pub key_kind: String,
+    pub match_kind: String,
+    pub pattern: String,
+    pub category: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -81,7 +116,7 @@ impl CategoryStore {
     pub fn list_categories(&self) -> Result<Vec<Category>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, color, parent_id FROM categories
+            "SELECT id, name, color, parent_id, description FROM categories
              ORDER BY name COLLATE NOCASE, id",
         )?;
         let rows = stmt
@@ -91,16 +126,28 @@ impl CategoryStore {
                     name: row.get(1)?,
                     color: row.get(2)?,
                     parent_id: row.get(3)?,
+                    description: row.get(4)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
+    #[allow(dead_code)]
     pub fn create_category(
         &self,
         name: &str,
         color: &str,
+        parent_id: Option<i64>,
+    ) -> Result<Category> {
+        self.create_category_with_description(name, color, None, parent_id)
+    }
+
+    pub fn create_category_with_description(
+        &self,
+        name: &str,
+        color: &str,
+        description: Option<&str>,
         parent_id: Option<i64>,
     ) -> Result<Category> {
         let conn = self.conn.lock().unwrap();
@@ -108,8 +155,9 @@ impl CategoryStore {
             ensure_exists(&conn, parent_id)?;
         }
         conn.execute(
-            "INSERT INTO categories (name, color, parent_id) VALUES (?1, ?2, ?3)",
-            params![name, color, parent_id],
+            "INSERT INTO categories (name, color, parent_id, description)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![name, color, parent_id, description],
         )
         .map_err(|err| name_clash(err, name, parent_id))?;
         Ok(Category {
@@ -117,14 +165,27 @@ impl CategoryStore {
             name: name.to_string(),
             color: color.to_string(),
             parent_id,
+            description: description.map(str::to_string),
         })
     }
 
+    #[allow(dead_code)]
     pub fn update_category(
         &self,
         id: i64,
         name: &str,
         color: &str,
+        parent_id: Option<i64>,
+    ) -> Result<()> {
+        self.update_category_with_description(id, name, color, None, parent_id)
+    }
+
+    pub fn update_category_with_description(
+        &self,
+        id: i64,
+        name: &str,
+        color: &str,
+        description: Option<&str>,
         parent_id: Option<i64>,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
@@ -138,10 +199,175 @@ impl CategoryStore {
             }
         }
         conn.execute(
-            "UPDATE categories SET name = ?1, color = ?2, parent_id = ?3 WHERE id = ?4",
-            params![name, color, parent_id, id],
+            "UPDATE categories
+             SET name = ?1, color = ?2, description = ?3, parent_id = ?4
+             WHERE id = ?5",
+            params![name, color, description, parent_id, id],
         )
         .map_err(|err| name_clash(err, name, parent_id))?;
+        Ok(())
+    }
+
+    pub fn list_suggestions(&self) -> Result<Vec<CategorySuggestion>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT s.id, s.key_kind, s.key, s.category_id, c.name,
+                    s.confidence, s.seconds, s.model_version, s.created_at
+             FROM category_suggestions s
+             JOIN categories c ON c.id = s.category_id
+             WHERE s.status = 'pending'
+             ORDER BY s.seconds * s.confidence DESC, s.id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(CategorySuggestion {
+                    id: row.get(0)?,
+                    key_kind: row.get(1)?,
+                    key: row.get(2)?,
+                    category_id: row.get(3)?,
+                    category_name: row.get(4)?,
+                    confidence: row.get(5)?,
+                    seconds: row.get(6)?,
+                    model_version: row.get(7)?,
+                    created_at: row.get(8)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    }
+
+    pub fn accept_suggestions(&self, ids: &[i64], override_category: Option<i64>) -> Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        for id in ids {
+            let suggestion: Option<(String, String, i64)> = tx
+                .query_row(
+                    "SELECT key_kind, key, category_id
+                     FROM category_suggestions
+                     WHERE id = ?1 AND status = 'pending'",
+                    params![id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
+            let Some((key_kind, key, suggested_category)) = suggestion else {
+                bail!("category suggestion {id} is no longer pending");
+            };
+            let category_id = override_category.unwrap_or(suggested_category);
+            ensure_exists(&tx, category_id)?;
+            let existing: Option<i64> = tx
+                .query_row(
+                    "SELECT category_id FROM category_rules
+                     WHERE key_kind = ?1 AND match_kind = 'exact' AND pattern = ?2",
+                    params![key_kind, key],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(existing) = existing {
+                if existing != category_id {
+                    bail!(
+                        "an exact rule already exists for {key_kind} {key} with category {existing}"
+                    );
+                }
+            } else {
+                tx.execute(
+                    "INSERT INTO category_rules
+                        (key_kind, pattern, match_kind, category_id)
+                     VALUES (?1, ?2, 'exact', ?3)",
+                    params![key_kind, key, category_id],
+                )?;
+            }
+            tx.execute(
+                "DELETE FROM category_suggestions WHERE id = ?1",
+                params![id],
+            )?;
+        }
+        resolve::resolve_all(&tx)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn dismiss_suggestions(&self, ids: &[i64]) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        for id in ids {
+            tx.execute(
+                "UPDATE category_suggestions SET status = 'dismissed'
+                 WHERE id = ?1 AND status = 'pending'",
+                params![id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn seed_taxonomy_preview(seed_json: &str) -> Result<SeedTaxonomy> {
+        serde_json::from_str(seed_json).context("parsing bundled seed taxonomy")
+    }
+
+    pub fn apply_seed_taxonomy(&self, seed_json: &str) -> Result<()> {
+        let seed = Self::seed_taxonomy_preview(seed_json)?;
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mut category_ids = std::collections::HashMap::new();
+        for category in &seed.categories {
+            let existing: Option<i64> = tx
+                .query_row(
+                    "SELECT id FROM categories WHERE name = ?1 AND parent_id IS NULL",
+                    params![category.name],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let id = if let Some(id) = existing {
+                id
+            } else {
+                tx.execute(
+                    "INSERT INTO categories (name, color, description, parent_id)
+                     VALUES (?1, ?2, ?3, NULL)",
+                    params![category.name, category.color, category.description],
+                )?;
+                tx.last_insert_rowid()
+            };
+            category_ids.insert(category.name.as_str(), id);
+        }
+        for rule in &seed.rules {
+            let key_kind = KeyKind::parse(&rule.key_kind)
+                .ok_or_else(|| anyhow!("invalid seed rule key kind: {}", rule.key_kind))?;
+            let match_kind = MatchKind::parse(&rule.match_kind)
+                .ok_or_else(|| anyhow!("invalid seed rule match kind: {}", rule.match_kind))?;
+            validate_pattern(match_kind, &rule.pattern)?;
+            let category_id = category_ids
+                .get(rule.category.as_str())
+                .copied()
+                .or_else(|| {
+                    tx.query_row(
+                        "SELECT id FROM categories WHERE name = ?1 AND parent_id IS NULL",
+                        params![rule.category],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .ok()
+                    .flatten()
+                })
+                .ok_or_else(|| {
+                    anyhow!("seed rule references unknown category {}", rule.category)
+                })?;
+            tx.execute(
+                "INSERT OR IGNORE INTO category_rules
+                    (key_kind, pattern, match_kind, category_id)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    key_kind.as_str(),
+                    rule.pattern.trim(),
+                    match_kind.as_str(),
+                    category_id
+                ],
+            )?;
+        }
+        resolve::resolve_all(&tx)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1230,5 +1456,107 @@ mod tests {
         assert_eq!(store.list_rules().unwrap().len(), 1);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn accepting_a_suggestion_creates_one_rule_and_resolves_history_once() {
+        let (store, path) = temp_store();
+        let development = store
+            .create_category("Development", "#111111", None)
+            .unwrap();
+        let conn = store.conn.clone();
+        let session = insert_domain_session(
+            &conn,
+            "github.com",
+            "2024-06-15T00:00:00Z",
+            "2024-06-15T00:10:00Z",
+        );
+        conn.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO category_suggestions
+                    (id, key_kind, key, category_id, confidence, seconds, model_version, created_at)
+                 VALUES (1, 'domain', 'github.com', ?1, 0.91, 600.0, 1, '2024-06-15T00:00:00Z')",
+                params![development.id],
+            )
+            .unwrap();
+
+        store.accept_suggestions(&[1], None).unwrap();
+        assert!(store.list_suggestions().unwrap().is_empty());
+        let rule = store
+            .list_rules()
+            .unwrap()
+            .into_iter()
+            .find(|rule| rule.pattern == "github.com")
+            .expect("accepted suggestion should become a rule");
+        assert_eq!(rule.category_id, development.id);
+        let resolved: Option<i64> = conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT rule_category_id FROM sessions WHERE id = ?1",
+                params![session],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(resolved, Some(development.id));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn dismissing_and_reapplying_seed_taxonomy_are_idempotent() {
+        let (store, path) = temp_store();
+        let conn = store.conn.clone();
+        conn.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO categories (id, name, color) VALUES (1, 'Existing', '#111111');
+                 INSERT INTO category_suggestions
+                    (id, key_kind, key, category_id, confidence, seconds, model_version, created_at)
+                VALUES (1, 'exe', 'unknown.exe', 1, 0.8, 10.0, 1, '2024-06-15T00:00:00Z')",
+            )
+            .unwrap();
+        store.dismiss_suggestions(&[1]).unwrap();
+        assert!(store.list_suggestions().unwrap().is_empty());
+        let seed = r##"{
+            "categories": [{"name":"Seed","color":"#222222","description":"A seed"}],
+            "rules": [{"key_kind":"domain","match_kind":"exact","pattern":"example.com","category":"Seed"}]
+        }"##;
+        store.apply_seed_taxonomy(seed).unwrap();
+        store.apply_seed_taxonomy(seed).unwrap();
+        let conn = store.conn.lock().unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM categories WHERE name = 'Seed'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM category_rules WHERE pattern = 'example.com'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn insert_domain_session(conn: &SharedConnection, domain: &str, start: &str, end: &str) -> i64 {
+        let conn = conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO sessions
+                (app_name, exe_path, window_title, category_key, category_key_kind,
+                 start_time, end_time)
+            VALUES ('Chrome', 'chrome', ?1, ?2, 'domain', ?3, ?4)",
+            params![domain, domain, start, end],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
     }
 }

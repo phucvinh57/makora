@@ -11,7 +11,9 @@ pub mod resolve;
 pub mod sqlite;
 pub mod work_sessions;
 
-pub use categories::{Category, CategoryRule, CategoryStore, RecategorizeOutcome};
+pub use categories::{
+    Category, CategoryRule, CategoryStore, CategorySuggestion, RecategorizeOutcome, SeedTaxonomy,
+};
 pub use ignore::{IgnoreRule, IgnoreStore};
 pub use queries::{
     ActivityStats, CategoryFilter, CategorySourceFilter, HistoryReader, SessionFilter, SessionRow,

@@ -24,6 +24,37 @@ export interface Category {
   name: string;
   color: string;
   parent_id: number | null;
+  description: string | null;
+}
+
+export interface CategorySuggestion {
+  id: number;
+  key_kind: "exe" | "domain";
+  key: string;
+  category_id: number;
+  category_name: string;
+  confidence: number;
+  seconds: number;
+  model_version: number;
+  created_at: string;
+}
+
+export interface SeedCategory {
+  name: string;
+  color: string;
+  description: string | null;
+}
+
+export interface SeedRule {
+  key_kind: KeyKind;
+  match_kind: MatchKind;
+  pattern: string;
+  category: string;
+}
+
+export interface SeedTaxonomy {
+  categories: SeedCategory[];
+  rules: SeedRule[];
 }
 
 export type KeyKind = "exe" | "domain" | "url";
@@ -68,6 +99,8 @@ export interface ClassifierStatus {
   schedule: AiCategorizationSchedule;
   next_scheduled_at: string | null;
   confidence_threshold: number;
+  holdout_accuracy: number | null;
+  holdout_sample_count: number;
 }
 
 export type IgnoreKind = "app" | "site";

@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use crate::core::{
     ActivityStats, AiCategorizationSchedule, AiCategorizationService, Category, CategoryFilter,
-    CategoryRule, CategorySourceFilter, CategoryStore, ClassifierStatus, HistoryReader, IgnoreRule,
-    IgnoreStore, RecategorizeOutcome, SessionFilter, SessionRow, WorkSession, WorkSessionStats,
-    WorkSessionStore, WorkSessionUpdate,
+    CategoryRule, CategorySourceFilter, CategoryStore, CategorySuggestion, ClassifierStatus,
+    HistoryReader, IgnoreRule, IgnoreStore, RecategorizeOutcome, SeedTaxonomy, SessionFilter,
+    SessionRow, WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -114,10 +114,11 @@ pub fn create_category(
     categories: State<CategoryStore>,
     name: String,
     color: String,
+    description: Option<String>,
     parent_id: Option<i64>,
 ) -> Result<Category, String> {
     categories
-        .create_category(&name, &color, parent_id)
+        .create_category_with_description(&name, &color, description.as_deref(), parent_id)
         .map_err(|e| e.to_string())
 }
 
@@ -127,16 +128,58 @@ pub fn update_category(
     id: i64,
     name: String,
     color: String,
+    description: Option<String>,
     parent_id: Option<i64>,
 ) -> Result<(), String> {
     categories
-        .update_category(id, &name, &color, parent_id)
+        .update_category_with_description(id, &name, &color, description.as_deref(), parent_id)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn delete_category(categories: State<CategoryStore>, id: i64) -> Result<(), String> {
     categories.delete_category(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_category_suggestions(
+    categories: State<CategoryStore>,
+) -> Result<Vec<CategorySuggestion>, String> {
+    categories.list_suggestions().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn accept_category_suggestions(
+    categories: State<CategoryStore>,
+    ids: Vec<i64>,
+    override_category: Option<i64>,
+) -> Result<(), String> {
+    categories
+        .accept_suggestions(&ids, override_category)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn dismiss_category_suggestions(
+    categories: State<CategoryStore>,
+    ids: Vec<i64>,
+) -> Result<(), String> {
+    categories
+        .dismiss_suggestions(&ids)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn apply_seed_taxonomy(categories: State<CategoryStore>) -> Result<(), String> {
+    categories
+        .apply_seed_taxonomy(include_str!("../resources/seed_taxonomy.json"))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_seed_taxonomy_preview() -> Result<SeedTaxonomy, String> {
+    CategoryStore::seed_taxonomy_preview(include_str!("../resources/seed_taxonomy.json"))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

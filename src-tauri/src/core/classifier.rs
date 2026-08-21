@@ -1,34 +1,39 @@
-//! The intentionally small, local-only activity classifier.  The model is a persisted
-//! TF-IDF vectorizer plus a multinomial Naive Bayes count table; SQLite pins remain the
-//! source of truth and the artifact is only a startup cache.
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::fs;
-use std::path::PathBuf;
+//! Local, review-first categorization based on semantic embeddings of stable activity keys.
+//!
+//! The worker never writes an AI category onto a session. It writes key-level suggestions;
+//! accepting one creates an ordinary exact rule, which makes the decision permanent,
+//! auditable, and useful as future supervision.
+
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
-use rusqlite::{params, OptionalExtension};
-use serde::{Deserialize, Serialize};
+use rusqlite::{params, Connection, OptionalExtension};
 use tracing::{error, info};
-use url::Url;
 
+use super::embed::{Embedder, Model2Vec};
 use super::store::sqlite::SharedConnection;
 
 type CompletionCallback = Arc<dyn Fn() + Send + Sync>;
+type Key = (String, String);
 
-const MIN_EXAMPLES: usize = 5;
-const MAX_VOCABULARY: usize = 4096;
-const VECTOR_VERSION: u32 = 1;
 const DEFAULT_CONFIDENCE_THRESHOLD: f32 = 0.75;
 const MIN_LEAD: f32 = 0.15;
+const SOFTMAX_TEMPERATURE: f32 = 0.05;
 const SCHEDULE_SETTING_KEY: &str = "ai_categorization_schedule";
 const LAST_COMPLETED_SETTING_KEY: &str = "ai_categorization_last_completed_at";
 const CONFIDENCE_THRESHOLD_SETTING_KEY: &str = "ai_categorization_confidence_threshold";
+const MODEL_VERSION_SETTING_KEY: &str = "ai_categorization_model_version";
+const MODEL_ID_SETTING_KEY: &str = "ai_categorization_model_id";
+const CATEGORY_SIGNATURE_SETTING_KEY: &str = "ai_categorization_category_signature";
+const HOLDOUT_ACCURACY_SETTING_KEY: &str = "ai_categorization_holdout_accuracy";
+const HOLDOUT_SAMPLE_COUNT_SETTING_KEY: &str = "ai_categorization_holdout_sample_count";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AiCategorizationSchedule {
     Manual,
@@ -84,7 +89,7 @@ impl Default for ScheduleIntervals {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ClassifierStatus {
     pub state: String,
     pub generation: u64,
@@ -96,27 +101,32 @@ pub struct ClassifierStatus {
     pub schedule: String,
     pub next_scheduled_at: Option<String>,
     pub confidence_threshold: f32,
+    pub holdout_accuracy: Option<f32>,
+    pub holdout_sample_count: usize,
 }
 
 impl ClassifierStatus {
     fn initial(
-        artifact: Option<&Artifact>,
         schedule: AiCategorizationSchedule,
         last_completed_at: Option<String>,
         confidence_threshold: f32,
+        holdout_accuracy: Option<f32>,
+        holdout_sample_count: usize,
         intervals: &ScheduleIntervals,
     ) -> Self {
         Self {
             state: "idle".into(),
             generation: 0,
             update_kind: None,
-            training_example_count: artifact.map_or(0, |model| model.labels.len()),
-            trained_category_count: artifact.map_or(0, |model| model.category_ids.len()),
+            training_example_count: 0,
+            trained_category_count: 0,
             last_completed_at,
             last_error: None,
             schedule: schedule.as_str().into(),
             next_scheduled_at: next_scheduled_at(schedule, intervals),
             confidence_threshold,
+            holdout_accuracy,
+            holdout_sample_count,
         }
     }
 }
@@ -134,39 +144,40 @@ pub struct AiCategorizationService {
     generation: Arc<AtomicU64>,
     status: Arc<Mutex<ClassifierStatus>>,
     intervals: ScheduleIntervals,
+    commit_gate: Arc<Mutex<()>>,
 }
 
 impl AiCategorizationService {
     pub(crate) fn new_with_completion(
         conn: SharedConnection,
-        artifact_path: PathBuf,
         on_completed: CompletionCallback,
     ) -> Result<Self> {
-        Self::new_with_intervals(
-            conn,
-            artifact_path,
-            ScheduleIntervals::default(),
-            on_completed,
-        )
+        Self::new_with_intervals(conn, ScheduleIntervals::default(), on_completed)
     }
 
     fn new_with_intervals(
         conn: SharedConnection,
-        artifact_path: PathBuf,
         intervals: ScheduleIntervals,
         on_completed: CompletionCallback,
     ) -> Result<Self> {
-        let artifact = load_artifact(&artifact_path).ok().flatten();
+        let embedder: Arc<dyn Embedder> = Arc::new(Model2Vec::new()?);
         let schedule = load_schedule(&conn)?;
         let confidence_threshold = load_confidence_threshold(&conn)?;
         let last_completed_at = read_setting(&conn, LAST_COMPLETED_SETTING_KEY)?;
+        let holdout_accuracy = read_setting(&conn, HOLDOUT_ACCURACY_SETTING_KEY)?
+            .and_then(|value| value.parse::<f32>().ok());
+        let holdout_sample_count = read_setting(&conn, HOLDOUT_SAMPLE_COUNT_SETTING_KEY)?
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or_default();
         let (tx, rx) = mpsc::channel();
         let generation = Arc::new(AtomicU64::new(0));
+        let commit_gate = Arc::new(Mutex::new(()));
         let status = Arc::new(Mutex::new(ClassifierStatus::initial(
-            artifact.as_ref(),
             schedule,
             last_completed_at,
             confidence_threshold,
+            holdout_accuracy,
+            holdout_sample_count,
             &intervals,
         )));
         let service = Self {
@@ -175,6 +186,7 @@ impl AiCategorizationService {
             generation: generation.clone(),
             status: status.clone(),
             intervals,
+            commit_gate: commit_gate.clone(),
         };
         std::thread::Builder::new()
             .name("makora-classifier".into())
@@ -182,13 +194,13 @@ impl AiCategorizationService {
                 run_service(
                     ServiceRuntime {
                         conn,
-                        artifact_path,
-                        artifact,
+                        embedder,
                         schedule,
                         confidence_threshold,
                         intervals,
                         generation,
                         status,
+                        commit_gate,
                         on_completed,
                     },
                     rx,
@@ -199,6 +211,7 @@ impl AiCategorizationService {
     }
 
     pub fn run_now(&self) -> Result<()> {
+        let _gate = self.commit_gate.lock().unwrap();
         self.generation.fetch_add(1, Ordering::SeqCst);
         {
             let mut status = self.status.lock().unwrap();
@@ -208,6 +221,7 @@ impl AiCategorizationService {
             status.next_scheduled_at = schedule_from_status(&status)
                 .and_then(|schedule| next_scheduled_at(schedule, &self.intervals));
         }
+        drop(_gate);
         self.tx
             .send(ServiceMessage::Run)
             .context("AI categorization worker is unavailable")
@@ -245,26 +259,26 @@ impl AiCategorizationService {
 
 struct ServiceRuntime {
     conn: SharedConnection,
-    artifact_path: PathBuf,
-    artifact: Option<Artifact>,
+    embedder: Arc<dyn Embedder>,
     schedule: AiCategorizationSchedule,
     confidence_threshold: f32,
     intervals: ScheduleIntervals,
     generation: Arc<AtomicU64>,
     status: Arc<Mutex<ClassifierStatus>>,
+    commit_gate: Arc<Mutex<()>>,
     on_completed: CompletionCallback,
 }
 
 fn run_service(runtime: ServiceRuntime, rx: mpsc::Receiver<ServiceMessage>) {
     let ServiceRuntime {
         conn,
-        artifact_path,
-        mut artifact,
+        embedder,
         mut schedule,
         mut confidence_threshold,
         intervals,
         generation,
         status,
+        commit_gate,
         on_completed,
     } = runtime;
     let mut deadline = schedule
@@ -275,6 +289,7 @@ fn run_service(runtime: ServiceRuntime, rx: mpsc::Receiver<ServiceMessage>) {
             Some(at) => match rx.recv_timeout(at.saturating_duration_since(Instant::now())) {
                 Ok(message) => Some(message),
                 Err(mpsc::RecvTimeoutError::Timeout) => {
+                    let _gate = commit_gate.lock().unwrap();
                     generation.fetch_add(1, Ordering::SeqCst);
                     let mut s = status.lock().unwrap();
                     s.state = "queued".into();
@@ -302,8 +317,6 @@ fn run_service(runtime: ServiceRuntime, rx: mpsc::Receiver<ServiceMessage>) {
                 confidence_threshold = next;
             }
             ServiceMessage::Run => {
-                // Collapse triggers that arrived before work began. Schedule changes still take
-                // effect immediately and the latest generation owns the eventual database write.
                 while let Ok(message) = rx.try_recv() {
                     if let ServiceMessage::SetSchedule(next) = message {
                         schedule = next;
@@ -317,10 +330,10 @@ fn run_service(runtime: ServiceRuntime, rx: mpsc::Receiver<ServiceMessage>) {
                 update_schedule_status(&status, schedule, &intervals);
                 execute_job(
                     &conn,
-                    &artifact_path,
-                    &mut artifact,
+                    embedder.as_ref(),
                     &generation,
                     &status,
+                    &commit_gate,
                     &on_completed,
                     confidence_threshold,
                 );
@@ -331,10 +344,10 @@ fn run_service(runtime: ServiceRuntime, rx: mpsc::Receiver<ServiceMessage>) {
 
 fn execute_job(
     conn: &SharedConnection,
-    artifact_path: &PathBuf,
-    artifact: &mut Option<Artifact>,
+    embedder: &dyn Embedder,
     generation: &AtomicU64,
     status: &Mutex<ClassifierStatus>,
+    commit_gate: &Mutex<()>,
     on_completed: &CompletionCallback,
     confidence_threshold: f32,
 ) {
@@ -348,39 +361,35 @@ fn execute_job(
     }
     let result = update(
         conn,
-        artifact,
+        embedder,
         target,
         generation,
-        artifact_path,
+        commit_gate,
         confidence_threshold,
     );
     let current_generation = generation.load(Ordering::SeqCst);
     let mut s = status.lock().unwrap();
     s.generation = current_generation;
     match result {
-        Ok(UpdateResult::Ready {
+        Ok(UpdateResult::Completed {
             examples,
             categories,
+            holdout_accuracy,
+            holdout_sample_count,
             kind,
+            ..
         }) => complete_job(
             conn,
             &mut s,
-            "ready",
+            if examples > 0 && categories > 0 {
+                "ready"
+            } else {
+                "insufficient_data"
+            },
             examples,
             categories,
-            kind,
-            on_completed,
-        ),
-        Ok(UpdateResult::Insufficient {
-            examples,
-            categories,
-            kind,
-        }) => complete_job(
-            conn,
-            &mut s,
-            "insufficient_data",
-            examples,
-            categories,
+            holdout_accuracy,
+            holdout_sample_count,
             kind,
             on_completed,
         ),
@@ -409,12 +418,15 @@ fn execute_job(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn complete_job(
     conn: &SharedConnection,
     status: &mut ClassifierStatus,
     state: &str,
     examples: usize,
     categories: usize,
+    holdout_accuracy: Option<f32>,
+    holdout_sample_count: usize,
     kind: UpdateKind,
     on_completed: &CompletionCallback,
 ) {
@@ -426,13 +438,27 @@ fn complete_job(
         kind = kind.as_str(),
         "AI categorization job finished"
     );
-    match write_setting(conn, LAST_COMPLETED_SETTING_KEY, &completed_at) {
+    let result = (|| {
+        write_setting(conn, LAST_COMPLETED_SETTING_KEY, &completed_at)?;
+        write_setting(
+            conn,
+            HOLDOUT_SAMPLE_COUNT_SETTING_KEY,
+            &holdout_sample_count.to_string(),
+        )?;
+        if let Some(accuracy) = holdout_accuracy {
+            write_setting(conn, HOLDOUT_ACCURACY_SETTING_KEY, &accuracy.to_string())?;
+        }
+        Ok::<_, anyhow::Error>(())
+    })();
+    match result {
         Ok(()) => {
             status.state = state.into();
             status.update_kind = Some(kind.as_str().into());
             status.training_example_count = examples;
             status.trained_category_count = categories;
             status.last_completed_at = Some(completed_at);
+            status.holdout_accuracy = holdout_accuracy;
+            status.holdout_sample_count = holdout_sample_count;
             on_completed();
         }
         Err(error) => {
@@ -517,49 +543,33 @@ fn load_confidence_threshold(conn: &SharedConnection) -> Result<f32> {
 }
 
 #[derive(Debug, Clone)]
-struct Example {
+struct CategoryInfo {
     id: i64,
+    name: String,
+    description: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct LabeledKey {
     category_id: i64,
-    document: String,
-    source: ExampleSource,
+    weight: f32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExampleSource {
-    Manual,
-    Rule,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct LabelSnapshot {
-    id: i64,
+#[derive(Debug, Clone)]
+struct Candidate {
+    key_kind: String,
+    key: String,
     category_id: i64,
-    document: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Artifact {
-    vectorizer_version: u32,
-    model_version: i64,
-    vocabulary: Vec<String>,
-    idf: Vec<f32>,
-    category_ids: Vec<i64>,
-    class_documents: Vec<f32>,
-    feature_counts: Vec<Vec<f32>>,
-    feature_totals: Vec<f32>,
-    labels: Vec<LabelSnapshot>,
-    incremental_additions: usize,
+    confidence: f32,
+    seconds: f64,
 }
 
 enum UpdateResult {
-    Ready {
+    Completed {
         examples: usize,
         categories: usize,
-        kind: UpdateKind,
-    },
-    Insufficient {
-        examples: usize,
-        categories: usize,
+        holdout_accuracy: Option<f32>,
+        holdout_sample_count: usize,
         kind: UpdateKind,
     },
     Stale,
@@ -582,426 +592,481 @@ impl UpdateKind {
     }
 }
 
+#[derive(Clone)]
+struct CachedEmbedding {
+    doc_hash: String,
+    model_id: String,
+    vector: Vec<f32>,
+}
+
 fn update(
     conn: &SharedConnection,
-    artifact: &mut Option<Artifact>,
+    embedder: &dyn Embedder,
     target: u64,
     generation: &AtomicU64,
-    artifact_path: &PathBuf,
+    commit_gate: &Mutex<()>,
     confidence_threshold: f32,
 ) -> Result<UpdateResult> {
-    let examples = snapshot_examples(conn)?;
-    let (deduped, total_categories) = deduplicate(examples);
-    let eligible = eligible_examples(&deduped);
-    if eligible.is_empty() || eligible_categories(&deduped).len() < 2 {
-        if generation.load(Ordering::SeqCst) != target {
-            return Ok(UpdateResult::Stale);
-        }
-        clear_predictions(conn)?;
-        remove_artifact(artifact_path)?;
-        *artifact = None;
-        return Ok(UpdateResult::Insufficient {
-            examples: deduped.len(),
-            categories: total_categories,
-            kind: UpdateKind::FullRebuild,
-        });
-    }
-
-    let mut model = None;
-    let mut update_kind = UpdateKind::FullRebuild;
-    if let Some(current) = artifact.as_ref() {
-        let eligible_category_ids = eligible_categories(&deduped)
-            .into_iter()
-            .collect::<Vec<_>>();
-        if current.vectorizer_version == VECTOR_VERSION
-            // Incremental fitting cannot add a new class. Rebuild when the eligible class set
-            // changes, including when rule evidence newly reaches the five-example minimum.
-            && current.category_ids == eligible_category_ids
-        {
-            let old: HashMap<i64, (i64, String)> = current
-                .labels
-                .iter()
-                .map(|x| (x.id, (x.category_id, x.document.clone())))
-                .collect();
-            let additions: Vec<_> = eligible
-                .iter()
-                .filter(|x| !old.contains_key(&x.id))
-                .cloned()
-                .collect();
-            let unchanged = old.iter().all(|(id, (category, doc))| {
-                deduped
-                    .iter()
-                    .any(|x| x.id == *id && x.category_id == *category && x.document == *doc)
-            });
-            let tokens = additions
-                .iter()
-                .flat_map(|x| tokenize_document(&x.document))
-                .collect::<Vec<_>>();
-            let oov = tokens
-                .iter()
-                .filter(|term| current.vocabulary.binary_search(term).is_err())
-                .count();
-            if unchanged
-                && !additions.is_empty()
-                && current.incremental_additions + additions.len() <= 100
-                && oov * 5 <= tokens.len().max(1)
+    let documents = {
+        let conn = conn.lock().unwrap();
+        super::keydoc::build(&conn)?
+    };
+    let categories = load_categories(conn)?;
+    let labels = load_labeled_keys(conn)?;
+    let cached = load_cached_embeddings(conn)?;
+    let mut embeddings = HashMap::new();
+    let mut changed = Vec::new();
+    let mut changed_keys = HashSet::new();
+    for document in &documents {
+        let key = (document.key_kind.clone(), document.key.clone());
+        match cached.get(&key) {
+            Some(cached)
+                if cached.doc_hash == document.doc_hash
+                    && cached.model_id == embedder.model_id()
+                    && cached.vector.len() == embedder.dim() =>
             {
-                model = Some(incremental(current.clone(), &additions));
-                update_kind = UpdateKind::Incremental;
-            } else if unchanged && additions.is_empty() {
-                model = Some(current.clone());
-                update_kind = UpdateKind::Cached;
+                embeddings.insert(key, cached.vector.clone());
+            }
+            _ => {
+                changed_keys.insert(key);
+                changed.push(document.clone());
             }
         }
     }
-    let mut model = model.unwrap_or_else(|| fit(&eligible));
-    if !matches!(update_kind, UpdateKind::Cached) {
-        model.model_version = model.model_version.max(0) + 1;
+    if !changed.is_empty() {
+        let texts = changed
+            .iter()
+            .map(|document| document.document.clone())
+            .collect::<Vec<_>>();
+        let vectors = embedder.embed(&texts)?;
+        for (document, vector) in changed.iter().zip(vectors) {
+            embeddings.insert((document.key_kind.clone(), document.key.clone()), vector);
+        }
     }
-    model.labels = deduped
+
+    let category_signature = signature_for_categories(&categories);
+    let previous_model_id = read_setting(conn, MODEL_ID_SETTING_KEY)?;
+    let previous_category_signature = read_setting(conn, CATEGORY_SIGNATURE_SETTING_KEY)?;
+    let kind = if previous_model_id.as_deref() == Some(embedder.model_id())
+        && previous_category_signature.as_deref() == Some(category_signature.as_str())
+        && changed_keys.is_empty()
+    {
+        UpdateKind::Cached
+    } else if previous_model_id.as_deref() == Some(embedder.model_id())
+        && previous_category_signature.as_deref() == Some(category_signature.as_str())
+    {
+        UpdateKind::Incremental
+    } else {
+        UpdateKind::FullRebuild
+    };
+
+    let description_texts = categories
         .iter()
-        .map(|x| LabelSnapshot {
-            id: x.id,
-            category_id: x.category_id,
-            document: x.document.clone(),
+        .map(|category| {
+            format!(
+                "{} {}",
+                category.name,
+                category.description.as_deref().unwrap_or_default()
+            )
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let description_vectors = embedder.embed(&description_texts)?;
+    let description_vectors = categories
+        .iter()
+        .zip(description_vectors)
+        .map(|(category, vector)| (category.id, vector))
+        .collect::<HashMap<_, _>>();
+    let label_vectors = build_label_vectors(
+        &categories,
+        &embeddings,
+        &labels,
+        &description_vectors,
+        None,
+    );
+    let (holdout_accuracy, holdout_sample_count) =
+        evaluate_holdout(&categories, &embeddings, &labels, &description_vectors);
+    let candidates = documents
+        .iter()
+        .filter(|document| !labels.contains_key(&(document.key_kind.clone(), document.key.clone())))
+        .filter_map(|document| {
+            let embedding = embeddings.get(&(document.key_kind.clone(), document.key.clone()))?;
+            let (category_id, confidence) = score_embedding(embedding, &label_vectors)?;
+            (confidence >= confidence_threshold).then_some(Candidate {
+                key_kind: document.key_kind.clone(),
+                key: document.key.clone(),
+                category_id,
+                confidence,
+                seconds: document.seconds,
+            })
+        })
+        .collect::<Vec<_>>();
+    let current_model_version = read_setting(conn, MODEL_VERSION_SETTING_KEY)?
+        .and_then(|value| value.parse::<i64>().ok())
+        .unwrap_or_default();
+    let model_version = current_model_version
+        + if matches!(kind, UpdateKind::Cached) {
+            0
+        } else {
+            1
+        };
+
+    let _gate = commit_gate.lock().unwrap();
     if generation.load(Ordering::SeqCst) != target {
         return Ok(UpdateResult::Stale);
     }
-    score_predictions(conn, &model, confidence_threshold)?;
-    if generation.load(Ordering::SeqCst) != target {
-        return Ok(UpdateResult::Stale);
+    let mut conn = conn.lock().unwrap();
+    let tx = conn.transaction()?;
+    for document in &documents {
+        let key = (document.key_kind.clone(), document.key.clone());
+        if changed_keys.contains(&key) {
+            let vector = embeddings
+                .get(&key)
+                .context("newly embedded key was not returned by the embedder")?;
+            tx.execute(
+                "INSERT INTO key_embeddings (key_kind, key, doc_hash, model_id, vector)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(key_kind, key) DO UPDATE SET
+                    doc_hash = excluded.doc_hash,
+                    model_id = excluded.model_id,
+                    vector = excluded.vector",
+                params![
+                    document.key_kind,
+                    document.key,
+                    document.doc_hash,
+                    embedder.model_id(),
+                    vector_to_blob(vector),
+                ],
+            )?;
+        }
     }
-    persist(artifact_path, &model)?;
-    *artifact = Some(model.clone());
-    Ok(UpdateResult::Ready {
-        examples: eligible.len(),
-        categories: model.category_ids.len(),
-        kind: update_kind,
+    tx.execute(
+        "DELETE FROM category_suggestions WHERE status = 'pending'",
+        [],
+    )?;
+    let dismissed = load_dismissed_keys(&tx)?;
+    for candidate in candidates {
+        if dismissed.contains(&(candidate.key_kind.clone(), candidate.key.clone())) {
+            continue;
+        }
+        tx.execute(
+            "INSERT INTO category_suggestions
+                (key_kind, key, category_id, confidence, seconds, model_version, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                candidate.key_kind,
+                candidate.key,
+                candidate.category_id,
+                candidate.confidence,
+                candidate.seconds,
+                model_version,
+                Utc::now().to_rfc3339(),
+            ],
+        )?;
+    }
+    write_setting_tx(&tx, MODEL_VERSION_SETTING_KEY, &model_version.to_string())?;
+    write_setting_tx(&tx, MODEL_ID_SETTING_KEY, embedder.model_id())?;
+    write_setting_tx(&tx, CATEGORY_SIGNATURE_SETTING_KEY, &category_signature)?;
+    write_setting_tx(
+        &tx,
+        HOLDOUT_SAMPLE_COUNT_SETTING_KEY,
+        &holdout_sample_count.to_string(),
+    )?;
+    if let Some(accuracy) = holdout_accuracy {
+        write_setting_tx(&tx, HOLDOUT_ACCURACY_SETTING_KEY, &accuracy.to_string())?;
+    }
+    tx.commit()?;
+    Ok(UpdateResult::Completed {
+        examples: labels.len(),
+        categories: label_vectors.len(),
+        holdout_accuracy,
+        holdout_sample_count,
+        kind,
     })
 }
 
-fn snapshot_examples(conn: &SharedConnection) -> Result<Vec<Example>> {
-    let conn = conn.lock().unwrap();
-    let mut stmt = conn.prepare(
-        "SELECT id, category_id, rule_category_id, app_name, exe_path, window_title, url
-         FROM sessions
-         WHERE category_id IS NOT NULL OR rule_category_id IS NOT NULL",
+fn write_setting_tx(tx: &rusqlite::Transaction<'_>, key: &str, value: &str) -> Result<()> {
+    tx.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
     )?;
-    let examples = stmt
+    Ok(())
+}
+
+fn load_categories(conn: &SharedConnection) -> Result<Vec<CategoryInfo>> {
+    let conn = conn.lock().unwrap();
+    let mut stmt = conn.prepare("SELECT id, name, description FROM categories ORDER BY id")?;
+    let rows = stmt
         .query_map([], |row| {
-            let manual_category: Option<i64> = row.get(1)?;
-            Ok(Example {
+            Ok(CategoryInfo {
                 id: row.get(0)?,
-                category_id: manual_category.or(row.get(2)?).expect("row is labeled"),
-                document: document(
-                    &row.get::<_, String>(3)?,
-                    &row.get::<_, String>(4)?,
-                    &row.get::<_, String>(5)?,
-                    row.get::<_, Option<String>>(6)?.as_deref(),
-                ),
-                source: if manual_category.is_some() {
-                    ExampleSource::Manual
-                } else {
-                    ExampleSource::Rule
-                },
+                name: row.get(1)?,
+                description: row.get(2)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
-    Ok(examples)
+    Ok(rows)
 }
 
-fn deduplicate(examples: Vec<Example>) -> (Vec<Example>, usize) {
-    let total = examples
-        .iter()
-        .map(|x| x.category_id)
-        .collect::<HashSet<_>>()
-        .len();
-    let mut grouped: BTreeMap<String, Vec<Example>> = BTreeMap::new();
-    for example in examples {
-        grouped
-            .entry(example.document.clone())
-            .or_default()
-            .push(example);
+fn load_labeled_keys(conn: &SharedConnection) -> Result<HashMap<Key, LabeledKey>> {
+    let conn = conn.lock().unwrap();
+    let mut stmt = conn.prepare(
+        "SELECT category_key_kind, category_key, category_id, rule_category_id
+         FROM sessions
+         WHERE category_id IS NOT NULL OR rule_category_id IS NOT NULL",
+    )?;
+    let mut evidence: HashMap<Key, (HashSet<i64>, HashSet<i64>)> = HashMap::new();
+    for row in stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<i64>>(2)?,
+            row.get::<_, Option<i64>>(3)?,
+        ))
+    })? {
+        let (kind, key, manual, rule) = row?;
+        let entry = evidence.entry((kind, key)).or_default();
+        if let Some(category) = manual {
+            entry.0.insert(category);
+        } else if let Some(category) = rule {
+            entry.1.insert(category);
+        }
     }
-    let unique = grouped
-        .into_values()
-        .filter_map(|mut group| {
-            // Pins are authoritative evidence for a document. Rules only participate when
-            // there are no pins; conflicts within the winning source discard the document.
-            let has_manual = group.iter().any(|x| x.source == ExampleSource::Manual);
-            if has_manual {
-                group.retain(|x| x.source == ExampleSource::Manual);
-            }
-            let labels = group.iter().map(|x| x.category_id).collect::<HashSet<_>>();
-            if labels.len() == 1 {
-                group.sort_by_key(|x| x.id);
-                group.into_iter().next()
+    Ok(evidence
+        .into_iter()
+        .filter_map(|(key, (manual, rules))| {
+            if manual.len() == 1 {
+                Some((
+                    key,
+                    LabeledKey {
+                        category_id: *manual.iter().next().unwrap(),
+                        weight: 3.0,
+                    },
+                ))
+            } else if manual.is_empty() && rules.len() == 1 {
+                Some((
+                    key,
+                    LabeledKey {
+                        category_id: *rules.iter().next().unwrap(),
+                        weight: 1.0,
+                    },
+                ))
             } else {
                 None
             }
         })
-        .collect();
-    (unique, total)
+        .collect())
 }
 
-fn eligible_categories(examples: &[Example]) -> BTreeSet<i64> {
-    let mut counts = BTreeMap::new();
-    for x in examples {
-        *counts.entry(x.category_id).or_insert(0usize) += 1;
+fn load_cached_embeddings(conn: &SharedConnection) -> Result<HashMap<Key, CachedEmbedding>> {
+    let conn = conn.lock().unwrap();
+    let mut stmt =
+        conn.prepare("SELECT key_kind, key, doc_hash, model_id, vector FROM key_embeddings")?;
+    let rows = stmt
+        .query_map([], |row| {
+            let bytes: Vec<u8> = row.get(4)?;
+            Ok((
+                (row.get::<_, String>(0)?, row.get::<_, String>(1)?),
+                CachedEmbedding {
+                    doc_hash: row.get(2)?,
+                    model_id: row.get(3)?,
+                    vector: blob_to_vector(&bytes),
+                },
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
+fn load_dismissed_keys(conn: &Connection) -> Result<HashSet<Key>> {
+    let mut stmt =
+        conn.prepare("SELECT key_kind, key FROM category_suggestions WHERE status = 'dismissed'")?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
+fn signature_for_categories(categories: &[CategoryInfo]) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for category in categories {
+        category.id.hash(&mut hasher);
+        category.name.hash(&mut hasher);
+        category.description.hash(&mut hasher);
     }
-    counts
-        .into_iter()
-        .filter_map(|(id, n)| (n >= MIN_EXAMPLES).then_some(id))
-        .collect()
+    format!("{:016x}", hasher.finish())
 }
-fn eligible_examples(examples: &[Example]) -> Vec<Example> {
-    let categories = eligible_categories(examples);
-    examples
+
+fn vector_to_blob(vector: &[f32]) -> Vec<u8> {
+    vector
         .iter()
-        .filter(|x| categories.contains(&x.category_id))
-        .cloned()
+        .flat_map(|value| value.to_le_bytes())
         .collect()
 }
 
-fn fit(examples: &[Example]) -> Artifact {
-    let mut df: BTreeMap<String, usize> = BTreeMap::new();
-    for x in examples {
-        for t in tokenize_document(&x.document)
-            .into_iter()
-            .collect::<BTreeSet<_>>()
-        {
-            *df.entry(t).or_default() += 1;
+fn blob_to_vector(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(4)
+        .map(|chunk| f32::from_le_bytes(chunk.try_into().unwrap()))
+        .collect()
+}
+
+fn normalize(vector: &mut [f32]) {
+    let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for value in vector {
+            *value /= norm;
         }
     }
-    let vocabulary: Vec<String> = df
+}
+
+fn build_label_vectors(
+    categories: &[CategoryInfo],
+    embeddings: &HashMap<Key, Vec<f32>>,
+    labels: &HashMap<Key, LabeledKey>,
+    description_vectors: &HashMap<i64, Vec<f32>>,
+    excluded: Option<&Key>,
+) -> HashMap<i64, Vec<f32>> {
+    let dimension = description_vectors
+        .values()
+        .next()
+        .map(Vec::len)
+        .or_else(|| embeddings.values().next().map(Vec::len))
+        .unwrap_or_default();
+    categories
         .iter()
-        .filter(|(_, n)| **n >= 2)
-        .map(|(term, _)| term.clone())
-        .take(MAX_VOCABULARY)
-        .collect();
-    let idf = vocabulary
-        .iter()
-        .map(|term| {
-            ((examples.len() + 1) as f32 / (*df.get(term).unwrap_or(&0) + 1) as f32).ln() + 1.0
+        .filter_map(|category| {
+            let examples = labels
+                .iter()
+                .filter(|(key, label)| label.category_id == category.id && excluded != Some(key))
+                .filter_map(|(key, label)| embeddings.get(key).map(|vector| (vector, label.weight)))
+                .collect::<Vec<_>>();
+            let n = examples.len() as f32;
+            let mut prototype = vec![0.0; dimension];
+            for (vector, weight) in &examples {
+                for (target, value) in prototype.iter_mut().zip(vector.iter()) {
+                    *target += *value * *weight;
+                }
+            }
+            if n > 0.0 {
+                normalize(&mut prototype);
+            }
+            let description = description_vectors
+                .get(&category.id)
+                .cloned()
+                .unwrap_or_else(|| vec![0.0; dimension]);
+            let mut blended = blend_vectors(&prototype, &description, n);
+            normalize(&mut blended);
+            (blended.iter().any(|value| *value != 0.0)).then_some((category.id, blended))
         })
-        .collect();
-    let category_ids = examples
+        .collect()
+}
+
+fn blend_vectors(prototype: &[f32], description: &[f32], n: f32) -> Vec<f32> {
+    let prototype_weight = n / (n + 3.0);
+    let description_weight = 3.0 / (n + 3.0);
+    prototype
         .iter()
-        .map(|x| x.category_id)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
+        .zip(description.iter())
+        .map(|(prototype, description)| {
+            prototype * prototype_weight + description * description_weight
+        })
+        .collect()
+}
+
+fn score_embedding(
+    embedding: &[f32],
+    label_vectors: &HashMap<i64, Vec<f32>>,
+) -> Option<(i64, f32)> {
+    let mut scores = label_vectors
+        .iter()
+        .map(|(category, vector)| (*category, cosine(embedding, vector)))
         .collect::<Vec<_>>();
-    let mut artifact = Artifact {
-        vectorizer_version: VECTOR_VERSION,
-        model_version: 0,
-        vocabulary,
-        idf,
-        category_ids,
-        class_documents: vec![],
-        feature_counts: vec![],
-        feature_totals: vec![],
-        labels: vec![],
-        incremental_additions: 0,
-    };
-    artifact.class_documents = vec![0.0; artifact.category_ids.len()];
-    artifact.feature_counts =
-        vec![vec![0.0; artifact.vocabulary.len()]; artifact.category_ids.len()];
-    artifact.feature_totals = vec![0.0; artifact.category_ids.len()];
-    incorporate(&mut artifact, examples);
-    artifact
-}
-
-fn incremental(mut artifact: Artifact, additions: &[Example]) -> Artifact {
-    incorporate(&mut artifact, additions);
-    artifact.incremental_additions += additions.len();
-    artifact
-}
-fn incorporate(artifact: &mut Artifact, examples: &[Example]) {
-    for example in examples {
-        if let Ok(class) = artifact.category_ids.binary_search(&example.category_id) {
-            artifact.class_documents[class] += 1.0;
-            let vector = vectorize(&example.document, &artifact.vocabulary, &artifact.idf);
-            for (i, value) in vector {
-                artifact.feature_counts[class][i] += value;
-                artifact.feature_totals[class] += value;
-            }
-        }
-    }
-}
-
-fn score_predictions(
-    conn: &SharedConnection,
-    model: &Artifact,
-    confidence_threshold: f32,
-) -> Result<()> {
-    let candidates = {
-        let conn = conn.lock().unwrap();
-        let mut stmt = conn.prepare("SELECT id, app_name, exe_path, window_title, url FROM sessions WHERE end_time IS NOT NULL AND category_id IS NULL AND rule_category_id IS NULL")?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    document(
-                        &r.get::<_, String>(1)?,
-                        &r.get::<_, String>(2)?,
-                        &r.get::<_, String>(3)?,
-                        r.get::<_, Option<String>>(4)?.as_deref(),
-                    ),
-                ))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        rows
-    };
-    let mut conn = conn.lock().unwrap();
-    let tx = conn.transaction()?;
-    tx.execute("UPDATE sessions SET ml_category_id = NULL, ml_confidence = NULL, ml_model_version = NULL WHERE category_id IS NOT NULL OR rule_category_id IS NOT NULL", [])?;
-    let mut write = tx.prepare("UPDATE sessions SET ml_category_id = ?1, ml_confidence = ?2, ml_model_version = ?3 WHERE id = ?4")?;
-    for (id, doc) in candidates {
-        let result = predict(model, &doc, confidence_threshold);
-        match result {
-            Some((category, confidence)) => {
-                write.execute(params![category, confidence, model.model_version, id])?;
-            }
-            None => {
-                write.execute(params![
-                    Option::<i64>::None,
-                    Option::<f32>::None,
-                    Option::<i64>::None,
-                    id
-                ])?;
-            }
-        }
-    }
-    drop(write);
-    tx.commit()?;
-    Ok(())
-}
-fn clear_predictions(conn: &SharedConnection) -> Result<()> {
-    conn.lock().unwrap().execute("UPDATE sessions SET ml_category_id = NULL, ml_confidence = NULL, ml_model_version = NULL WHERE ml_category_id IS NOT NULL", [])?;
-    Ok(())
-}
-
-fn predict(model: &Artifact, doc: &str, confidence_threshold: f32) -> Option<(i64, f32)> {
-    let vector = vectorize(doc, &model.vocabulary, &model.idf);
-    if vector.is_empty() {
+    scores.sort_by_key(|(category, _)| *category);
+    if scores.is_empty() {
         return None;
     }
-    let total_docs: f32 = model.class_documents.iter().sum();
-    let vocab = model.vocabulary.len() as f32;
-    let mut scores = model
-        .class_documents
-        .iter()
-        .enumerate()
-        .map(|(class, docs)| {
-            let mut score = (*docs / total_docs).ln();
-            for (i, value) in &vector {
-                score += value
-                    * ((model.feature_counts[class][*i] + 1.0)
-                        / (model.feature_totals[class] + vocab))
-                        .ln();
-            }
-            score
-        })
-        .collect::<Vec<_>>();
-    let max = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    for s in &mut scores {
-        *s = (*s - max).exp();
-    }
-    let normalizer: f32 = scores.iter().sum();
-    for s in &mut scores {
-        *s /= normalizer;
-    }
-    let mut ranked = scores.into_iter().enumerate().collect::<Vec<_>>();
-    ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
-    let (class, confidence) = ranked[0];
-    let next = ranked.get(1).map(|x| x.1).unwrap_or(0.0);
-    (confidence >= confidence_threshold && confidence - next >= MIN_LEAD)
-        .then_some((model.category_ids[class], confidence))
-}
-
-fn document(app: &str, exe: &str, title: &str, raw_url: Option<&str>) -> String {
-    let (domain, path) = raw_url
-        .and_then(|x| Url::parse(x).ok())
-        .map(|url| {
-            (
-                url.host_str().unwrap_or_default().to_owned(),
-                url.path().to_owned(),
-            )
-        })
-        .unwrap_or_default();
-    format!("app={app}\u{1f}exe={exe}\u{1f}domain={domain}\u{1f}path={path}\u{1f}title={title}")
-}
-fn tokenize_document(document: &str) -> Vec<String> {
-    document
-        .split('\u{1f}')
-        .flat_map(|field| {
-            let (name, value) = field.split_once('=').unwrap_or(("text", field));
-            let words = value
-                .to_lowercase()
-                .split(|c: char| !c.is_alphanumeric())
-                .filter(|x| !x.is_empty())
-                .map(str::to_owned)
-                .collect::<Vec<_>>();
-            let mut out = words
-                .iter()
-                .map(|w| format!("{name}:{w}"))
-                .collect::<Vec<_>>();
-            out.extend(
-                words
-                    .windows(2)
-                    .map(|p| format!("{name}:{}_{}", p[0], p[1])),
-            );
-            out
-        })
-        .collect()
-}
-fn vectorize(document: &str, vocabulary: &[String], idf: &[f32]) -> Vec<(usize, f32)> {
-    let mut counts = BTreeMap::new();
-    for term in tokenize_document(document) {
-        if let Ok(i) = vocabulary.binary_search(&term) {
-            *counts.entry(i).or_insert(0usize) += 1;
-        }
-    }
-    let mut values = counts
+    let probabilities = softmax(&scores.iter().map(|(_, score)| *score).collect::<Vec<_>>());
+    let mut ranked = scores
         .into_iter()
-        .map(|(i, n)| (i, (1.0 + (n as f32).ln()) * idf[i]))
+        .zip(probabilities)
+        .map(|((category, _), probability)| (category, probability))
         .collect::<Vec<_>>();
-    let norm = values.iter().map(|(_, x)| x * x).sum::<f32>().sqrt();
-    if norm > 0.0 {
-        for (_, x) in &mut values {
-            *x /= norm;
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let (category, confidence) = ranked[0];
+    let next = ranked
+        .get(1)
+        .map(|(_, probability)| *probability)
+        .unwrap_or(0.0);
+    (confidence - next >= MIN_LEAD).then_some((category, confidence))
+}
+
+fn cosine(left: &[f32], right: &[f32]) -> f32 {
+    left.iter().zip(right).map(|(a, b)| a * b).sum()
+}
+
+fn softmax(scores: &[f32]) -> Vec<f32> {
+    if scores.is_empty() {
+        return Vec::new();
+    }
+    let scaled = scores
+        .iter()
+        .map(|score| *score / SOFTMAX_TEMPERATURE)
+        .collect::<Vec<_>>();
+    let max = scaled.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let values = scaled
+        .iter()
+        .map(|score| (*score - max).exp())
+        .collect::<Vec<_>>();
+    let normalizer = values.iter().sum::<f32>();
+    values.into_iter().map(|value| value / normalizer).collect()
+}
+
+fn evaluate_holdout(
+    categories: &[CategoryInfo],
+    embeddings: &HashMap<Key, Vec<f32>>,
+    labels: &HashMap<Key, LabeledKey>,
+    description_vectors: &HashMap<i64, Vec<f32>>,
+) -> (Option<f32>, usize) {
+    let mut correct = 0usize;
+    let mut sample_count = 0usize;
+    for (key, label) in labels {
+        let Some(embedding) = embeddings.get(key) else {
+            continue;
+        };
+        let label_vectors = build_label_vectors(
+            categories,
+            embeddings,
+            labels,
+            description_vectors,
+            Some(key),
+        );
+        let Some(predicted) = best_category(embedding, &label_vectors) else {
+            continue;
+        };
+        sample_count += 1;
+        if predicted == label.category_id {
+            correct += 1;
         }
     }
-    values
+    (
+        if sample_count > 0 {
+            Some(correct as f32 / sample_count as f32)
+        } else {
+            None
+        },
+        sample_count,
+    )
 }
 
-fn load_artifact(path: &PathBuf) -> Result<Option<Artifact>> {
-    match fs::read(path) {
-        Ok(bytes) => Ok(Some(
-            serde_json::from_slice(&bytes).context("reading classifier artifact")?,
-        )),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err.into()),
-    }
-}
-fn persist(path: &PathBuf, artifact: &Artifact) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, serde_json::to_vec(artifact)?)?;
-    fs::rename(tmp, path)?;
-    Ok(())
-}
-
-fn remove_artifact(path: &PathBuf) -> Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
+fn best_category(embedding: &[f32], label_vectors: &HashMap<i64, Vec<f32>>) -> Option<i64> {
+    label_vectors
+        .iter()
+        .map(|(category, vector)| (*category, cosine(embedding, vector)))
+        .max_by(|(left_id, left), (right_id, right)| {
+            left.total_cmp(right).then_with(|| right_id.cmp(left_id))
+        })
+        .map(|(category, _)| category)
 }
 
 #[cfg(test)]
@@ -1009,577 +1074,197 @@ mod tests {
     use super::*;
     use crate::core::store::sqlite::open_connection;
 
-    fn temp_service(
-        schedule: AiCategorizationSchedule,
-        intervals: ScheduleIntervals,
-    ) -> (AiCategorizationService, SharedConnection, PathBuf, PathBuf) {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-            ^ (std::process::id() as u128) << 64;
-        let db_path = std::env::temp_dir().join(format!("makora-ai-service-{unique}.sqlite"));
-        let artifact_path = db_path.with_extension("json");
-        let conn = open_connection(&db_path).unwrap();
-        write_setting(&conn, SCHEDULE_SETTING_KEY, schedule.as_str()).unwrap();
-        let service = AiCategorizationService::new_with_intervals(
-            conn.clone(),
-            artifact_path.clone(),
-            intervals,
-            Arc::new(|| {}),
-        )
-        .unwrap();
-        (service, conn, db_path, artifact_path)
-    }
-
-    fn short_intervals(delay: Duration) -> ScheduleIntervals {
-        ScheduleIntervals {
-            hourly: delay,
-            daily: delay,
-            weekly: delay,
-        }
-    }
-
-    fn wait_for_completion(service: &AiCategorizationService) -> ClassifierStatus {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            let status = service.status();
-            if status.last_completed_at.is_some() {
-                return status;
-            }
-            assert!(Instant::now() < deadline, "AI job did not complete in time");
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    }
-
-    fn wait_for_generation(service: &AiCategorizationService, generation: u64) -> ClassifierStatus {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            let status = service.status();
-            if status.generation >= generation
-                && matches!(
-                    status.state.as_str(),
-                    "ready" | "insufficient_data" | "error"
-                )
-            {
-                return status;
-            }
-            assert!(Instant::now() < deadline, "AI job did not complete in time");
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    }
-
-    fn insert_labeled_session(
-        conn: &SharedConnection,
-        app: &str,
-        title: &str,
-        category_id: Option<i64>,
-        rule_category_id: Option<i64>,
-    ) {
-        conn.lock()
-            .unwrap()
-            .execute(
-                "INSERT INTO sessions (
-                    app_name, exe_path, window_title, category_key, category_key_kind,
-                    start_time, end_time, category_id, rule_category_id
-                 ) VALUES (?1, ?2, ?3, ?2, 'exe', '2024-06-15T00:00:00Z',
-                    '2024-06-15T00:10:00Z', ?4, ?5)",
-                params![
-                    app,
-                    app.to_lowercase(),
-                    title,
-                    category_id,
-                    rule_category_id
-                ],
-            )
-            .unwrap();
+    #[test]
+    fn softmax_temperature_turns_cosine_margin_into_decisive_probabilities() {
+        let probabilities = softmax(&[0.50, 0.45, 0.10]);
+        assert!(probabilities[0] > 0.70);
+        assert!((probabilities.iter().sum::<f32>() - 1.0).abs() < 0.0001);
     }
 
     #[test]
-    fn a_category_named_distraction_is_an_ordinary_training_label() {
-        let (service, conn, db_path, artifact_path) = temp_service(
-            AiCategorizationSchedule::Manual,
-            ScheduleIntervals::default(),
-        );
-        let category_id = {
-            let conn = conn.lock().unwrap();
-            conn.execute(
-                "INSERT INTO categories (name, color) VALUES ('Distraction', '#a1a1aa')",
-                [],
-            )
-            .unwrap();
-            let category_id = conn.last_insert_rowid();
-            conn.execute(
-                "INSERT INTO sessions (
-                    app_name, exe_path, window_title, category_key, category_key_kind,
-                    start_time, end_time, category_id
-                 ) VALUES (
-                    'feed.exe', 'feed.exe', 'Feed', 'feed.exe', 'exe',
-                    '2024-06-15T00:00:00Z', '2024-06-15T00:10:00Z', ?1
-                 )",
-                params![category_id],
-            )
-            .unwrap();
-            category_id
-        };
-
-        let examples = snapshot_examples(&conn).unwrap();
-        assert_eq!(examples.len(), 1);
-        assert_eq!(examples[0].category_id, category_id);
-
-        drop(service);
-        let _ = fs::remove_file(db_path);
-        let _ = fs::remove_file(artifact_path);
+    fn prototype_description_blend_covers_cold_start_and_many_examples() {
+        let prototype = vec![1.0, 0.0];
+        let description = vec![0.0, 1.0];
+        assert_eq!(blend_vectors(&prototype, &description, 0.0), vec![0.0, 1.0]);
+        let one = blend_vectors(&prototype, &description, 1.0);
+        assert!(one[1] > one[0]);
+        let ten = blend_vectors(&prototype, &description, 10.0);
+        assert!(ten[0] > 0.7 && ten[1] < 0.3);
     }
 
     #[test]
-    fn tokenizer_separates_fields_and_generates_bigrams() {
-        let tokens = tokenize_document(&document(
-            "Code",
-            "/usr/bin/code",
-            "Read Rust docs",
-            Some("https://docs.rs/serde"),
+    fn model_embeddings_transfer_github_semantics_to_gitlab() {
+        let model = Model2Vec::new().unwrap();
+        let vectors = model
+            .embed(&[
+                "github software repository source code pull request".to_string(),
+                "gitlab software repository source code merge request".to_string(),
+                "music streaming songs playlist artist".to_string(),
+            ])
+            .unwrap();
+        assert!(cosine(&vectors[0], &vectors[1]) > cosine(&vectors[0], &vectors[2]));
+    }
+
+    #[test]
+    fn rule_and_manual_labels_are_aggregated_per_key_with_manual_weight() {
+        let path = std::env::temp_dir().join(format!(
+            "makora-classifier-labels-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
-        assert!(tokens.contains(&"app:code".into()));
-        assert!(tokens.contains(&"title:read_rust".into()));
-        assert!(tokens.contains(&"domain:docs".into()));
-    }
-    #[test]
-    fn conflicting_documents_are_discarded() {
-        let (rows, _) = deduplicate(vec![
-            Example {
-                id: 1,
-                category_id: 1,
-                document: "same".into(),
-                source: ExampleSource::Manual,
-            },
-            Example {
-                id: 2,
-                category_id: 2,
-                document: "same".into(),
-                source: ExampleSource::Manual,
-            },
-        ]);
-        assert!(rows.is_empty());
-    }
-
-    #[test]
-    fn manual_examples_override_conflicting_rule_examples_for_a_document() {
-        let (rows, _) = deduplicate(vec![
-            Example {
-                id: 1,
-                category_id: 1,
-                document: "same".into(),
-                source: ExampleSource::Rule,
-            },
-            Example {
-                id: 2,
-                category_id: 2,
-                document: "same".into(),
-                source: ExampleSource::Manual,
-            },
-            Example {
-                id: 3,
-                category_id: 2,
-                document: "same".into(),
-                source: ExampleSource::Rule,
-            },
-        ]);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].category_id, 2);
-        assert_eq!(rows[0].source, ExampleSource::Manual);
-    }
-
-    #[test]
-    fn conflicting_rule_only_documents_are_discarded_and_repeats_count_once() {
-        let (conflicted, _) = deduplicate(vec![
-            Example {
-                id: 1,
-                category_id: 1,
-                document: "same".into(),
-                source: ExampleSource::Rule,
-            },
-            Example {
-                id: 2,
-                category_id: 2,
-                document: "same".into(),
-                source: ExampleSource::Rule,
-            },
-        ]);
-        assert!(conflicted.is_empty());
-
-        let (repeated, _) = deduplicate(vec![
-            Example {
-                id: 1,
-                category_id: 1,
-                document: "same".into(),
-                source: ExampleSource::Rule,
-            },
-            Example {
-                id: 2,
-                category_id: 1,
-                document: "same".into(),
-                source: ExampleSource::Rule,
-            },
-        ]);
-        assert_eq!(repeated.len(), 1);
-    }
-
-    #[test]
-    fn confidence_threshold_is_strictly_validated_and_changes_prediction_cutoff() {
-        for threshold in [0.49, 1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            assert!(validate_confidence_threshold(threshold).is_err());
-        }
-        assert!(validate_confidence_threshold(0.50).is_ok());
-        assert!(validate_confidence_threshold(0.99).is_ok());
-
-        let model = Artifact {
-            vectorizer_version: VECTOR_VERSION,
-            model_version: 1,
-            vocabulary: vec!["app:x".into()],
-            idf: vec![1.0],
-            category_ids: vec![1, 2],
-            class_documents: vec![9.0, 1.0],
-            feature_counts: vec![vec![9.0], vec![0.0]],
-            feature_totals: vec![9.0, 0.0],
-            labels: vec![],
-            incremental_additions: 0,
-        };
-        assert_eq!(predict(&model, "app=x", 0.75).map(|x| x.0), Some(1));
-        assert_eq!(predict(&model, "app=x", 0.95), None);
-    }
-
-    #[test]
-    fn rescoring_with_a_new_threshold_clears_predictions_that_no_longer_qualify() {
-        let (service, conn, db_path, artifact_path) = temp_service(
-            AiCategorizationSchedule::Manual,
-            ScheduleIntervals::default(),
-        );
+        let conn = open_connection(&path).unwrap();
         conn.lock()
             .unwrap()
             .execute_batch(
-                "INSERT INTO categories (id, name, color) VALUES
-                    (1, 'One', '#111111'), (2, 'Two', '#222222');",
+                "INSERT INTO categories (id, name, color) VALUES (1, 'Development', '#111111');
+             INSERT INTO sessions
+                (app_name, exe_path, window_title, category_key, category_key_kind,
+                 start_time, end_time, category_id)
+             VALUES ('Chrome', 'chrome', 'GitHub', 'github.com', 'domain',
+                     '2024-01-01T00:00:00Z', '2024-01-01T00:01:00Z', 1);",
             )
             .unwrap();
-        insert_labeled_session(&conn, "x", "candidate", None, None);
-        let candidate = conn.lock().unwrap().last_insert_rowid();
-        let model = Artifact {
-            vectorizer_version: VECTOR_VERSION,
-            model_version: 1,
-            vocabulary: vec!["app:x".into()],
-            idf: vec![1.0],
-            category_ids: vec![1, 2],
-            class_documents: vec![9.0, 1.0],
-            feature_counts: vec![vec![9.0], vec![0.0]],
-            feature_totals: vec![9.0, 0.0],
-            labels: vec![],
-            incremental_additions: 0,
-        };
-
-        score_predictions(&conn, &model, 0.75).unwrap();
-        let predicted: Option<i64> = conn
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT ml_category_id FROM sessions WHERE id = ?1",
-                params![candidate],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(predicted, Some(1));
-
-        score_predictions(&conn, &model, 0.95).unwrap();
-        let predicted: Option<i64> = conn
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT ml_category_id FROM sessions WHERE id = ?1",
-                params![candidate],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(predicted, None);
-
-        drop(service);
-        let _ = fs::remove_file(db_path);
-        let _ = fs::remove_file(artifact_path);
+        let labels = load_labeled_keys(&conn).unwrap();
+        assert_eq!(
+            labels[&(String::from("domain"), String::from("github.com"))].weight,
+            3.0
+        );
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
-    fn saving_confidence_persists_without_queuing_a_run() {
-        let (service, conn, db_path, artifact_path) = temp_service(
-            AiCategorizationSchedule::Manual,
-            ScheduleIntervals::default(),
-        );
-        service.set_confidence_threshold(0.9).unwrap();
-        assert!(service.set_confidence_threshold(f32::NAN).is_err());
-        assert_eq!(service.status().confidence_threshold, 0.9);
-        assert_eq!(service.status().generation, 0);
-        assert_eq!(
-            read_setting(&conn, CONFIDENCE_THRESHOLD_SETTING_KEY)
+    fn running_pipeline_suggests_an_unlabeled_related_domain_without_writing_ml_columns() {
+        let path = std::env::temp_dir().join(format!(
+            "makora-classifier-pipeline-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_deref(),
-            Some("0.9")
-        );
-
-        drop(service);
-        let restarted = AiCategorizationService::new_with_intervals(
+                .as_nanos()
+        ));
+        let conn = open_connection(&path).unwrap();
+        let development = {
+            let conn = conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO categories (name, color, description)
+                 VALUES ('Development', '#111111', 'Software development, source code and repositories')",
+                [],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        };
+        conn.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions
+                    (app_name, exe_path, window_title, category_key, category_key_kind,
+                     start_time, end_time, category_id)
+                 VALUES ('Chrome', 'chrome', 'GitHub source code repository pull request',
+                         'github.com', 'domain', '2024-01-01T00:00:00Z',
+                         '2024-01-01T00:10:00Z', ?1)",
+                params![development],
+            )
+            .unwrap();
+        let candidate = {
+            let conn = conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO sessions
+                    (app_name, exe_path, window_title, category_key, category_key_kind,
+                     start_time, end_time)
+                 VALUES ('Chrome', 'chrome', 'GitLab source code repository merge request',
+                         'gitlab.com', 'domain', '2024-01-01T01:00:00Z',
+                         '2024-01-01T01:10:00Z')",
+                [],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        };
+        let service = AiCategorizationService::new_with_intervals(
             conn.clone(),
-            artifact_path.clone(),
             ScheduleIntervals::default(),
             Arc::new(|| {}),
         )
         .unwrap();
-        assert_eq!(restarted.status().confidence_threshold, 0.9);
-        assert_eq!(restarted.status().generation, 0);
-
-        drop(restarted);
-        let _ = fs::remove_file(db_path);
-        let _ = fs::remove_file(artifact_path);
-    }
-
-    #[test]
-    fn rule_only_examples_train_and_a_newly_eligible_rule_category_rebuilds() {
-        let (service, conn, db_path, artifact_path) = temp_service(
-            AiCategorizationSchedule::Manual,
-            ScheduleIntervals::default(),
-        );
-        let categories = {
-            let conn = conn.lock().unwrap();
-            for name in ["Development", "Music", "Reading"] {
-                conn.execute(
-                    "INSERT INTO categories (name, color) VALUES (?1, '#111111')",
-                    params![name],
-                )
-                .unwrap();
-            }
-            let categories = conn
-                .prepare("SELECT id FROM categories ORDER BY id")
-                .unwrap()
-                .query_map([], |row| row.get::<_, i64>(0))
-                .unwrap()
-                .collect::<rusqlite::Result<Vec<_>>>()
-                .unwrap();
-            categories
-        };
-        for index in 0..5 {
-            insert_labeled_session(
-                &conn,
-                "Code",
-                &format!("rust compiler workspace {index}"),
-                None,
-                Some(categories[0]),
-            );
-            insert_labeled_session(
-                &conn,
-                "Spotify",
-                &format!("music playlist album {index}"),
-                None,
-                Some(categories[1]),
-            );
-        }
-        let examples = snapshot_examples(&conn).unwrap();
-        assert!(examples
-            .iter()
-            .all(|example| example.source == ExampleSource::Rule));
-        insert_labeled_session(&conn, "Code", "rust compiler workspace", None, None);
-        let candidate = conn.lock().unwrap().last_insert_rowid();
-
         service.run_now().unwrap();
-        let first = wait_for_generation(&service, 1);
-        assert_eq!(first.state, "ready");
-        assert_eq!(first.update_kind.as_deref(), Some("full_rebuild"));
-        assert_eq!(first.trained_category_count, 2);
-        let predicted: Option<i64> = conn
-            .lock()
-            .unwrap()
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let status = service.status();
+            if status.last_completed_at.is_some() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "classifier pipeline did not complete"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let db = conn.lock().unwrap();
+        let suggestion: Option<(i64, f32)> = db
+            .query_row(
+                "SELECT id, confidence FROM category_suggestions
+                 WHERE key_kind = 'domain' AND key = 'gitlab.com'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .unwrap();
+        let suggestion_id = suggestion
+            .map(|(id, _)| id)
+            .expect("gitlab should be suggested");
+        let suggestion_category: i64 = db
+            .query_row(
+                "SELECT category_id FROM category_suggestions WHERE id = ?1",
+                params![suggestion_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(suggestion_category, development);
+        assert!(suggestion.unwrap().1 >= DEFAULT_CONFIDENCE_THRESHOLD);
+        let ml_category: Option<i64> = db
             .query_row(
                 "SELECT ml_category_id FROM sessions WHERE id = ?1",
                 params![candidate],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(predicted, Some(categories[0]));
-
-        for index in 0..5 {
-            insert_labeled_session(
-                &conn,
-                "Reader",
-                &format!("book chapter notes {index}"),
-                None,
-                Some(categories[2]),
-            );
-        }
-        service.run_now().unwrap();
-        let second = wait_for_generation(&service, 2);
-        assert_eq!(second.state, "ready");
-        assert_eq!(second.update_kind.as_deref(), Some("full_rebuild"));
-        assert_eq!(second.trained_category_count, 3);
-
-        drop(service);
-        let _ = fs::remove_file(db_path);
-        let _ = fs::remove_file(artifact_path);
-    }
-
-    #[test]
-    fn schedule_values_are_strictly_validated() {
-        assert_eq!(
-            AiCategorizationSchedule::parse("weekly").unwrap(),
-            AiCategorizationSchedule::Weekly
-        );
-        assert!(AiCategorizationSchedule::parse("sometimes").is_err());
-    }
-
-    #[test]
-    fn manual_schedule_never_runs_without_an_explicit_trigger() {
-        let (service, _conn, db_path, artifact_path) = temp_service(
-            AiCategorizationSchedule::Manual,
-            short_intervals(Duration::from_millis(15)),
-        );
-        std::thread::sleep(Duration::from_millis(60));
-
-        let status = service.status();
-        assert_eq!(status.generation, 0);
-        assert_eq!(status.state, "idle");
-        assert_eq!(status.next_scheduled_at, None);
-
-        drop(service);
-        let _ = std::fs::remove_file(db_path);
-        let _ = std::fs::remove_file(artifact_path);
-    }
-
-    #[test]
-    fn enabled_schedule_waits_a_fresh_interval_then_runs_in_the_background() {
-        let delay = Duration::from_millis(80);
-        let (service, conn, db_path, artifact_path) =
-            temp_service(AiCategorizationSchedule::Hourly, short_intervals(delay));
-        write_setting(&conn, LAST_COMPLETED_SETTING_KEY, "2000-01-01T00:00:00Z").unwrap();
-
-        std::thread::sleep(Duration::from_millis(20));
-        assert_eq!(
-            service.status().generation,
-            0,
-            "an overdue persisted completion must not cause startup catch-up"
-        );
-
-        let status = wait_for_completion(&service);
-        assert!(status.generation >= 1);
-        assert_eq!(status.state, "insufficient_data");
-        assert_eq!(status.schedule, "hourly");
-        assert!(status.next_scheduled_at.is_some());
-
-        service
-            .set_schedule(AiCategorizationSchedule::Manual)
-            .unwrap();
-        assert_eq!(
-            read_setting(&conn, SCHEDULE_SETTING_KEY)
-                .unwrap()
-                .as_deref(),
-            Some("manual")
-        );
-        drop(service);
-        let _ = std::fs::remove_file(db_path);
-        let _ = std::fs::remove_file(artifact_path);
-    }
-
-    #[test]
-    fn manual_trigger_is_queued_and_resets_the_automatic_deadline() {
-        let delay = Duration::from_secs(60);
-        let (service, _conn, db_path, artifact_path) =
-            temp_service(AiCategorizationSchedule::Daily, short_intervals(delay));
-        let before = service.status().next_scheduled_at.unwrap();
-        std::thread::sleep(Duration::from_millis(5));
-
-        service.run_now().unwrap();
-        let queued = service.status();
-        assert!(matches!(queued.state.as_str(), "queued" | "running"));
-        assert!(queued.next_scheduled_at.unwrap() >= before);
-        assert_eq!(wait_for_completion(&service).state, "insufficient_data");
-
-        drop(service);
-        let _ = std::fs::remove_file(db_path);
-        let _ = std::fs::remove_file(artifact_path);
-    }
-
-    #[test]
-    fn predictions_are_materialized_only_after_a_manual_background_run() {
-        let (service, conn, db_path, artifact_path) = temp_service(
-            AiCategorizationSchedule::Manual,
-            short_intervals(Duration::from_millis(20)),
-        );
-        let (development, music) = {
-            let conn = conn.lock().unwrap();
-            conn.execute(
-                "INSERT INTO categories (name, color) VALUES ('Development', '#111111')",
-                [],
-            )
-            .unwrap();
-            let development = conn.last_insert_rowid();
-            conn.execute(
-                "INSERT INTO categories (name, color) VALUES ('Music', '#222222')",
-                [],
-            )
-            .unwrap();
-            (development, conn.last_insert_rowid())
-        };
-        for (category, app, title) in [
-            (development, "Code", "rust compiler workspace"),
-            (music, "Spotify", "music playlist album"),
-        ] {
-            for index in 0..5 {
-                conn.lock()
-                    .unwrap()
-                    .execute(
-                        "INSERT INTO sessions (
-                            app_name, exe_path, window_title, category_key,
-                            category_key_kind, start_time, end_time, category_id
-                         ) VALUES (?1, ?2, ?3, ?2, 'exe', ?4, ?5, ?6)",
-                        params![
-                            app,
-                            app.to_lowercase(),
-                            format!("{title} {index}"),
-                            format!("2024-06-15T0{index}:00:00Z"),
-                            format!("2024-06-15T0{index}:10:00Z"),
-                            category,
-                        ],
-                    )
-                    .unwrap();
-            }
-        }
+        assert_eq!(ml_category, None);
+        drop(db);
         conn.lock()
             .unwrap()
             .execute(
-                "INSERT INTO sessions (
-                    app_name, exe_path, window_title, category_key,
-                    category_key_kind, start_time, end_time
-                 ) VALUES (
-                    'Code', 'code', 'rust compiler workspace', 'code', 'exe',
-                    '2024-06-16T00:00:00Z', '2024-06-16T00:10:00Z'
-                 )",
-                [],
+                "UPDATE category_suggestions SET status = 'dismissed' WHERE id = ?1",
+                params![suggestion_id],
             )
             .unwrap();
-        let candidate = conn.lock().unwrap().last_insert_rowid();
-        let predicted_category = || {
-            conn.lock()
-                .unwrap()
-                .query_row(
-                    "SELECT ml_category_id FROM sessions WHERE id = ?1",
-                    params![candidate],
-                    |row| row.get::<_, Option<i64>>(0),
-                )
-                .unwrap()
-        };
-
-        std::thread::sleep(Duration::from_millis(50));
-        assert_eq!(predicted_category(), None);
         service.run_now().unwrap();
-        assert_eq!(wait_for_completion(&service).state, "ready");
-        assert_eq!(predicted_category(), Some(development));
-
+        let second_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let status = service.status();
+            if status.generation >= 2
+                && matches!(status.state.as_str(), "ready" | "insufficient_data")
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < second_deadline,
+                "classifier second pipeline did not complete"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let pending: i64 = conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM category_suggestions WHERE status = 'pending'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, 0);
         drop(service);
-        let _ = std::fs::remove_file(db_path);
-        let _ = std::fs::remove_file(artifact_path);
+        let _ = std::fs::remove_file(path);
     }
 }

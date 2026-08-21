@@ -14,7 +14,6 @@ import {
 } from "@/components/CategoryOptions";
 import type { Category, WorkSession } from "@/types";
 import {
-  AI_SOURCE,
   ALL_CATEGORIES,
   ALL_SOURCES,
   MANUAL_SOURCE,
@@ -95,7 +94,6 @@ export function HistoryHeader({
         items={{
           [ALL_SOURCES]: "All sources",
           [MANUAL_SOURCE]: "Manual",
-          [AI_SOURCE]: "AI",
         }}
       >
         <SelectTrigger size="sm" className="w-32" aria-label="Category source">
@@ -104,7 +102,6 @@ export function HistoryHeader({
         <SelectContent>
           <SelectItem value={ALL_SOURCES}>All sources</SelectItem>
           <SelectItem value={MANUAL_SOURCE}>Manual</SelectItem>
-          <SelectItem value={AI_SOURCE}>AI</SelectItem>
         </SelectContent>
       </Select>
       <TimeRangeFilter
