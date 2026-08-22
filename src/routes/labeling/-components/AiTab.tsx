@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import {
   acceptCategorySuggestions,
   dismissCategorySuggestions,
@@ -43,6 +45,59 @@ function formatTimestamp(value: string | null | undefined) {
 
 function formatState(state: string | undefined) {
   return state?.replaceAll("_", " ") ?? "Loading…";
+}
+
+function externalSuggestionUrl(
+  keyKind: "exe" | "domain" | "url",
+  key: string,
+): string | null {
+  if (keyKind === "exe") return null;
+
+  const value = key.trim();
+  if (!value) return null;
+
+  const candidate = /^[a-z][a-z\d+.-]*:\/\//i.test(value)
+    ? value
+    : `https://${value}`;
+
+  try {
+    const url = new URL(candidate);
+    return url.protocol === "http:" || url.protocol === "https:"
+      ? url.href
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function openSuggestion(url: string) {
+  void openUrl(url).catch((error) => {
+    toast.error("Could not open link", { description: String(error) });
+  });
+}
+
+function SuggestedKey({
+  keyKind,
+  value,
+}: {
+  keyKind: "exe" | "domain" | "url";
+  value: string;
+}) {
+  const url = externalSuggestionUrl(keyKind, value);
+  return url ? (
+    <a
+      href={url}
+      className="block truncate font-medium text-primary underline-offset-4 hover:underline"
+      onClick={(event) => {
+        event.preventDefault();
+        openSuggestion(url);
+      }}
+    >
+      {value}
+    </a>
+  ) : (
+    <div className="truncate font-medium">{value}</div>
+  );
 }
 
 export function AiTab() {
@@ -177,11 +232,6 @@ export function AiTab() {
           <CardTitle>AI categorization</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-4 text-sm">
-          <p className="text-muted-foreground">
-            Uses offline embeddings to suggest rules and label individual
-            sessions for multi-purpose keys. URL paths can graduate into
-            reviewable rules.
-          </p>
           <dl className="grid grid-cols-2 gap-x-6 gap-y-2">
             <dt className="text-muted-foreground">Status</dt>
             <dd className="capitalize">{formatState(status?.state)}</dd>
@@ -429,7 +479,10 @@ export function AiTab() {
                   className="flex flex-wrap items-center gap-2 rounded-lg border p-3"
                 >
                   <div className="min-w-48 flex-1">
-                    <div className="font-medium">{suggestion.key}</div>
+                    <SuggestedKey
+                      keyKind={suggestion.key_kind}
+                      value={suggestion.key}
+                    />
                     <div className="text-xs text-muted-foreground">
                       {suggestion.key_kind} ·{" "}
                       {formatSeconds(suggestion.seconds)} observed ·{" "}

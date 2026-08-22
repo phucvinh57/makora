@@ -32,9 +32,9 @@ function LabelingPage() {
         className="flex min-h-0 flex-1 flex-col"
       >
         <TabsList className="mb-4 self-start">
+          <TabsTrigger value="ai">AI</TabsTrigger>
           <TabsTrigger value="categories">Categories</TabsTrigger>
           <TabsTrigger value="rules">Rules</TabsTrigger>
-          <TabsTrigger value="ai">AI</TabsTrigger>
         </TabsList>
         <TabsContent value="categories" className="flex min-h-0 flex-col">
           <CategoriesTab
