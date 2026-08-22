@@ -103,7 +103,9 @@ mod tests {
             .collect();
         assert_eq!(names.len(), 1, "expected one log file, got {names:?}");
 
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        // tracing-appender names rolling files using UTC; use the same clock so this test does
+        // not depend on the developer's local timezone around midnight.
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
         assert_eq!(
             names[0],
             format!("{LOG_FILE_PREFIX}.{today}.{LOG_FILE_SUFFIX}")

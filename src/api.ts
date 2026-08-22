@@ -15,6 +15,7 @@ import type {
   IgnoreRule,
   KeyKind,
   MatchKind,
+  MultiPurposeKey,
   RecategorizeOutcome,
   SessionsPage,
   SeedTaxonomy,
@@ -117,6 +118,18 @@ export function deleteCategory(id: number): Promise<void> {
 
 export function listCategorySuggestions(): Promise<CategorySuggestion[]> {
   return invoke("list_category_suggestions");
+}
+
+export function listMultiPurposeKeys(): Promise<MultiPurposeKey[]> {
+  return invoke("list_multi_purpose_keys");
+}
+
+export function setMultiPurposeKey(
+  keyKind: "exe" | "domain",
+  key: string,
+  enabled: boolean,
+): Promise<void> {
+  return invoke("set_multi_purpose_key", { keyKind, key, enabled });
 }
 
 export function acceptCategorySuggestions(

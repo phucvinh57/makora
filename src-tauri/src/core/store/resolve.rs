@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -16,6 +18,7 @@ struct StoredSession {
 
 struct ResolutionContext {
     rules: Vec<CompiledRule>,
+    multi_purpose_keys: HashSet<(KeyKind, String)>,
 }
 
 /// Re-derives `rule_category_id` for every session in Rust.
@@ -55,7 +58,11 @@ pub fn resolve_session_category(conn: &Connection, id: i64) -> Result<Option<i64
     Ok(resolve_stored_session(&context, &session))
 }
 
-fn load_context(conn: &Connection) -> Result<ResolutionContext> {
+/// Loads every stored rule in the same specificity order the resolver applies.
+///
+/// The classifier reuses this so a suggestion is judged against the rules that will actually
+/// label the key, globs included, rather than against an exact-pattern lookup.
+pub(crate) fn load_rules(conn: &Connection) -> Result<Vec<CompiledRule>> {
     let mut stmt = conn.prepare(
         "SELECT id, key_kind, pattern, match_kind, category_id
          FROM category_rules",
@@ -71,7 +78,7 @@ fn load_context(conn: &Connection) -> Result<ResolutionContext> {
             ))
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
-    let rules = compile_rules(stored.into_iter().filter_map(
+    Ok(compile_rules(stored.into_iter().filter_map(
         |(id, key_kind, pattern, match_kind, category_id)| {
             Some(RuleSpec {
                 id,
@@ -81,9 +88,28 @@ fn load_context(conn: &Connection) -> Result<ResolutionContext> {
                 category_id,
             })
         },
-    ));
+    )))
+}
 
-    Ok(ResolutionContext { rules })
+fn load_context(conn: &Connection) -> Result<ResolutionContext> {
+    let rules = load_rules(conn)?;
+
+    let mut multi_purpose_keys = HashSet::new();
+    let mut stmt =
+        conn.prepare("SELECT key_kind, key FROM multi_purpose_keys WHERE enabled = 1")?;
+    for row in stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })? {
+        let (key_kind, key) = row?;
+        if let Some(key_kind) = KeyKind::parse(&key_kind) {
+            multi_purpose_keys.insert((key_kind, key));
+        }
+    }
+
+    Ok(ResolutionContext {
+        rules,
+        multi_purpose_keys,
+    })
 }
 
 fn load_sessions(conn: &Connection) -> Result<Vec<StoredSession>> {
@@ -121,12 +147,16 @@ fn stored_session_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredSe
 }
 
 fn resolve_stored_session(context: &ResolutionContext, session: &StoredSession) -> Option<i64> {
+    let multi_purpose = context
+        .multi_purpose_keys
+        .contains(&(session.key_kind, session.key.clone()));
     resolve_category(
         &context.rules,
         &SessionCategoryInput {
             key_kind: session.key_kind,
             key: &session.key,
             url_key: session.url_key.as_deref(),
+            multi_purpose,
         },
     )
 }

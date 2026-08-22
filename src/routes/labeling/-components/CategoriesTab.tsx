@@ -79,6 +79,7 @@ export function CategoriesTab({
     queryClient.invalidateQueries({ queryKey: ["activityStats"] });
     queryClient.invalidateQueries({ queryKey: ["workSessionStats"] });
     queryClient.invalidateQueries({ queryKey: ["categorySuggestions"] });
+    queryClient.invalidateQueries({ queryKey: ["multiPurposeKeys"] });
     queryClient.invalidateQueries({ queryKey: ["classifierStatus"] });
   }
 
@@ -179,6 +180,15 @@ export function CategoriesTab({
       <div className="mb-4 flex justify-end">
         <Button
           size="sm"
+          variant="outline"
+          className="mr-2"
+          onClick={() => applySeedMutation.mutate()}
+          disabled={applySeedMutation.isPending}
+        >
+          Apply starter taxonomy
+        </Button>
+        <Button
+          size="sm"
           onClick={() => {
             setNewParentId(null);
             setNewColor(DEFAULT_COLOR);
@@ -193,14 +203,9 @@ export function CategoriesTab({
       <div className="flex-1 overflow-y-auto subtle-scrollbar">
         {!loading && categories.length === 0 && (
           <div className="flex flex-col items-start gap-2 text-sm text-muted-foreground">
-            <p>No categories yet. Start with a small starter taxonomy.</p>
-            <Button
-              variant="outline"
-              onClick={() => applySeedMutation.mutate()}
-              disabled={applySeedMutation.isPending}
-            >
-              Apply starter taxonomy
-            </Button>
+            <p>
+              No categories yet. Use “Apply starter taxonomy” above to begin.
+            </p>
           </div>
         )}
         <div className="flex flex-col gap-3">

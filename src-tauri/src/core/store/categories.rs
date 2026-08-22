@@ -32,6 +32,8 @@ pub struct CategorySuggestion {
 pub struct SeedTaxonomy {
     pub categories: Vec<SeedCategory>,
     pub rules: Vec<SeedRule>,
+    #[serde(default)]
+    pub multi_purpose: Vec<SeedMultiPurposeKey>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,6 +41,14 @@ pub struct SeedCategory {
     pub name: String,
     pub color: String,
     pub description: Option<String>,
+    #[serde(default)]
+    pub children: Vec<SeedCategory>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SeedMultiPurposeKey {
+    pub key_kind: String,
+    pub key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +66,17 @@ pub struct CategoryRule {
     pub pattern: String,
     pub match_kind: String,
     pub category_id: i64,
+    pub inactive: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MultiPurposeKey {
+    pub key_kind: String,
+    pub key: String,
+    pub source: String,
+    pub enabled: bool,
+    pub top_share: Option<f32>,
+    pub detected_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -98,12 +119,64 @@ fn ensure_exists(conn: &rusqlite::Connection, category_id: i64) -> Result<()> {
     Ok(())
 }
 
+fn bump_classifier_input_revision(conn: &rusqlite::Connection) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value)
+         VALUES ('ai_categorization_input_revision', '0')",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE settings
+         SET value = CAST(value AS INTEGER) + 1
+         WHERE key = 'ai_categorization_input_revision'",
+        [],
+    )?;
+    Ok(())
+}
+
 pub(super) fn load_category_tree(conn: &rusqlite::Connection) -> Result<CategoryTree> {
     let mut stmt = conn.prepare("SELECT id, parent_id FROM categories")?;
     let categories = stmt
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(CategoryTree::new(categories))
+}
+
+fn insert_seed_category(
+    tx: &rusqlite::Transaction<'_>,
+    category: &SeedCategory,
+    parent_id: Option<i64>,
+    category_ids: &mut std::collections::HashMap<String, i64>,
+) -> Result<()> {
+    let existing: Option<i64> = tx
+        .query_row(
+            "SELECT id FROM categories WHERE name = ?1 AND parent_id IS ?2",
+            params![category.name, parent_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let id = if let Some(id) = existing {
+        id
+    } else {
+        tx.execute(
+            "INSERT INTO categories (name, color, description, parent_id)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                category.name,
+                category.color,
+                category.description,
+                parent_id
+            ],
+        )?;
+        tx.last_insert_rowid()
+    };
+    if category_ids.insert(category.name.clone(), id).is_some() {
+        bail!("seed category name is ambiguous: {}", category.name);
+    }
+    for child in &category.children {
+        insert_seed_category(tx, child, Some(id), category_ids)?;
+    }
+    Ok(())
 }
 
 impl CategoryStore {
@@ -160,6 +233,7 @@ impl CategoryStore {
             params![name, color, parent_id, description],
         )
         .map_err(|err| name_clash(err, name, parent_id))?;
+        bump_classifier_input_revision(&conn)?;
         Ok(Category {
             id: conn.last_insert_rowid(),
             name: name.to_string(),
@@ -205,6 +279,7 @@ impl CategoryStore {
             params![name, color, description, parent_id, id],
         )
         .map_err(|err| name_clash(err, name, parent_id))?;
+        bump_classifier_input_revision(&conn)?;
         Ok(())
     }
 
@@ -236,6 +311,65 @@ impl CategoryStore {
         Ok(rows)
     }
 
+    pub fn list_multi_purpose_keys(&self) -> Result<Vec<MultiPurposeKey>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT key_kind, key, source, enabled, top_share, detected_at
+             FROM multi_purpose_keys
+             ORDER BY key_kind, key",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(MultiPurposeKey {
+                    key_kind: row.get(0)?,
+                    key: row.get(1)?,
+                    source: row.get(2)?,
+                    enabled: row.get::<_, i64>(3)? != 0,
+                    top_share: row.get(4)?,
+                    detected_at: row.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn set_multi_purpose_key(&self, key_kind: &str, key: &str, enabled: bool) -> Result<()> {
+        let key_kind = KeyKind::parse(key_kind)
+            .filter(|kind| matches!(kind, KeyKind::Exe | KeyKind::Domain))
+            .ok_or_else(|| anyhow!("multi-purpose keys must be exe or domain"))?;
+        let key = key.trim().to_ascii_lowercase();
+        if key.is_empty() {
+            bail!("multi-purpose key must not be empty");
+        }
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "INSERT INTO multi_purpose_keys (key_kind, key, source, enabled)
+             VALUES (?1, ?2, 'user', ?3)
+             ON CONFLICT(key_kind, key) DO UPDATE SET
+                source = 'user', enabled = excluded.enabled",
+            params![key_kind.as_str(), key, enabled as i64],
+        )?;
+        tx.execute(
+            "UPDATE sessions
+             SET ml_category_id = NULL, ml_confidence = NULL, ml_model_version = NULL
+             WHERE category_key_kind = ?1 AND category_key = ?2",
+            params![key_kind.as_str(), key],
+        )?;
+        if enabled {
+            tx.execute(
+                "DELETE FROM category_suggestions
+                 WHERE status = 'pending' AND key_kind = ?1 AND key = ?2",
+                params![key_kind.as_str(), key],
+            )?;
+        }
+        bump_classifier_input_revision(&tx)?;
+        resolve::resolve_all(&tx)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn accept_suggestions(&self, ids: &[i64], override_category: Option<i64>) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
@@ -257,33 +391,22 @@ impl CategoryStore {
             };
             let category_id = override_category.unwrap_or(suggested_category);
             ensure_exists(&tx, category_id)?;
-            let existing: Option<i64> = tx
-                .query_row(
-                    "SELECT category_id FROM category_rules
-                     WHERE key_kind = ?1 AND match_kind = 'exact' AND pattern = ?2",
-                    params![key_kind, key],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            if let Some(existing) = existing {
-                if existing != category_id {
-                    bail!(
-                        "an exact rule already exists for {key_kind} {key} with category {existing}"
-                    );
-                }
-            } else {
-                tx.execute(
-                    "INSERT INTO category_rules
-                        (key_kind, pattern, match_kind, category_id)
-                     VALUES (?1, ?2, 'exact', ?3)",
-                    params![key_kind, key, category_id],
-                )?;
-            }
+            // Accepting is idempotent: an exact rule for the same key is retargeted rather than
+            // rejected, so a suggestion that reappears for an already-ruled key stays actionable.
+            tx.execute(
+                "INSERT INTO category_rules
+                    (key_kind, pattern, match_kind, category_id)
+                 VALUES (?1, ?2, 'exact', ?3)
+                 ON CONFLICT(key_kind, match_kind, pattern) DO UPDATE SET
+                    category_id = excluded.category_id",
+                params![key_kind, key, category_id],
+            )?;
             tx.execute(
                 "DELETE FROM category_suggestions WHERE id = ?1",
                 params![id],
             )?;
         }
+        bump_classifier_input_revision(&tx)?;
         resolve::resolve_all(&tx)?;
         tx.commit()?;
         Ok(())
@@ -313,24 +436,7 @@ impl CategoryStore {
         let tx = conn.transaction()?;
         let mut category_ids = std::collections::HashMap::new();
         for category in &seed.categories {
-            let existing: Option<i64> = tx
-                .query_row(
-                    "SELECT id FROM categories WHERE name = ?1 AND parent_id IS NULL",
-                    params![category.name],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let id = if let Some(id) = existing {
-                id
-            } else {
-                tx.execute(
-                    "INSERT INTO categories (name, color, description, parent_id)
-                     VALUES (?1, ?2, ?3, NULL)",
-                    params![category.name, category.color, category.description],
-                )?;
-                tx.last_insert_rowid()
-            };
-            category_ids.insert(category.name.as_str(), id);
+            insert_seed_category(&tx, category, None, &mut category_ids)?;
         }
         for rule in &seed.rules {
             let key_kind = KeyKind::parse(&rule.key_kind)
@@ -341,16 +447,6 @@ impl CategoryStore {
             let category_id = category_ids
                 .get(rule.category.as_str())
                 .copied()
-                .or_else(|| {
-                    tx.query_row(
-                        "SELECT id FROM categories WHERE name = ?1 AND parent_id IS NULL",
-                        params![rule.category],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .ok()
-                    .flatten()
-                })
                 .ok_or_else(|| {
                     anyhow!("seed rule references unknown category {}", rule.category)
                 })?;
@@ -366,6 +462,23 @@ impl CategoryStore {
                 ],
             )?;
         }
+        for multi_purpose in &seed.multi_purpose {
+            let key_kind = KeyKind::parse(&multi_purpose.key_kind)
+                .filter(|kind| matches!(kind, KeyKind::Exe | KeyKind::Domain))
+                .ok_or_else(|| {
+                    anyhow!("invalid multi-purpose key kind: {}", multi_purpose.key_kind)
+                })?;
+            let key = multi_purpose.key.trim().to_ascii_lowercase();
+            if key.is_empty() {
+                bail!("seed multi-purpose key must not be empty");
+            }
+            tx.execute(
+                "INSERT OR IGNORE INTO multi_purpose_keys (key_kind, key, source, enabled)
+                 VALUES (?1, ?2, 'seed', 1)",
+                params![key_kind.as_str(), key],
+            )?;
+        }
+        bump_classifier_input_revision(&tx)?;
         resolve::resolve_all(&tx)?;
         tx.commit()?;
         Ok(())
@@ -404,6 +517,7 @@ impl CategoryStore {
             )?;
             tx.execute("DELETE FROM categories WHERE id = ?1", params![category_id])?;
         }
+        bump_classifier_input_revision(&tx)?;
         // The branch's rules went with it, so rows they used to claim may now match a
         // different rule or become uncategorized.
         resolve::resolve_all(&tx)?;
@@ -414,7 +528,13 @@ impl CategoryStore {
     pub fn list_rules(&self) -> Result<Vec<CategoryRule>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, key_kind, pattern, match_kind, category_id FROM category_rules ORDER BY key_kind, pattern",
+            "SELECT r.id, r.key_kind, r.pattern, r.match_kind, r.category_id,
+                    CASE WHEN r.match_kind = 'exact' AND r.key_kind IN ('exe', 'domain')
+                              AND m.key IS NOT NULL THEN 1 ELSE 0 END
+             FROM category_rules r
+             LEFT JOIN multi_purpose_keys m
+               ON m.key_kind = r.key_kind AND m.key = r.pattern AND m.enabled = 1
+             ORDER BY r.key_kind, r.pattern",
         )?;
         let rows = stmt
             .query_map([], |row| {
@@ -424,6 +544,7 @@ impl CategoryStore {
                     pattern: row.get(2)?,
                     match_kind: row.get(3)?,
                     category_id: row.get(4)?,
+                    inactive: row.get::<_, i64>(5)? != 0,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -454,6 +575,7 @@ impl CategoryStore {
             params![key_kind, pattern, kind.as_str(), category_id],
         )?;
         let id = tx.last_insert_rowid();
+        bump_classifier_input_revision(&tx)?;
         resolve::resolve_all(&tx)?;
         tx.commit()?;
         Ok(CategoryRule {
@@ -462,6 +584,7 @@ impl CategoryStore {
             pattern: pattern.to_string(),
             match_kind: kind.as_str().to_string(),
             category_id,
+            inactive: false,
         })
     }
 
@@ -469,6 +592,7 @@ impl CategoryStore {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM category_rules WHERE id = ?1", params![id])?;
+        bump_classifier_input_revision(&tx)?;
         resolve::resolve_all(&tx)?;
         tx.commit()?;
         Ok(())
@@ -484,6 +608,7 @@ impl CategoryStore {
              WHERE id = ?2",
             params![category_id, session_id],
         )?;
+        bump_classifier_input_revision(&self.conn.lock().unwrap())?;
         Ok(())
     }
 
@@ -501,6 +626,7 @@ impl CategoryStore {
                 params![category_id, session_id],
             )?;
         }
+        bump_classifier_input_revision(&tx)?;
         tx.commit()?;
         Ok(())
     }
@@ -520,6 +646,7 @@ impl CategoryStore {
             "UPDATE sessions SET ml_category_id = NULL, ml_confidence = NULL, ml_model_version = NULL WHERE ml_category_id IS NOT NULL",
             [],
         )?;
+        bump_classifier_input_revision(&tx)?;
         let rows_resolved = resolve::resolve_all(&tx)?;
         tx.commit()?;
         Ok(RecategorizeOutcome {
@@ -1504,6 +1631,53 @@ mod tests {
     }
 
     #[test]
+    fn accepting_a_suggestion_retargets_an_existing_exact_rule() {
+        let (store, path) = temp_store();
+        let social = store.create_category("Social", "#111111", None).unwrap();
+        let general = store.create_category("General", "#222222", None).unwrap();
+        store
+            .create_rule("domain", "facebook.com", "exact", social.id)
+            .unwrap();
+        let conn = store.conn.clone();
+        let session = insert_domain_session(
+            &conn,
+            "facebook.com",
+            "2024-06-15T00:00:00Z",
+            "2024-06-15T00:10:00Z",
+        );
+        conn.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO category_suggestions
+                    (id, key_kind, key, category_id, confidence, seconds, model_version, created_at)
+                 VALUES (1, 'domain', 'facebook.com', ?1, 0.77, 600.0, 1, '2024-06-15T00:00:00Z')",
+                params![general.id],
+            )
+            .unwrap();
+
+        store.accept_suggestions(&[1], None).unwrap();
+        let rules = store
+            .list_rules()
+            .unwrap()
+            .into_iter()
+            .filter(|rule| rule.pattern == "facebook.com")
+            .collect::<Vec<_>>();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].category_id, general.id);
+        let resolved: Option<i64> = conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT rule_category_id FROM sessions WHERE id = ?1",
+                params![session],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(resolved, Some(general.id));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn dismissing_and_reapplying_seed_taxonomy_are_idempotent() {
         let (store, path) = temp_store();
         let conn = store.conn.clone();
@@ -1544,6 +1718,133 @@ mod tests {
             1
         );
         drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn multi_purpose_toggle_replays_rules_and_marks_exact_rules_inactive() {
+        let (store, path) = temp_store();
+        let category = store.create_category("Media", "#111111", None).unwrap();
+        store
+            .create_rule("domain", "youtube.com", "exact", category.id)
+            .unwrap();
+        let session = insert_browser_session(
+            &store.conn,
+            "https://youtube.com/watch",
+            "2024-06-15T00:00:00Z",
+        );
+        let rule_category: Option<i64> = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT rule_category_id FROM sessions WHERE id = ?1",
+                params![session],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rule_category, Some(category.id));
+
+        store
+            .set_multi_purpose_key("domain", "youtube.com", true)
+            .unwrap();
+        let rule_category: Option<i64> = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT rule_category_id FROM sessions WHERE id = ?1",
+                params![session],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rule_category, None);
+        assert!(
+            store
+                .list_rules()
+                .unwrap()
+                .into_iter()
+                .find(|rule| rule.pattern == "youtube.com")
+                .unwrap()
+                .inactive
+        );
+
+        store
+            .set_multi_purpose_key("domain", "youtube.com", false)
+            .unwrap();
+        let rule_category: Option<i64> = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT rule_category_id FROM sessions WHERE id = ?1",
+                params![session],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rule_category, Some(category.id));
+        assert!(
+            !store
+                .list_rules()
+                .unwrap()
+                .into_iter()
+                .find(|rule| rule.pattern == "youtube.com")
+                .unwrap()
+                .inactive
+        );
+        let veto: (String, i64) = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT source, enabled FROM multi_purpose_keys WHERE key = 'youtube.com'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(veto, ("user".into(), 0));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn nested_seed_taxonomy_is_idempotent_and_targets_leaf_rules() {
+        let (store, path) = temp_store();
+        let seed = r##"{
+            "categories": [{
+                "name": "Learning", "color": "#111111", "description": "Root",
+                "children": [{"name":"Courses","color":"#222222","description":"Leaf"}]
+            }],
+            "rules": [{"key_kind":"domain","match_kind":"exact","pattern":"courses.example","category":"Courses"}],
+            "multi_purpose": [{"key_kind":"domain","key":"mixed.example"}]
+        }"##;
+        store.apply_seed_taxonomy(seed).unwrap();
+        store.apply_seed_taxonomy(seed).unwrap();
+        let categories = store.list_categories().unwrap();
+        let parent = categories
+            .iter()
+            .find(|category| category.name == "Learning")
+            .unwrap();
+        let child = categories
+            .iter()
+            .find(|category| category.name == "Courses")
+            .unwrap();
+        assert_eq!(child.parent_id, Some(parent.id));
+        assert_eq!(
+            categories
+                .iter()
+                .filter(|category| category.name == "Courses")
+                .count(),
+            1
+        );
+        assert_eq!(store.list_rules().unwrap().len(), 1);
+        let multi = store.list_multi_purpose_keys().unwrap();
+        assert_eq!(
+            multi
+                .iter()
+                .filter(|key| key.key == "mixed.example")
+                .count(),
+            1
+        );
         let _ = std::fs::remove_file(path);
     }
 

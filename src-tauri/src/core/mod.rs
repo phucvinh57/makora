@@ -14,9 +14,9 @@ pub use model::{BrowserKind, TabEvent, WatchEvent};
 pub use platform::PlatformFocusWatcher;
 pub use store::{
     open_connection, ActivityStats, Category, CategoryFilter, CategoryRule, CategorySourceFilter,
-    CategoryStore, CategorySuggestion, HistoryReader, IgnoreRule, IgnoreStore, RecategorizeOutcome,
-    SeedTaxonomy, SessionFilter, SessionRow, SessionStore, SqliteStore, WorkSession,
-    WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
+    CategoryStore, CategorySuggestion, HistoryReader, IgnoreRule, IgnoreStore, MultiPurposeKey,
+    RecategorizeOutcome, SeedTaxonomy, SessionFilter, SessionRow, SessionStore, SqliteStore,
+    WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
 };
 pub use tracker::SessionTracker;
 pub use watcher::FocusWatcher;

@@ -1,71 +1,116 @@
 {
   "categories": [
-    { "name": "Development", "color": "#3b82f6", "description": "Writing, reviewing and debugging software." },
-    { "name": "Work", "color": "#8b5cf6", "description": "Professional communication, planning and business work." },
-    { "name": "Learning", "color": "#14b8a6", "description": "Courses, documentation, study and research." },
-    { "name": "Communication", "color": "#06b6d4", "description": "Email, chat, meetings and collaboration with people." },
-    { "name": "Finance", "color": "#22c55e", "description": "Banking, payments, shopping and personal finance." },
-    { "name": "Media", "color": "#f59e0b", "description": "Music, video, streaming and entertainment." },
-    { "name": "Social", "color": "#ec4899", "description": "Social networks, communities and forums." },
-    { "name": "System", "color": "#64748b", "description": "Operating system tools, utilities and device settings." }
+    {
+      "name": "Development",
+      "color": "#3b82f6",
+      "description": "Building software: source code, programming languages, pull requests, tests, debugging, deployments and engineering systems.",
+      "children": [
+        { "name": "Coding", "color": "#60a5fa", "description": "Writing and editing source code, functions, classes, scripts, tests and configuration in an IDE or terminal." },
+        { "name": "Code Review", "color": "#2563eb", "description": "Reading diffs, pull requests, merge requests, comments, approvals, issues and repository collaboration." },
+        { "name": "Technical Docs", "color": "#1d4ed8", "description": "Programming documentation, API references, language guides, package manuals, Stack Overflow answers and technical specifications." },
+        { "name": "Infrastructure", "color": "#1e40af", "description": "Servers, cloud consoles, containers, CI pipelines, observability, networking, terminals, shells and deployment operations." }
+      ]
+    },
+    {
+      "name": "Work",
+      "color": "#8b5cf6",
+      "description": "Professional work organized around planning, documents, design, meetings, email, chat, projects and team collaboration.",
+      "children": [
+        { "name": "Planning & Tasks", "color": "#a78bfa", "description": "Task lists, sprint planning, project boards, calendars, priorities, roadmaps, tickets and personal work planning." },
+        { "name": "Documents", "color": "#7c3aed", "description": "Writing, editing and reviewing reports, spreadsheets, presentations, notes, briefs, forms and shared work documents." },
+        { "name": "Design", "color": "#6d28d9", "description": "Interface design, wireframes, prototypes, visual layouts, product mockups, assets and design-system work." },
+        { "name": "Meetings", "color": "#5b21b6", "description": "Video calls, meeting rooms, agendas, interviews, workshops, presentations and live collaboration sessions." },
+        { "name": "Email & Chat", "color": "#4c1d95", "description": "Email inboxes, direct messages, team channels, workplace conversations, notifications and asynchronous coordination." }
+      ]
+    },
+    {
+      "name": "Learning",
+      "color": "#14b8a6",
+      "description": "Deliberate learning through courses, lectures, tutorials, talks, reading, documentation, exercises, assignments and research.",
+      "children": [
+        { "name": "Online Courses", "color": "#2dd4bf", "description": "Lecture modules, chapters, lessons, exercises, assignments, quizzes, syllabus material and certificates in an online course." },
+        { "name": "Tutorials & Talks", "color": "#0d9488", "description": "Tutorials, conference talks, walkthroughs, demonstrations, how-to lessons, explanations and instructional videos." },
+        { "name": "Reading & Research", "color": "#0f766e", "description": "Books, articles, papers, abstracts, references, browsing, literature review, research notes and scholarly investigation." }
+      ]
+    },
+    {
+      "name": "Entertainment",
+      "color": "#f59e0b",
+      "description": "Leisure media and feeds: videos, streams, games, music, podcasts, creators, live broadcasts and social browsing.",
+      "children": [
+        { "name": "Video & Streaming", "color": "#fbbf24", "description": "Movies, shows, entertainment videos, trailers, clips, subscriptions, playback and on-demand streaming." },
+        { "name": "Game Streaming", "color": "#d97706", "description": "Live gameplay, esports, game streams, speedruns, streamers, gaming broadcasts and interactive game content." },
+        { "name": "Music & Audio", "color": "#b45309", "description": "Songs, albums, playlists, artists, radio, podcasts, audio listening and music discovery." },
+        { "name": "Social Feeds", "color": "#92400e", "description": "Scrolling timelines, posts, comments, communities, reactions, creators, forums and casual social browsing." }
+      ]
+    },
+    {
+      "name": "News",
+      "color": "#ef4444",
+      "description": "Current events, journalism, headlines, politics, business news, technology news and reporting from news publishers."
+    },
+    {
+      "name": "Personal",
+      "color": "#22c55e",
+      "description": "Personal administration and everyday life: money, shopping, health, appointments, travel and logistics.",
+      "children": [
+        { "name": "Finance & Shopping", "color": "#4ade80", "description": "Banking, payments, invoices, budgets, investing, purchases, stores, orders, carts and personal finance." },
+        { "name": "Health", "color": "#16a34a", "description": "Medical information, health services, appointments, exercise, nutrition, wellness and personal care." },
+        { "name": "Travel", "color": "#15803d", "description": "Flights, hotels, maps, routes, destinations, reservations, itineraries and travel planning." }
+      ]
+    },
+    {
+      "name": "System",
+      "color": "#64748b",
+      "description": "Operating-system tools, utilities, device settings, file management, launchers, permissions and maintenance."
+    }
   ],
   "rules": [
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "github.com", "category": "Development" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "gitlab.com", "category": "Development" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "bitbucket.org", "category": "Development" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "stackoverflow.com", "category": "Development" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "npmjs.com", "category": "Development" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "crates.io", "category": "Development" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "docs.rs", "category": "Development" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "pypi.org", "category": "Development" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "developer.mozilla.org", "category": "Development" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "vercel.com", "category": "Development" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "figma.com", "category": "Work" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "notion.so", "category": "Work" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "linear.app", "category": "Work" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "asana.com", "category": "Work" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "trello.com", "category": "Work" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "docs.google.com", "category": "Work" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "sheets.google.com", "category": "Work" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "drive.google.com", "category": "Work" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "coursera.org", "category": "Learning" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "udemy.com", "category": "Learning" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "edx.org", "category": "Learning" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "wikipedia.org", "category": "Learning" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "arxiv.org", "category": "Learning" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "scholar.google.com", "category": "Learning" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "medium.com", "category": "Learning" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "slack.com", "category": "Communication" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "discord.com", "category": "Communication" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "teams.microsoft.com", "category": "Communication" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "zoom.us", "category": "Communication" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "meet.google.com", "category": "Communication" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "outlook.live.com", "category": "Communication" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "mail.google.com", "category": "Communication" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "paypal.com", "category": "Finance" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "stripe.com", "category": "Finance" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "amazon.com", "category": "Finance" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "ebay.com", "category": "Finance" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "netflix.com", "category": "Media" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "youtube.com", "category": "Media" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "spotify.com", "category": "Media" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "twitch.tv", "category": "Media" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "soundcloud.com", "category": "Media" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "reddit.com", "category": "Social" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "facebook.com", "category": "Social" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "instagram.com", "category": "Social" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "linkedin.com", "category": "Social" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "x.com", "category": "Social" },
-    { "key_kind": "domain", "match_kind": "exact", "pattern": "news.ycombinator.com", "category": "Social" },
-    { "key_kind": "exe", "match_kind": "exact", "pattern": "code", "category": "Development" },
-    { "key_kind": "exe", "match_kind": "exact", "pattern": "code.exe", "category": "Development" },
-    { "key_kind": "exe", "match_kind": "exact", "pattern": "idea64.exe", "category": "Development" },
-    { "key_kind": "exe", "match_kind": "exact", "pattern": "terminal", "category": "Development" },
-    { "key_kind": "exe", "match_kind": "exact", "pattern": "powershell.exe", "category": "Development" },
-    { "key_kind": "exe", "match_kind": "exact", "pattern": "gnome-terminal", "category": "Development" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "npmjs.com", "category": "Technical Docs" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "crates.io", "category": "Technical Docs" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "docs.rs", "category": "Technical Docs" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "pypi.org", "category": "Technical Docs" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "developer.mozilla.org", "category": "Technical Docs" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "linear.app", "category": "Planning & Tasks" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "asana.com", "category": "Planning & Tasks" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "trello.com", "category": "Planning & Tasks" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "coursera.org", "category": "Online Courses" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "udemy.com", "category": "Online Courses" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "edx.org", "category": "Online Courses" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "wikipedia.org", "category": "Reading & Research" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "arxiv.org", "category": "Reading & Research" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "scholar.google.com", "category": "Reading & Research" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "slack.com", "category": "Email & Chat" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "discord.com", "category": "Email & Chat" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "teams.microsoft.com", "category": "Email & Chat" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "zoom.us", "category": "Meetings" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "meet.google.com", "category": "Meetings" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "outlook.live.com", "category": "Email & Chat" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "mail.google.com", "category": "Email & Chat" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "paypal.com", "category": "Finance & Shopping" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "stripe.com", "category": "Finance & Shopping" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "amazon.com", "category": "Finance & Shopping" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "ebay.com", "category": "Finance & Shopping" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "netflix.com", "category": "Video & Streaming" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "spotify.com", "category": "Music & Audio" },
+    { "key_kind": "domain", "match_kind": "exact", "pattern": "soundcloud.com", "category": "Music & Audio" },
+    { "key_kind": "exe", "match_kind": "exact", "pattern": "code", "category": "Coding" },
+    { "key_kind": "exe", "match_kind": "exact", "pattern": "code.exe", "category": "Coding" },
+    { "key_kind": "exe", "match_kind": "exact", "pattern": "idea64.exe", "category": "Coding" },
+    { "key_kind": "exe", "match_kind": "exact", "pattern": "terminal", "category": "Infrastructure" },
+    { "key_kind": "exe", "match_kind": "exact", "pattern": "powershell.exe", "category": "Infrastructure" },
+    { "key_kind": "exe", "match_kind": "exact", "pattern": "gnome-terminal", "category": "Infrastructure" },
     { "key_kind": "exe", "match_kind": "exact", "pattern": "explorer.exe", "category": "System" },
     { "key_kind": "exe", "match_kind": "exact", "pattern": "nautilus", "category": "System" },
     { "key_kind": "exe", "match_kind": "exact", "pattern": "finder", "category": "System" },
     { "key_kind": "exe", "match_kind": "exact", "pattern": "settings", "category": "System" }
+  ],
+  "multi_purpose": [
+    { "key_kind": "domain", "key": "youtube.com" },
+    { "key_kind": "domain", "key": "reddit.com" },
+    { "key_kind": "domain", "key": "medium.com" },
+    { "key_kind": "domain", "key": "x.com" },
+    { "key_kind": "domain", "key": "linkedin.com" },
+    { "key_kind": "domain", "key": "news.ycombinator.com" }
   ]
 }

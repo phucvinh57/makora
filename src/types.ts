@@ -29,7 +29,7 @@ export interface Category {
 
 export interface CategorySuggestion {
   id: number;
-  key_kind: "exe" | "domain";
+  key_kind: "exe" | "domain" | "url";
   key: string;
   category_id: number;
   category_name: string;
@@ -43,6 +43,7 @@ export interface SeedCategory {
   name: string;
   color: string;
   description: string | null;
+  children: SeedCategory[];
 }
 
 export interface SeedRule {
@@ -55,6 +56,21 @@ export interface SeedRule {
 export interface SeedTaxonomy {
   categories: SeedCategory[];
   rules: SeedRule[];
+  multi_purpose: SeedMultiPurposeKey[];
+}
+
+export interface SeedMultiPurposeKey {
+  key_kind: "exe" | "domain";
+  key: string;
+}
+
+export interface MultiPurposeKey {
+  key_kind: "exe" | "domain";
+  key: string;
+  source: "seed" | "auto" | "user";
+  enabled: boolean;
+  top_share: number | null;
+  detected_at: string | null;
 }
 
 export type KeyKind = "exe" | "domain" | "url";
@@ -72,6 +88,7 @@ export interface CategoryRule {
   pattern: string;
   match_kind: MatchKind;
   category_id: number;
+  inactive: boolean;
 }
 
 export interface RecategorizeOutcome {

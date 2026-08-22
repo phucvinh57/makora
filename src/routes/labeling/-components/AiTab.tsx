@@ -6,15 +6,18 @@ import {
   getClassifierStatus,
   listCategories,
   listCategorySuggestions,
+  listMultiPurposeKeys,
   runAiCategorization,
   setAiCategorizationConfidenceThreshold,
   setAiCategorizationSchedule,
+  setMultiPurposeKey,
 } from "@/api";
 import {
   categoryOptions,
   categoryValueLabels,
 } from "@/components/CategoryOptions";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
@@ -49,6 +52,8 @@ export function AiTab() {
   const [selectedCategories, setSelectedCategories] = useState<
     Record<number, string>
   >({});
+  const [multiKeyKind, setMultiKeyKind] = useState<"exe" | "domain">("domain");
+  const [multiKeyDraft, setMultiKeyDraft] = useState("");
   const statusQuery = useQuery({
     queryKey: ["classifierStatus"],
     queryFn: getClassifierStatus,
@@ -65,6 +70,10 @@ export function AiTab() {
   const suggestionsQuery = useQuery({
     queryKey: ["categorySuggestions"],
     queryFn: listCategorySuggestions,
+  });
+  const multiPurposeQuery = useQuery({
+    queryKey: ["multiPurposeKeys"],
+    queryFn: listMultiPurposeKeys,
   });
   const run = useMutation({
     mutationFn: runAiCategorization,
@@ -90,11 +99,28 @@ export function AiTab() {
       "activityStats",
       "workSessionStats",
       "categorySuggestions",
+      "multiPurposeKeys",
       "classifierStatus",
     ]) {
       queryClient.invalidateQueries({ queryKey: [key] });
     }
   }
+
+  const setMultiPurpose = useMutation({
+    mutationFn: ({
+      keyKind,
+      key,
+      enabled,
+    }: {
+      keyKind: "exe" | "domain";
+      key: string;
+      enabled: boolean;
+    }) => setMultiPurposeKey(keyKind, key, enabled),
+    onSuccess: () => {
+      setMultiKeyDraft("");
+      invalidateAccepted();
+    },
+  });
 
   const accept = useMutation({
     mutationFn: ({ id, categoryId }: { id: number; categoryId: number }) =>
@@ -113,6 +139,7 @@ export function AiTab() {
   const status = statusQuery.data;
   const categories = categoriesQuery.data ?? [];
   const suggestions = suggestionsQuery.data ?? [];
+  const multiPurposeKeys = multiPurposeQuery.data ?? [];
 
   useEffect(() => {
     if (status) {
@@ -121,17 +148,6 @@ export function AiTab() {
         setAcceptCutoff(String(status.confidence_threshold * 100));
     }
   }, [status?.confidence_threshold, status, acceptCutoff]);
-
-  useEffect(() => {
-    setSelectedCategories((current) => {
-      const next = { ...current };
-      for (const suggestion of suggestions) {
-        if (!next[suggestion.id])
-          next[suggestion.id] = String(suggestion.category_id);
-      }
-      return next;
-    });
-  }, [suggestions]);
 
   const busy = status?.state === "queued" || status?.state === "running";
   const confidencePercent = Number(confidenceDraft);
@@ -162,8 +178,9 @@ export function AiTab() {
         </CardHeader>
         <CardContent className="flex flex-col gap-4 text-sm">
           <p className="text-muted-foreground">
-            Uses offline embeddings to suggest key → category rules for your
-            review. It never labels history automatically.
+            Uses offline embeddings to suggest rules and label individual
+            sessions for multi-purpose keys. URL paths can graduate into
+            reviewable rules.
           </p>
           <dl className="grid grid-cols-2 gap-x-6 gap-y-2">
             <dt className="text-muted-foreground">Status</dt>
@@ -267,6 +284,103 @@ export function AiTab() {
           >
             Run now
           </Button>
+        </CardContent>
+      </Card>
+
+      <Card size="sm">
+        <CardHeader>
+          <CardTitle>Multi-purpose sites</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3 text-sm">
+          <p className="text-muted-foreground">
+            These apps and sites are too varied for one blanket category, so
+            their titles are classified per activity. Existing exact rules are
+            kept but become inactive while a key is enabled.
+          </p>
+          <form
+            className="flex flex-wrap items-center gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (multiKeyDraft.trim()) {
+                setMultiPurpose.mutate({
+                  keyKind: multiKeyKind,
+                  key: multiKeyDraft.trim(),
+                  enabled: true,
+                });
+              }
+            }}
+          >
+            <Select
+              value={multiKeyKind}
+              onValueChange={(value) =>
+                setMultiKeyKind(value as "exe" | "domain")
+              }
+              items={{ domain: "Site", exe: "App" }}
+            >
+              <SelectTrigger size="sm" className="w-24">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="domain">Site</SelectItem>
+                <SelectItem value="exe">App</SelectItem>
+              </SelectContent>
+            </Select>
+            <Input
+              className="min-w-48 flex-1 font-mono"
+              placeholder="youtube.com or chrome"
+              value={multiKeyDraft}
+              onChange={(event) => setMultiKeyDraft(event.target.value)}
+            />
+            <Button
+              size="sm"
+              type="submit"
+              disabled={setMultiPurpose.isPending || !multiKeyDraft.trim()}
+            >
+              Add
+            </Button>
+          </form>
+          {multiPurposeKeys.length === 0 ? (
+            <p className="text-muted-foreground">No multi-purpose keys yet.</p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {multiPurposeKeys.map((entry) => (
+                <div
+                  key={`${entry.key_kind}:${entry.key}`}
+                  className={`flex flex-wrap items-center gap-2 rounded-lg border p-2.5 ${
+                    entry.enabled ? "" : "opacity-60"
+                  }`}
+                >
+                  <span className="min-w-40 flex-1 font-mono">{entry.key}</span>
+                  <Badge variant="secondary">{entry.key_kind}</Badge>
+                  <Badge variant="outline">{entry.source}</Badge>
+                  {entry.top_share != null && (
+                    <span className="text-xs text-muted-foreground">
+                      top {Math.round(entry.top_share * 100)}%
+                    </span>
+                  )}
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={setMultiPurpose.isPending}
+                    onClick={() =>
+                      setMultiPurpose.mutate({
+                        keyKind: entry.key_kind,
+                        key: entry.key,
+                        enabled: !entry.enabled,
+                      })
+                    }
+                  >
+                    {entry.enabled ? "Remove" : "Enable"}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+          {multiPurposeQuery.error || setMultiPurpose.error ? (
+            <p className="text-xs text-destructive">
+              {String(multiPurposeQuery.error ?? setMultiPurpose.error)}
+            </p>
+          ) : null}
         </CardContent>
       </Card>
 

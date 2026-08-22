@@ -45,6 +45,8 @@ pub fn run() {
             commands::update_category,
             commands::delete_category,
             commands::list_category_suggestions,
+            commands::list_multi_purpose_keys,
+            commands::set_multi_purpose_key,
             commands::accept_category_suggestions,
             commands::dismiss_category_suggestions,
             commands::apply_seed_taxonomy,

@@ -277,11 +277,47 @@ fn migrations() -> Migrations<'static> {
 
              INSERT OR IGNORE INTO settings (key, value)
                  VALUES ('ai_categorization_model_version', '0');
+             INSERT OR IGNORE INTO settings (key, value)
+                 VALUES ('ai_categorization_input_revision', '0');
 
              UPDATE sessions
                 SET ml_category_id = NULL,
                     ml_confidence = NULL,
                     ml_model_version = NULL;",
+        )
+        .foreign_key_check(),
+        M::up(
+            "CREATE TABLE multi_purpose_keys (
+                key_kind    TEXT NOT NULL CHECK(key_kind IN ('exe', 'domain')),
+                key         TEXT NOT NULL,
+                source      TEXT NOT NULL CHECK(source IN ('seed', 'auto', 'user')),
+                enabled     INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+                top_share   REAL CHECK(top_share IS NULL OR (top_share >= 0.0 AND top_share <= 1.0)),
+                detected_at TEXT,
+                PRIMARY KEY (key_kind, key)
+            );
+
+            CREATE TABLE category_suggestions_new (
+                id            INTEGER PRIMARY KEY,
+                key_kind      TEXT NOT NULL CHECK(key_kind IN ('exe', 'domain', 'url')),
+                key           TEXT NOT NULL,
+                category_id   INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+                confidence    REAL NOT NULL,
+                seconds       REAL NOT NULL,
+                model_version INTEGER NOT NULL,
+                created_at    TEXT NOT NULL,
+                status        TEXT NOT NULL DEFAULT 'pending'
+                              CHECK(status IN ('pending', 'dismissed')),
+                UNIQUE(key_kind, key)
+            );
+            INSERT INTO category_suggestions_new
+                (id, key_kind, key, category_id, confidence, seconds, model_version, created_at, status)
+                SELECT id, key_kind, key, category_id, confidence, seconds, model_version, created_at, status
+                FROM category_suggestions;
+            DROP TABLE category_suggestions;
+            ALTER TABLE category_suggestions_new RENAME TO category_suggestions;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_category_suggestions_key
+                ON category_suggestions(key_kind, key);",
         )
         .foreign_key_check(),
     ])
@@ -656,6 +692,67 @@ mod tests {
             "only the Test category inserted by this test exists"
         );
 
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn migration_22_preserves_suggestions_and_accepts_url_kind() {
+        let path = temp_db_path();
+        let mut conn = Connection::open(&path).unwrap();
+        migrations().to_version(&mut conn, 21).unwrap();
+        conn.execute(
+            "INSERT INTO categories (id, name, color) VALUES (1, 'Learning', '#111111')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO category_suggestions
+                (id, key_kind, key, category_id, confidence, seconds, model_version, created_at, status)
+             VALUES
+                (7, 'domain', 'example.com', 1, 0.81, 120.0, 3, '2024-01-01T00:00:00Z', 'pending'),
+                (8, 'exe', 'player', 1, 0.61, 80.0, 2, '2024-01-02T00:00:00Z', 'dismissed')",
+            [],
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO category_suggestions
+                (id, key_kind, key, category_id, confidence, seconds, model_version, created_at)
+             VALUES (9, 'url', 'example.com/learning', 1, 0.9, 50.0, 4, '2024-01-03T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let rows: Vec<(i64, String, String, String)> = conn
+            .prepare("SELECT id, key_kind, key, status FROM category_suggestions ORDER BY id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (7, "domain".into(), "example.com".into(), "pending".into()),
+                (8, "exe".into(), "player".into(), "dismissed".into()),
+                (
+                    9,
+                    "url".into(),
+                    "example.com/learning".into(),
+                    "pending".into()
+                ),
+            ]
+        );
+        let foreign_key_violations: Vec<String> = conn
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(foreign_key_violations.is_empty());
         let _ = std::fs::remove_file(&path);
     }
 

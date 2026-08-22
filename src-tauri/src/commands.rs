@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crate::core::{
     ActivityStats, AiCategorizationSchedule, AiCategorizationService, Category, CategoryFilter,
     CategoryRule, CategorySourceFilter, CategoryStore, CategorySuggestion, ClassifierStatus,
-    HistoryReader, IgnoreRule, IgnoreStore, RecategorizeOutcome, SeedTaxonomy, SessionFilter,
-    SessionRow, WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
+    HistoryReader, IgnoreRule, IgnoreStore, MultiPurposeKey, RecategorizeOutcome, SeedTaxonomy,
+    SessionFilter, SessionRow, WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -146,6 +146,27 @@ pub fn list_category_suggestions(
     categories: State<CategoryStore>,
 ) -> Result<Vec<CategorySuggestion>, String> {
     categories.list_suggestions().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_multi_purpose_keys(
+    categories: State<CategoryStore>,
+) -> Result<Vec<MultiPurposeKey>, String> {
+    categories
+        .list_multi_purpose_keys()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_multi_purpose_key(
+    categories: State<CategoryStore>,
+    key_kind: String,
+    key: String,
+    enabled: bool,
+) -> Result<(), String> {
+    categories
+        .set_multi_purpose_key(&key_kind, &key, enabled)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

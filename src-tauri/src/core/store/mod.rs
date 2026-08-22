@@ -12,7 +12,8 @@ pub mod sqlite;
 pub mod work_sessions;
 
 pub use categories::{
-    Category, CategoryRule, CategoryStore, CategorySuggestion, RecategorizeOutcome, SeedTaxonomy,
+    Category, CategoryRule, CategoryStore, CategorySuggestion, MultiPurposeKey,
+    RecategorizeOutcome, SeedTaxonomy,
 };
 pub use ignore::{IgnoreRule, IgnoreStore};
 pub use queries::{

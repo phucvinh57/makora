@@ -258,7 +258,10 @@ export function RulesTab({
               {filteredRules.map((rule) => {
                 const category = categoryById.get(rule.category_id);
                 return (
-                  <TableRow key={rule.id}>
+                  <TableRow
+                    key={rule.id}
+                    className={rule.inactive ? "opacity-60" : undefined}
+                  >
                     <TableCell>
                       <Badge variant="secondary">
                         {KEY_KIND_LABEL[rule.key_kind]}
@@ -268,7 +271,14 @@ export function RulesTab({
                       {MATCH_KIND_LABEL[rule.match_kind]}
                     </TableCell>
                     <TableCell className="truncate font-mono">
-                      {rule.pattern}
+                      <span className="flex items-center gap-2">
+                        <span className="truncate">{rule.pattern}</span>
+                        {rule.inactive && (
+                          <Badge variant="outline" className="shrink-0">
+                            Inactive — multi-purpose
+                          </Badge>
+                        )}
+                      </span>
                     </TableCell>
                     <TableCell className="truncate">
                       {category && (

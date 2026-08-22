@@ -1,8 +1,8 @@
-//! Local, review-first categorization based on semantic embeddings of stable activity keys.
+//! Local categorization based on semantic embeddings of stable keys and activity titles.
 //!
-//! The worker never writes an AI category onto a session. It writes key-level suggestions;
-//! accepting one creates an ordinary exact rule, which makes the decision permanent,
-//! auditable, and useful as future supervision.
+//! Coherent keys still produce review-first rule suggestions. Multi-purpose keys are instead
+//! classified at the activity/title level, with repeated stable URL paths graduating to the
+//! same reviewable rule surface. All materialized labels are replaced transactionally.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -15,6 +15,7 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use tracing::{error, info};
 
+use super::category::{resolve_category, CompiledRule, KeyKind, SessionCategoryInput};
 use super::embed::{Embedder, Model2Vec};
 use super::store::sqlite::SharedConnection;
 
@@ -24,9 +25,17 @@ type Key = (String, String);
 const DEFAULT_CONFIDENCE_THRESHOLD: f32 = 0.75;
 const MIN_LEAD: f32 = 0.15;
 const SOFTMAX_TEMPERATURE: f32 = 0.05;
+const MIN_DISTINCT_TITLES: usize = 8;
+const MIN_DISPERSION_SECONDS: f64 = 30.0 * 60.0;
+const MAX_TOP_SHARE: f64 = 0.60;
+const MIN_CATEGORY_SHARE: f64 = 0.15;
+const MIN_URL_SESSIONS: usize = 5;
+const MIN_URL_DAYS: usize = 2;
+const MIN_URL_CONSISTENCY: f64 = 0.80;
 const SCHEDULE_SETTING_KEY: &str = "ai_categorization_schedule";
 const LAST_COMPLETED_SETTING_KEY: &str = "ai_categorization_last_completed_at";
 const CONFIDENCE_THRESHOLD_SETTING_KEY: &str = "ai_categorization_confidence_threshold";
+const INPUT_REVISION_SETTING_KEY: &str = "ai_categorization_input_revision";
 const MODEL_VERSION_SETTING_KEY: &str = "ai_categorization_model_version";
 const MODEL_ID_SETTING_KEY: &str = "ai_categorization_model_id";
 const CATEGORY_SIGNATURE_SETTING_KEY: &str = "ai_categorization_category_signature";
@@ -508,12 +517,45 @@ fn read_setting(conn: &SharedConnection, key: &str) -> Result<Option<String>> {
 }
 
 fn write_setting(conn: &SharedConnection, key: &str, value: &str) -> Result<()> {
-    conn.lock().unwrap().execute(
+    let conn = conn.lock().unwrap();
+    conn.execute(
         "INSERT INTO settings (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![key, value],
     )?;
+    if key == CONFIDENCE_THRESHOLD_SETTING_KEY {
+        bump_input_revision(&conn)?;
+    }
     Ok(())
+}
+
+fn bump_input_revision(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, '0')",
+        params![INPUT_REVISION_SETTING_KEY],
+    )?;
+    conn.execute(
+        "UPDATE settings SET value = CAST(value AS INTEGER) + 1 WHERE key = ?1",
+        params![INPUT_REVISION_SETTING_KEY],
+    )?;
+    Ok(())
+}
+
+fn load_input_revision(conn: &SharedConnection) -> Result<i64> {
+    let conn = conn.lock().unwrap();
+    load_input_revision_from_conn(&conn)
+}
+
+fn load_input_revision_from_conn(conn: &Connection) -> Result<i64> {
+    Ok(conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![INPUT_REVISION_SETTING_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .and_then(|value| value.parse().ok())
+        .unwrap_or_default())
 }
 
 fn load_schedule(conn: &SharedConnection) -> Result<AiCategorizationSchedule> {
@@ -547,6 +589,7 @@ struct CategoryInfo {
     id: i64,
     name: String,
     description: Option<String>,
+    is_leaf: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -562,6 +605,39 @@ struct Candidate {
     category_id: i64,
     confidence: f32,
     seconds: f64,
+}
+
+/// Per-key label votes, counted separately so one manual pin still outweighs every rule row.
+#[derive(Default)]
+struct LabelVotes {
+    manual: HashMap<i64, u64>,
+    rules: HashMap<i64, u64>,
+}
+
+#[derive(Debug, Clone)]
+struct ActivityPrediction {
+    category_id: i64,
+    confidence: f32,
+}
+
+#[derive(Debug, Clone)]
+struct Dispersion {
+    top_share: f64,
+}
+
+#[derive(Default)]
+struct DispersionStats {
+    titles: HashSet<String>,
+    seconds: f64,
+    category_seconds: HashMap<i64, f64>,
+}
+
+#[derive(Default)]
+struct UrlStats {
+    session_ids: HashSet<i64>,
+    days: HashSet<String>,
+    seconds: f64,
+    category_seconds: HashMap<i64, f64>,
 }
 
 enum UpdateResult {
@@ -607,9 +683,13 @@ fn update(
     commit_gate: &Mutex<()>,
     confidence_threshold: f32,
 ) -> Result<UpdateResult> {
-    let documents = {
+    let snapshot_input_revision = load_input_revision(conn)?;
+    let (documents, activities) = {
         let conn = conn.lock().unwrap();
-        super::keydoc::build(&conn)?
+        (
+            super::keydoc::build(&conn)?,
+            super::keydoc::build_activities(&conn)?,
+        )
     };
     let categories = load_categories(conn)?;
     let labels = load_labeled_keys(conn)?;
@@ -629,18 +709,38 @@ fn update(
             }
             _ => {
                 changed_keys.insert(key);
-                changed.push(document.clone());
+                changed.push((
+                    (document.key_kind.clone(), document.key.clone()),
+                    document.doc_hash.clone(),
+                    document.document.clone(),
+                ));
+            }
+        }
+    }
+    for activity in &activities {
+        let key = ("title".to_string(), activity.cache_key());
+        match cached.get(&key) {
+            Some(cached)
+                if cached.doc_hash == activity.doc_hash
+                    && cached.model_id == embedder.model_id()
+                    && cached.vector.len() == embedder.dim() =>
+            {
+                embeddings.insert(key, cached.vector.clone());
+            }
+            _ => {
+                changed_keys.insert(key.clone());
+                changed.push((key, activity.doc_hash.clone(), activity.document.clone()));
             }
         }
     }
     if !changed.is_empty() {
         let texts = changed
             .iter()
-            .map(|document| document.document.clone())
+            .map(|(_, _, document)| document.clone())
             .collect::<Vec<_>>();
         let vectors = embedder.embed(&texts)?;
-        for (document, vector) in changed.iter().zip(vectors) {
-            embeddings.insert((document.key_kind.clone(), document.key.clone()), vector);
+        for ((key, _, _), vector) in changed.iter().zip(vectors) {
+            embeddings.insert(key.clone(), vector);
         }
     }
 
@@ -685,8 +785,68 @@ fn update(
     );
     let (holdout_accuracy, holdout_sample_count) =
         evaluate_holdout(&categories, &embeddings, &labels, &description_vectors);
+    let stored_multi_purpose = load_multi_purpose_keys(conn)?;
+    let mut candidate_multi_purpose = stored_multi_purpose.clone();
+    let predictions = activities
+        .iter()
+        .map(|activity| {
+            embeddings
+                .get(&("title".to_string(), activity.cache_key()))
+                .and_then(|embedding| {
+                    score_embedding(embedding, &label_vectors).map(|(category_id, confidence)| {
+                        ActivityPrediction {
+                            category_id,
+                            confidence,
+                        }
+                    })
+                })
+        })
+        .collect::<Vec<_>>();
+
+    let mut dispersion_stats: HashMap<Key, DispersionStats> = HashMap::new();
+    for (activity, prediction) in activities.iter().zip(&predictions) {
+        let entry = dispersion_stats
+            .entry((activity.key_kind.clone(), activity.key.clone()))
+            .or_default();
+        if !activity.window_title.trim().is_empty() {
+            entry.titles.insert(activity.window_title.clone());
+        }
+        entry.seconds += activity.seconds;
+        if let Some(prediction) = prediction {
+            *entry
+                .category_seconds
+                .entry(prediction.category_id)
+                .or_default() += activity.seconds;
+        }
+    }
+    let dispersions = dispersion_stats
+        .into_iter()
+        .filter_map(|(key, stats)| {
+            if stats.titles.len() < MIN_DISTINCT_TITLES || stats.seconds < MIN_DISPERSION_SECONDS {
+                return None;
+            }
+            let top_seconds = stats.category_seconds.values().copied().fold(0.0, f64::max);
+            let top_share = if stats.seconds > 0.0 {
+                top_seconds / stats.seconds
+            } else {
+                0.0
+            };
+            let populated_categories = stats
+                .category_seconds
+                .values()
+                .filter(|category_seconds| **category_seconds / stats.seconds >= MIN_CATEGORY_SHARE)
+                .count();
+            (top_share < MAX_TOP_SHARE && populated_categories >= 2)
+                .then_some((key, Dispersion { top_share }))
+        })
+        .collect::<HashMap<_, _>>();
+    candidate_multi_purpose.extend(dispersions.keys().cloned());
+
     let candidates = documents
         .iter()
+        .filter(|document| {
+            !candidate_multi_purpose.contains(&(document.key_kind.clone(), document.key.clone()))
+        })
         .filter(|document| !labels.contains_key(&(document.key_kind.clone(), document.key.clone())))
         .filter_map(|document| {
             let embedding = embeddings.get(&(document.key_kind.clone(), document.key.clone()))?;
@@ -697,6 +857,53 @@ fn update(
                 category_id,
                 confidence,
                 seconds: document.seconds,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let mut url_groups: HashMap<(Key, String), UrlStats> = HashMap::new();
+    for (activity, prediction) in activities.iter().zip(&predictions) {
+        let parent_key = (activity.key_kind.clone(), activity.key.clone());
+        if !candidate_multi_purpose.contains(&parent_key) {
+            continue;
+        }
+        let Some(url_key) = activity.url_key.clone() else {
+            continue;
+        };
+        let Some(prediction) = prediction else {
+            continue;
+        };
+        let entry = url_groups.entry((parent_key, url_key)).or_default();
+        entry
+            .session_ids
+            .extend(activity.session_ids.iter().copied());
+        entry.days.extend(activity.observation_days.iter().cloned());
+        entry.seconds += activity.seconds;
+        *entry
+            .category_seconds
+            .entry(prediction.category_id)
+            .or_default() += activity.seconds;
+    }
+    let url_candidates = url_groups
+        .into_iter()
+        .filter_map(|((_, url_key), stats)| {
+            if stats.session_ids.len() < MIN_URL_SESSIONS
+                || stats.days.len() < MIN_URL_DAYS
+                || stats.seconds <= 0.0
+            {
+                return None;
+            }
+            let (category_id, top_seconds) = stats
+                .category_seconds
+                .into_iter()
+                .max_by(|left, right| left.1.total_cmp(&right.1))?;
+            let confidence = top_seconds / stats.seconds;
+            (confidence >= MIN_URL_CONSISTENCY).then_some(Candidate {
+                key_kind: "url".into(),
+                key: url_key,
+                category_id,
+                confidence: confidence as f32,
+                seconds: stats.seconds,
             })
         })
         .collect::<Vec<_>>();
@@ -716,12 +923,14 @@ fn update(
     }
     let mut conn = conn.lock().unwrap();
     let tx = conn.transaction()?;
-    for document in &documents {
-        let key = (document.key_kind.clone(), document.key.clone());
-        if changed_keys.contains(&key) {
+    if load_input_revision_from_conn(&tx)? != snapshot_input_revision {
+        return Ok(UpdateResult::Stale);
+    }
+    for (key, doc_hash, _) in &changed {
+        if changed_keys.contains(key) {
             let vector = embeddings
-                .get(&key)
-                .context("newly embedded key was not returned by the embedder")?;
+                .get(key)
+                .context("newly embedded document was not returned by the embedder")?;
             tx.execute(
                 "INSERT INTO key_embeddings (key_kind, key, doc_hash, model_id, vector)
                  VALUES (?1, ?2, ?3, ?4, ?5)
@@ -730,12 +939,75 @@ fn update(
                     model_id = excluded.model_id,
                     vector = excluded.vector",
                 params![
-                    document.key_kind,
-                    document.key,
-                    document.doc_hash,
+                    key.0,
+                    key.1,
+                    doc_hash,
                     embedder.model_id(),
                     vector_to_blob(vector),
                 ],
+            )?;
+        }
+    }
+    for (key, dispersion) in &dispersions {
+        tx.execute(
+            "INSERT OR IGNORE INTO multi_purpose_keys
+                (key_kind, key, source, enabled, top_share, detected_at)
+             VALUES (?1, ?2, 'auto', 1, ?3, ?4)",
+            params![key.0, key.1, dispersion.top_share, Utc::now().to_rfc3339()],
+        )?;
+        tx.execute(
+            "UPDATE multi_purpose_keys
+             SET top_share = ?3, detected_at = ?4
+             WHERE key_kind = ?1 AND key = ?2 AND source != 'user'",
+            params![key.0, key.1, dispersion.top_share, Utc::now().to_rfc3339()],
+        )?;
+    }
+    let effective_multi_purpose = load_multi_purpose_keys_from_conn(&tx)?;
+    super::store::resolve::resolve_all(&tx)?;
+    tx.execute(
+        "UPDATE sessions
+         SET ml_category_id = NULL, ml_confidence = NULL, ml_model_version = NULL
+         WHERE category_id IS NULL AND rule_category_id IS NULL",
+        [],
+    )?;
+    for (activity, prediction) in activities.iter().zip(&predictions) {
+        let key = (activity.key_kind.clone(), activity.key.clone());
+        let Some(prediction) = prediction else {
+            continue;
+        };
+        if !effective_multi_purpose.contains(&key) || prediction.confidence < confidence_threshold {
+            continue;
+        }
+        for session_id in &activity.session_ids {
+            tx.execute(
+                "UPDATE sessions
+                 SET ml_category_id = ?1, ml_confidence = ?2, ml_model_version = ?3
+                 WHERE id = ?4 AND category_id IS NULL AND rule_category_id IS NULL
+                   AND category_key_kind = ?5 AND category_key = ?6",
+                params![
+                    prediction.category_id,
+                    prediction.confidence,
+                    model_version,
+                    session_id,
+                    key.0,
+                    key.1
+                ],
+            )?;
+        }
+    }
+    let current_title_keys = activities
+        .iter()
+        .map(|activity| activity.cache_key())
+        .collect::<HashSet<_>>();
+    let stale_title_keys = tx
+        .prepare("SELECT key FROM key_embeddings WHERE key_kind = 'title'")?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for key in stale_title_keys {
+        if !current_title_keys.contains(&key) {
+            tx.execute(
+                "DELETE FROM key_embeddings WHERE key_kind = 'title' AND key = ?1",
+                params![key],
             )?;
         }
     }
@@ -744,9 +1016,38 @@ fn update(
         [],
     )?;
     let dismissed = load_dismissed_keys(&tx)?;
-    for candidate in candidates {
+    let stored_rules = super::store::resolve::load_rules(&tx)?;
+    let mut all_candidates = candidates;
+    all_candidates.extend(url_candidates);
+    for candidate in all_candidates {
         if dismissed.contains(&(candidate.key_kind.clone(), candidate.key.clone())) {
             continue;
+        }
+        if candidate.key_kind != "url" && rule_already_covers(&stored_rules, &candidate) {
+            continue;
+        }
+        if candidate.key_kind == "url" {
+            let parent_exists: bool = tx.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sessions s
+                    JOIN multi_purpose_keys m
+                      ON m.key_kind = s.category_key_kind AND m.key = s.category_key
+                     AND m.enabled = 1
+                    WHERE s.url_key = ?1
+                )",
+                params![candidate.key],
+                |row| row.get(0),
+            )?;
+            let existing_url_rule: bool = tx.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM category_rules WHERE key_kind = 'url' AND pattern = ?1
+                )",
+                params![candidate.key],
+                |row| row.get(0),
+            )?;
+            if !parent_exists || existing_url_rule {
+                continue;
+            }
         }
         tx.execute(
             "INSERT INTO category_suggestions
@@ -795,17 +1096,31 @@ fn write_setting_tx(tx: &rusqlite::Transaction<'_>, key: &str, value: &str) -> R
 
 fn load_categories(conn: &SharedConnection) -> Result<Vec<CategoryInfo>> {
     let conn = conn.lock().unwrap();
-    let mut stmt = conn.prepare("SELECT id, name, description FROM categories ORDER BY id")?;
+    let mut stmt =
+        conn.prepare("SELECT id, name, description, parent_id FROM categories ORDER BY id")?;
     let rows = stmt
         .query_map([], |row| {
-            Ok(CategoryInfo {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                description: row.get(2)?,
-            })
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+            ))
         })?
-        .collect::<rusqlite::Result<_>>()?;
-    Ok(rows)
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let parent_ids = rows
+        .iter()
+        .filter_map(|(_, _, _, parent_id)| *parent_id)
+        .collect::<HashSet<_>>();
+    Ok(rows
+        .into_iter()
+        .map(|(id, name, description, _)| CategoryInfo {
+            id,
+            name,
+            description,
+            is_leaf: !parent_ids.contains(&id),
+        })
+        .collect())
 }
 
 fn load_labeled_keys(conn: &SharedConnection) -> Result<HashMap<Key, LabeledKey>> {
@@ -815,7 +1130,7 @@ fn load_labeled_keys(conn: &SharedConnection) -> Result<HashMap<Key, LabeledKey>
          FROM sessions
          WHERE category_id IS NOT NULL OR rule_category_id IS NOT NULL",
     )?;
-    let mut evidence: HashMap<Key, (HashSet<i64>, HashSet<i64>)> = HashMap::new();
+    let mut evidence: HashMap<Key, LabelVotes> = HashMap::new();
     for row in stmt.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -827,35 +1142,46 @@ fn load_labeled_keys(conn: &SharedConnection) -> Result<HashMap<Key, LabeledKey>
         let (kind, key, manual, rule) = row?;
         let entry = evidence.entry((kind, key)).or_default();
         if let Some(category) = manual {
-            entry.0.insert(category);
+            *entry.manual.entry(category).or_default() += 1;
         } else if let Some(category) = rule {
-            entry.1.insert(category);
+            *entry.rules.entry(category).or_default() += 1;
         }
     }
     Ok(evidence
         .into_iter()
-        .filter_map(|(key, (manual, rules))| {
-            if manual.len() == 1 {
+        .filter_map(|(key, votes)| {
+            // A key keeps its label even when its pins disagree: one stale pin among many
+            // agreeing ones must not erase the key from training *and* make it look unlabeled,
+            // which is what re-suggested an already-ruled domain on every run.
+            if let Some(category_id) = dominant_category(&votes.manual) {
                 Some((
                     key,
                     LabeledKey {
-                        category_id: *manual.iter().next().unwrap(),
+                        category_id,
                         weight: 3.0,
                     },
                 ))
-            } else if manual.is_empty() && rules.len() == 1 {
-                Some((
-                    key,
-                    LabeledKey {
-                        category_id: *rules.iter().next().unwrap(),
-                        weight: 1.0,
-                    },
-                ))
             } else {
-                None
+                dominant_category(&votes.rules).map(|category_id| {
+                    (
+                        key,
+                        LabeledKey {
+                            category_id,
+                            weight: 1.0,
+                        },
+                    )
+                })
             }
         })
         .collect())
+}
+
+/// Picks the category backing the most rows, breaking exact ties by lowest id for determinism.
+fn dominant_category(counts: &HashMap<i64, u64>) -> Option<i64> {
+    counts
+        .iter()
+        .max_by(|left, right| left.1.cmp(right.1).then_with(|| right.0.cmp(left.0)))
+        .map(|(category_id, _)| *category_id)
 }
 
 fn load_cached_embeddings(conn: &SharedConnection) -> Result<HashMap<Key, CachedEmbedding>> {
@@ -878,6 +1204,41 @@ fn load_cached_embeddings(conn: &SharedConnection) -> Result<HashMap<Key, Cached
     Ok(rows)
 }
 
+fn load_multi_purpose_keys(conn: &SharedConnection) -> Result<HashSet<Key>> {
+    let conn = conn.lock().unwrap();
+    load_multi_purpose_keys_from_conn(&conn)
+}
+
+fn load_multi_purpose_keys_from_conn(conn: &Connection) -> Result<HashSet<Key>> {
+    let mut stmt =
+        conn.prepare("SELECT key_kind, key FROM multi_purpose_keys WHERE enabled = 1")?;
+    let rows = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<HashSet<_>>>()?;
+    Ok(rows)
+}
+
+/// Reports whether the stored rules already label an `exe`/`domain` candidate.
+///
+/// Suggesting a key a rule already resolves is noise the user cannot clear: the label is not
+/// going to change. Multi-purpose keys never reach here, so the resolver is asked the same
+/// question a plain session would ask, which also covers prefix, substring and glob rules.
+fn rule_already_covers(rules: &[CompiledRule], candidate: &Candidate) -> bool {
+    let Some(key_kind) = KeyKind::parse(&candidate.key_kind) else {
+        return false;
+    };
+    resolve_category(
+        rules,
+        &SessionCategoryInput {
+            key_kind,
+            key: &candidate.key,
+            url_key: None,
+            multi_purpose: false,
+        },
+    )
+    .is_some()
+}
+
 fn load_dismissed_keys(conn: &Connection) -> Result<HashSet<Key>> {
     let mut stmt =
         conn.prepare("SELECT key_kind, key FROM category_suggestions WHERE status = 'dismissed'")?;
@@ -893,6 +1254,7 @@ fn signature_for_categories(categories: &[CategoryInfo]) -> String {
         category.id.hash(&mut hasher);
         category.name.hash(&mut hasher);
         category.description.hash(&mut hasher);
+        category.is_leaf.hash(&mut hasher);
     }
     format!("{:016x}", hasher.finish())
 }
@@ -935,6 +1297,7 @@ fn build_label_vectors(
         .unwrap_or_default();
     categories
         .iter()
+        .filter(|category| category.is_leaf)
         .filter_map(|category| {
             let examples = labels
                 .iter()
@@ -1132,6 +1495,256 @@ mod tests {
             labels[&(String::from("domain"), String::from("github.com"))].weight,
             3.0
         );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn conflicting_pins_keep_the_dominant_label_instead_of_dropping_the_key() {
+        let path = std::env::temp_dir().join(format!(
+            "makora-classifier-dominant-pin-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let conn = open_connection(&path).unwrap();
+        conn.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO categories (id, name, color)
+                 VALUES (1, 'Social media', '#111111'), (2, 'News', '#222222');
+             INSERT INTO sessions
+                (app_name, exe_path, window_title, category_key, category_key_kind,
+                 start_time, end_time, category_id)
+             VALUES ('Chrome', 'chrome', 'Feed', 'facebook.com', 'domain',
+                     '2024-01-01T00:00:00Z', '2024-01-01T00:01:00Z', 1),
+                    ('Chrome', 'chrome', 'Feed', 'facebook.com', 'domain',
+                     '2024-01-01T00:02:00Z', '2024-01-01T00:03:00Z', 1),
+                    ('Chrome', 'chrome', 'Headline', 'facebook.com', 'domain',
+                     '2024-01-01T00:04:00Z', '2024-01-01T00:05:00Z', 2);",
+            )
+            .unwrap();
+
+        let labels = load_labeled_keys(&conn).unwrap();
+        let label = &labels[&(String::from("domain"), String::from("facebook.com"))];
+        assert_eq!(label.category_id, 1);
+        assert_eq!(label.weight, 3.0);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn candidates_already_covered_by_a_rule_are_not_suggested() {
+        use crate::core::category::{compile_rules, MatchKind, RuleSpec};
+
+        let rules = compile_rules([
+            RuleSpec {
+                id: 1,
+                key_kind: KeyKind::Domain,
+                pattern: "facebook.com".into(),
+                match_kind: MatchKind::Exact,
+                category_id: 12,
+            },
+            RuleSpec {
+                id: 2,
+                key_kind: KeyKind::Domain,
+                pattern: "*whatsapp*".into(),
+                match_kind: MatchKind::Glob,
+                category_id: 11,
+            },
+        ]);
+        let candidate = |key: &str| Candidate {
+            key_kind: "domain".into(),
+            key: key.into(),
+            category_id: 21,
+            confidence: 0.8,
+            seconds: 10.0,
+        };
+
+        assert!(rule_already_covers(&rules, &candidate("facebook.com")));
+        assert!(rule_already_covers(&rules, &candidate("web.whatsapp.com")));
+        assert!(!rule_already_covers(&rules, &candidate("figma.com")));
+    }
+
+    struct FixtureEmbedder;
+
+    impl Embedder for FixtureEmbedder {
+        fn model_id(&self) -> &str {
+            "fixture"
+        }
+
+        fn dim(&self) -> usize {
+            3
+        }
+
+        fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+            Ok(texts
+                .iter()
+                .map(|text| {
+                    let text = text.to_ascii_lowercase();
+                    if text.contains("lecture") || text.contains("course") {
+                        vec![1.0, 0.0, 0.0]
+                    } else if text.contains("game") || text.contains("stream") {
+                        vec![0.0, 1.0, 0.0]
+                    } else if text.contains("news") || text.contains("headline") {
+                        vec![0.0, 0.0, 1.0]
+                    } else {
+                        vec![0.0, 0.0, 0.0]
+                    }
+                })
+                .collect())
+        }
+    }
+
+    #[test]
+    fn title_pass_detects_mixed_site_labels_and_graduates_consistent_urls() {
+        let path = std::env::temp_dir().join(format!(
+            "makora-classifier-title-pass-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let conn = open_connection(&path).unwrap();
+        let db = conn.lock().unwrap();
+        db.execute_batch(
+            "INSERT INTO categories (id, name, color, description) VALUES
+                (1, 'Courses', '#111111', 'lecture course lessons'),
+                (2, 'Games', '#222222', 'game stream gameplay'),
+                (3, 'News', '#333333', 'news headlines journalism');
+             INSERT INTO category_rules (key_kind, pattern, match_kind, category_id) VALUES
+                ('domain', 'courses.example', 'exact', 1),
+                ('domain', 'games.example', 'exact', 2),
+                ('domain', 'news.example', 'exact', 3);
+             INSERT INTO multi_purpose_keys (key_kind, key, source, enabled)
+                VALUES ('domain', 'youtube.com', 'seed', 1);",
+        )
+        .unwrap();
+        let mut session_id = 10i64;
+        let mut insert = |key: &str, title: &str, url_key: &str, day: &str, seconds: i64| {
+            let start = format!("{day}T00:00:00Z");
+            let end = format!("{day}T00:{:02}:00Z", seconds / 60);
+            db.execute(
+                "INSERT INTO sessions
+                    (id, app_name, exe_path, window_title, url, category_key, category_key_kind,
+                     url_key, start_time, end_time)
+                 VALUES (?1, 'Chrome', 'chrome', ?2, ?3, ?4, 'domain', ?5, ?6, ?7)",
+                params![
+                    session_id,
+                    title,
+                    format!("https://{url_key}"),
+                    key,
+                    url_key,
+                    start,
+                    end
+                ],
+            )
+            .unwrap();
+            session_id += 1;
+        };
+        insert(
+            "courses.example",
+            "lecture course",
+            "courses.example",
+            "2024-01-01",
+            60,
+        );
+        insert(
+            "games.example",
+            "game stream",
+            "games.example",
+            "2024-01-01",
+            60,
+        );
+        insert(
+            "news.example",
+            "news headline",
+            "news.example",
+            "2024-01-01",
+            60,
+        );
+        for index in 0..3 {
+            insert(
+                "youtube.com",
+                &format!("lecture module {index}"),
+                "youtube.com/watch",
+                "2024-01-01",
+                300,
+            );
+            insert(
+                "youtube.com",
+                &format!("game stream {index}"),
+                "youtube.com/watch",
+                "2024-01-02",
+                350,
+            );
+            insert(
+                "youtube.com",
+                &format!("news headline {index}"),
+                "youtube.com/watch",
+                "2024-01-03",
+                100,
+            );
+        }
+        for index in 0..5 {
+            insert(
+                "youtube.com",
+                &format!("lecture channel lesson {index}"),
+                "youtube.com/@channel",
+                if index % 2 == 0 {
+                    "2024-01-04"
+                } else {
+                    "2024-01-05"
+                },
+                120,
+            );
+        }
+        drop(db);
+        crate::core::store::resolve::resolve_all(&conn.lock().unwrap()).unwrap();
+
+        let generation = AtomicU64::new(0);
+        let commit_gate = Mutex::new(());
+        let result = update(&conn, &FixtureEmbedder, 0, &generation, &commit_gate, 0.75).unwrap();
+        assert!(matches!(result, UpdateResult::Completed { .. }));
+
+        let db = conn.lock().unwrap();
+        let domain_suggestion: Option<i64> = db
+            .query_row(
+                "SELECT id FROM category_suggestions
+                 WHERE key_kind = 'domain' AND key = 'youtube.com'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(domain_suggestion, None);
+        let url_suggestion: Option<(String, i64)> = db
+            .query_row(
+                "SELECT key, category_id FROM category_suggestions WHERE key_kind = 'url'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(url_suggestion, Some(("youtube.com/@channel".into(), 1)));
+        let distinct_ml: i64 = db
+            .query_row(
+                "SELECT COUNT(DISTINCT ml_category_id) FROM sessions
+                 WHERE category_key = 'youtube.com' AND ml_category_id IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(distinct_ml >= 3);
+        let top_share: f64 = db
+            .query_row(
+                "SELECT top_share FROM multi_purpose_keys WHERE key = 'youtube.com'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(top_share < 0.60);
         let _ = std::fs::remove_file(path);
     }
 

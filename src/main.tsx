@@ -24,6 +24,10 @@ function AiCategorizationEvents() {
     listen("ai-categorization-completed", () => {
       queryClient.invalidateQueries({ queryKey: ["classifierStatus"] });
       queryClient.invalidateQueries({ queryKey: ["categorySuggestions"] });
+      queryClient.invalidateQueries({ queryKey: ["multiPurposeKeys"] });
+      queryClient.invalidateQueries({ queryKey: ["categoryRules"] });
+      queryClient.invalidateQueries({ queryKey: ["sessions"] });
+      queryClient.invalidateQueries({ queryKey: ["activityStats"] });
       queryClient.invalidateQueries({ queryKey: ["workSessionStats"] });
     }).then((unlisten) => {
       if (disposed) unlisten();
