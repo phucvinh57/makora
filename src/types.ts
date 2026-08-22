@@ -112,6 +112,7 @@ export interface ClassifierStatus {
   training_example_count: number;
   trained_category_count: number;
   last_completed_at: string | null;
+  last_execution_duration_ms: number | null;
   last_error: string | null;
   schedule: AiCategorizationSchedule;
   next_scheduled_at: string | null;

@@ -39,7 +39,7 @@
       "description": "Leisure media and feeds: videos, streams, games, music, podcasts, creators, live broadcasts and social browsing.",
       "children": [
         { "name": "Video & Streaming", "color": "#fbbf24", "description": "Movies, shows, entertainment videos, trailers, clips, subscriptions, playback and on-demand streaming." },
-        { "name": "Game Streaming", "color": "#d97706", "description": "Live gameplay, esports, game streams, speedruns, streamers, gaming broadcasts and interactive game content." },
+        { "name": "Game", "color": "#d97706", "description": "Live gameplay, esports, game streams, speedruns, streamers, gaming broadcasts and interactive game content." },
         { "name": "Music & Audio", "color": "#b45309", "description": "Songs, albums, playlists, artists, radio, podcasts, audio listening and music discovery." },
         { "name": "Social Feeds", "color": "#92400e", "description": "Scrolling timelines, posts, comments, communities, reactions, creators, forums and casual social browsing." }
       ]

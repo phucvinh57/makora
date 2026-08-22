@@ -11,7 +11,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use chrono::Utc;
+use chrono::{DateTime, Local, NaiveDateTime, TimeZone, Timelike, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use tracing::{error, info};
 
@@ -34,6 +34,7 @@ const MIN_URL_DAYS: usize = 2;
 const MIN_URL_CONSISTENCY: f64 = 0.80;
 const SCHEDULE_SETTING_KEY: &str = "ai_categorization_schedule";
 const LAST_COMPLETED_SETTING_KEY: &str = "ai_categorization_last_completed_at";
+const LAST_EXECUTION_DURATION_SETTING_KEY: &str = "ai_categorization_last_execution_duration_ms";
 const CONFIDENCE_THRESHOLD_SETTING_KEY: &str = "ai_categorization_confidence_threshold";
 const INPUT_REVISION_SETTING_KEY: &str = "ai_categorization_input_revision";
 const MODEL_VERSION_SETTING_KEY: &str = "ai_categorization_model_version";
@@ -88,6 +89,11 @@ struct ScheduleIntervals {
     weekly: Duration,
 }
 
+struct ScheduleDeadline {
+    at: Instant,
+    scheduled_at: String,
+}
+
 impl Default for ScheduleIntervals {
     fn default() -> Self {
         Self {
@@ -106,6 +112,7 @@ pub struct ClassifierStatus {
     pub training_example_count: usize,
     pub trained_category_count: usize,
     pub last_completed_at: Option<String>,
+    pub last_execution_duration_ms: Option<u64>,
     pub last_error: Option<String>,
     pub schedule: String,
     pub next_scheduled_at: Option<String>,
@@ -118,6 +125,7 @@ impl ClassifierStatus {
     fn initial(
         schedule: AiCategorizationSchedule,
         last_completed_at: Option<String>,
+        last_execution_duration_ms: Option<u64>,
         confidence_threshold: f32,
         holdout_accuracy: Option<f32>,
         holdout_sample_count: usize,
@@ -130,9 +138,11 @@ impl ClassifierStatus {
             training_example_count: 0,
             trained_category_count: 0,
             last_completed_at,
+            last_execution_duration_ms,
             last_error: None,
             schedule: schedule.as_str().into(),
-            next_scheduled_at: next_scheduled_at(schedule, intervals),
+            next_scheduled_at: schedule_deadline(schedule, intervals)
+                .map(|deadline| deadline.scheduled_at),
             confidence_threshold,
             holdout_accuracy,
             holdout_sample_count,
@@ -173,6 +183,8 @@ impl AiCategorizationService {
         let schedule = load_schedule(&conn)?;
         let confidence_threshold = load_confidence_threshold(&conn)?;
         let last_completed_at = read_setting(&conn, LAST_COMPLETED_SETTING_KEY)?;
+        let last_execution_duration_ms = read_setting(&conn, LAST_EXECUTION_DURATION_SETTING_KEY)?
+            .and_then(|value| value.parse::<u64>().ok());
         let holdout_accuracy = read_setting(&conn, HOLDOUT_ACCURACY_SETTING_KEY)?
             .and_then(|value| value.parse::<f32>().ok());
         let holdout_sample_count = read_setting(&conn, HOLDOUT_SAMPLE_COUNT_SETTING_KEY)?
@@ -184,6 +196,7 @@ impl AiCategorizationService {
         let status = Arc::new(Mutex::new(ClassifierStatus::initial(
             schedule,
             last_completed_at,
+            last_execution_duration_ms,
             confidence_threshold,
             holdout_accuracy,
             holdout_sample_count,
@@ -228,7 +241,8 @@ impl AiCategorizationService {
             status.generation = self.generation.load(Ordering::SeqCst);
             status.last_error = None;
             status.next_scheduled_at = schedule_from_status(&status)
-                .and_then(|schedule| next_scheduled_at(schedule, &self.intervals));
+                .and_then(|schedule| schedule_deadline(schedule, &self.intervals))
+                .map(|deadline| deadline.scheduled_at);
         }
         drop(_gate);
         self.tx
@@ -242,10 +256,12 @@ impl AiCategorizationService {
 
     pub fn set_schedule(&self, schedule: AiCategorizationSchedule) -> Result<()> {
         write_setting(&self.conn, SCHEDULE_SETTING_KEY, schedule.as_str())?;
+        let next_scheduled_at =
+            schedule_deadline(schedule, &self.intervals).map(|deadline| deadline.scheduled_at);
         {
             let mut status = self.status.lock().unwrap();
             status.schedule = schedule.as_str().into();
-            status.next_scheduled_at = next_scheduled_at(schedule, &self.intervals);
+            status.next_scheduled_at = next_scheduled_at;
         }
         self.tx
             .send(ServiceMessage::SetSchedule(schedule))
@@ -290,24 +306,24 @@ fn run_service(runtime: ServiceRuntime, rx: mpsc::Receiver<ServiceMessage>) {
         commit_gate,
         on_completed,
     } = runtime;
-    let mut deadline = schedule
-        .duration(&intervals)
-        .map(|delay| Instant::now() + delay);
+    let mut deadline = schedule_deadline(schedule, &intervals);
     loop {
-        let message = match deadline {
-            Some(at) => match rx.recv_timeout(at.saturating_duration_since(Instant::now())) {
-                Ok(message) => Some(message),
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    let _gate = commit_gate.lock().unwrap();
-                    generation.fetch_add(1, Ordering::SeqCst);
-                    let mut s = status.lock().unwrap();
-                    s.state = "queued".into();
-                    s.generation = generation.load(Ordering::SeqCst);
-                    s.last_error = None;
-                    Some(ServiceMessage::Run)
+        let message = match deadline.as_ref() {
+            Some(deadline) => {
+                match rx.recv_timeout(deadline.at.saturating_duration_since(Instant::now())) {
+                    Ok(message) => Some(message),
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        let _gate = commit_gate.lock().unwrap();
+                        generation.fetch_add(1, Ordering::SeqCst);
+                        let mut s = status.lock().unwrap();
+                        s.state = "queued".into();
+                        s.generation = generation.load(Ordering::SeqCst);
+                        s.last_error = None;
+                        Some(ServiceMessage::Run)
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            },
+            }
             None => match rx.recv() {
                 Ok(message) => Some(message),
                 Err(_) => break,
@@ -317,10 +333,8 @@ fn run_service(runtime: ServiceRuntime, rx: mpsc::Receiver<ServiceMessage>) {
         match message.expect("message is present unless the service stopped") {
             ServiceMessage::SetSchedule(next) => {
                 schedule = next;
-                deadline = schedule
-                    .duration(&intervals)
-                    .map(|delay| Instant::now() + delay);
-                update_schedule_status(&status, schedule, &intervals);
+                deadline = schedule_deadline(schedule, &intervals);
+                update_schedule_status(&status, schedule, deadline.as_ref());
             }
             ServiceMessage::SetConfidenceThreshold(next) => {
                 confidence_threshold = next;
@@ -333,10 +347,8 @@ fn run_service(runtime: ServiceRuntime, rx: mpsc::Receiver<ServiceMessage>) {
                         confidence_threshold = next;
                     }
                 }
-                deadline = schedule
-                    .duration(&intervals)
-                    .map(|delay| Instant::now() + delay);
-                update_schedule_status(&status, schedule, &intervals);
+                deadline = schedule_deadline(schedule, &intervals);
+                update_schedule_status(&status, schedule, deadline.as_ref());
                 execute_job(
                     &conn,
                     embedder.as_ref(),
@@ -346,6 +358,8 @@ fn run_service(runtime: ServiceRuntime, rx: mpsc::Receiver<ServiceMessage>) {
                     &on_completed,
                     confidence_threshold,
                 );
+                deadline = schedule_deadline(schedule, &intervals);
+                update_schedule_status(&status, schedule, deadline.as_ref());
             }
         }
     }
@@ -368,6 +382,7 @@ fn execute_job(
         s.generation = target;
         s.last_error = None;
     }
+    let started_at = Instant::now();
     let result = update(
         conn,
         embedder,
@@ -377,6 +392,7 @@ fn execute_job(
         confidence_threshold,
     );
     let current_generation = generation.load(Ordering::SeqCst);
+    let execution_duration_ms = started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
     let mut s = status.lock().unwrap();
     s.generation = current_generation;
     match result {
@@ -400,6 +416,7 @@ fn execute_job(
             holdout_accuracy,
             holdout_sample_count,
             kind,
+            execution_duration_ms,
             on_completed,
         ),
         Ok(UpdateResult::Stale) => {
@@ -437,6 +454,7 @@ fn complete_job(
     holdout_accuracy: Option<f32>,
     holdout_sample_count: usize,
     kind: UpdateKind,
+    execution_duration_ms: u64,
     on_completed: &CompletionCallback,
 ) {
     let completed_at = Utc::now().to_rfc3339();
@@ -444,11 +462,17 @@ fn complete_job(
         state,
         examples,
         categories,
+        execution_duration_ms,
         kind = kind.as_str(),
         "AI categorization job finished"
     );
     let result = (|| {
         write_setting(conn, LAST_COMPLETED_SETTING_KEY, &completed_at)?;
+        write_setting(
+            conn,
+            LAST_EXECUTION_DURATION_SETTING_KEY,
+            &execution_duration_ms.to_string(),
+        )?;
         write_setting(
             conn,
             HOLDOUT_SAMPLE_COUNT_SETTING_KEY,
@@ -466,6 +490,7 @@ fn complete_job(
             status.training_example_count = examples;
             status.trained_category_count = categories;
             status.last_completed_at = Some(completed_at);
+            status.last_execution_duration_ms = Some(execution_duration_ms);
             status.holdout_accuracy = holdout_accuracy;
             status.holdout_sample_count = holdout_sample_count;
             on_completed();
@@ -484,20 +509,63 @@ fn complete_job(
 fn update_schedule_status(
     status: &Mutex<ClassifierStatus>,
     schedule: AiCategorizationSchedule,
-    intervals: &ScheduleIntervals,
+    deadline: Option<&ScheduleDeadline>,
 ) {
     let mut status = status.lock().unwrap();
     status.schedule = schedule.as_str().into();
-    status.next_scheduled_at = next_scheduled_at(schedule, intervals);
+    status.next_scheduled_at = deadline.map(|deadline| deadline.scheduled_at.clone());
 }
 
-fn next_scheduled_at(
+fn schedule_deadline(
     schedule: AiCategorizationSchedule,
     intervals: &ScheduleIntervals,
-) -> Option<String> {
-    let delay = schedule.duration(intervals)?;
-    let delay = chrono::Duration::from_std(delay).ok()?;
-    Some((Utc::now() + delay).to_rfc3339())
+) -> Option<ScheduleDeadline> {
+    let now_utc = Utc::now();
+    let scheduled_at = match schedule {
+        AiCategorizationSchedule::Manual => return None,
+        AiCategorizationSchedule::Hourly | AiCategorizationSchedule::Daily => {
+            next_local_boundary(schedule, Local::now())?.with_timezone(&Utc)
+        }
+        AiCategorizationSchedule::Weekly => {
+            let delay = schedule.duration(intervals)?;
+            now_utc + chrono::Duration::from_std(delay).ok()?
+        }
+    };
+    let delay = (scheduled_at - now_utc).to_std().ok()?;
+    Some(ScheduleDeadline {
+        at: Instant::now() + delay,
+        scheduled_at: scheduled_at.to_rfc3339(),
+    })
+}
+
+fn next_local_boundary(
+    schedule: AiCategorizationSchedule,
+    now: DateTime<Local>,
+) -> Option<DateTime<Local>> {
+    next_boundary_naive(schedule, now.naive_local()).and_then(|value| {
+        Local
+            .from_local_datetime(&value)
+            .single()
+            .or_else(|| Local.from_local_datetime(&value).earliest())
+            .or_else(|| Local.from_local_datetime(&value).latest())
+    })
+}
+
+fn next_boundary_naive(
+    schedule: AiCategorizationSchedule,
+    now: NaiveDateTime,
+) -> Option<NaiveDateTime> {
+    match schedule {
+        AiCategorizationSchedule::Hourly => now
+            .date()
+            .and_hms_opt(now.hour(), 0, 0)
+            .map(|value| value + chrono::Duration::hours(1)),
+        AiCategorizationSchedule::Daily => now
+            .date()
+            .succ_opt()
+            .and_then(|date| date.and_hms_opt(0, 0, 0)),
+        AiCategorizationSchedule::Manual | AiCategorizationSchedule::Weekly => None,
+    }
 }
 
 fn schedule_from_status(status: &ClassifierStatus) -> Option<AiCategorizationSchedule> {
@@ -1438,6 +1506,42 @@ mod tests {
     use crate::core::store::sqlite::open_connection;
 
     #[test]
+    fn hourly_schedule_targets_the_next_start_of_an_hour() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 8, 22)
+            .unwrap()
+            .and_hms_milli_opt(13, 42, 17, 500)
+            .unwrap();
+
+        assert_eq!(
+            next_boundary_naive(AiCategorizationSchedule::Hourly, now),
+            Some(
+                chrono::NaiveDate::from_ymd_opt(2026, 8, 22)
+                    .unwrap()
+                    .and_hms_opt(14, 0, 0)
+                    .unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn daily_schedule_targets_the_next_midnight() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 8, 22)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+
+        assert_eq!(
+            next_boundary_naive(AiCategorizationSchedule::Daily, now),
+            Some(
+                chrono::NaiveDate::from_ymd_opt(2026, 8, 23)
+                    .unwrap()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap()
+            )
+        );
+    }
+
+    #[test]
     fn softmax_temperature_turns_cosine_margin_into_decisive_probabilities() {
         let probabilities = softmax(&[0.50, 0.45, 0.10]);
         assert!(probabilities[0] > 0.70);
@@ -1814,6 +1918,10 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+        assert!(
+            service.status().last_execution_duration_ms.is_some(),
+            "completed classifier jobs should record their execution time"
+        );
         let db = conn.lock().unwrap();
         let suggestion: Option<(i64, f32)> = db
             .query_row(
