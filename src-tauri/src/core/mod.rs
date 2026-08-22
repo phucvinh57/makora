@@ -1,5 +1,6 @@
 pub mod category;
 pub mod classifier;
+pub mod cluster;
 pub mod embed;
 pub mod ignore;
 pub mod keydoc;
@@ -9,14 +10,17 @@ pub mod store;
 pub mod tracker;
 pub mod watcher;
 
-pub use classifier::{AiCategorizationSchedule, AiCategorizationService, ClassifierStatus};
+pub use classifier::{
+    AiCategorizationSchedule, AiCategorizationService, ClassifierStatus, ClusteringGranularity,
+};
 pub use model::{BrowserKind, TabEvent, WatchEvent};
 pub use platform::PlatformFocusWatcher;
 pub use store::{
-    open_connection, ActivityStats, Category, CategoryFilter, CategoryRule, CategorySourceFilter,
-    CategoryStore, CategorySuggestion, HistoryReader, IgnoreRule, IgnoreStore, MultiPurposeKey,
-    RecategorizeOutcome, SeedTaxonomy, SessionFilter, SessionRow, SessionStore, SqliteStore,
-    WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
+    open_connection, ActivityCluster, ActivityStats, Category, CategoryFilter, CategoryRule,
+    CategorySourceFilter, CategoryStore, CategorySuggestion, ClusterAssignment, HistoryReader,
+    IgnoreRule, IgnoreStore, MultiPurposeKey, RecategorizeOutcome, SeedTaxonomy, SessionFilter,
+    SessionRow, SessionStore, SqliteStore, WorkSession, WorkSessionStats, WorkSessionStore,
+    WorkSessionUpdate,
 };
 pub use tracker::SessionTracker;
 pub use watcher::FocusWatcher;

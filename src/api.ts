@@ -5,11 +5,14 @@ import {
   isEnabled as checkAutostartEnabled,
 } from "@tauri-apps/plugin-autostart";
 import type {
+  ActivityCluster,
   ActivityStats,
   AiCategorizationSchedule,
   Category,
   CategorySuggestion,
+  ClusterAssignment,
   ClassifierStatus,
+  ClusteringGranularity,
   CategoryRule,
   IgnoreKind,
   IgnoreRule,
@@ -93,6 +96,12 @@ export function setAiCategorizationConfidenceThreshold(
   return invoke("set_ai_categorization_confidence_threshold", { threshold });
 }
 
+export function setAiClusteringGranularity(
+  granularity: ClusteringGranularity,
+): Promise<void> {
+  return invoke("set_ai_clustering_granularity", { granularity });
+}
+
 export function createCategory(
   name: string,
   color: string,
@@ -122,6 +131,22 @@ export function listCategorySuggestions(): Promise<CategorySuggestion[]> {
 
 export function listMultiPurposeKeys(): Promise<MultiPurposeKey[]> {
   return invoke("list_multi_purpose_keys");
+}
+
+export function listActivityClusters(): Promise<ActivityCluster[]> {
+  return invoke("list_activity_clusters");
+}
+
+export function assignActivityCluster(
+  clusterId: number,
+  categoryId: number,
+  memberIds: number[],
+): Promise<ClusterAssignment> {
+  return invoke("assign_activity_cluster", {
+    clusterId,
+    categoryId,
+    memberIds,
+  });
 }
 
 export function setMultiPurposeKey(

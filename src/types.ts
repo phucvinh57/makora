@@ -39,6 +39,41 @@ export interface CategorySuggestion {
   created_at: string;
 }
 
+export interface ActivityClusterMember {
+  id: number;
+  key_kind: "exe" | "domain";
+  key: string;
+  url_key: string | null;
+  window_title: string | null;
+  seconds: number;
+  session_count: number;
+}
+
+export interface ActivityCluster {
+  id: number;
+  scope: "key" | "title";
+  parent_kind: "exe" | "domain" | null;
+  parent_key: string | null;
+  label: string;
+  category_id: number | null;
+  category_name: string | null;
+  confidence: number | null;
+  lead: number | null;
+  cohesion: number;
+  member_count: number;
+  seconds: number;
+  model_version: number;
+  created_at: string;
+  members: ActivityClusterMember[];
+}
+
+export interface ClusterAssignment {
+  rules_created: number;
+  sessions_pinned: number;
+}
+
+export type ClusteringGranularity = "broad" | "balanced" | "fine";
+
 export interface SeedCategory {
   name: string;
   color: string;
@@ -119,6 +154,7 @@ export interface ClassifierStatus {
   confidence_threshold: number;
   holdout_accuracy: number | null;
   holdout_sample_count: number;
+  cluster_granularity: ClusteringGranularity;
 }
 
 export type IgnoreKind = "app" | "site";

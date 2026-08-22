@@ -28,6 +28,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { formatSeconds } from "@/duration";
+import { invalidateLabelingQueries } from "@/queries";
 
 function formatTimestamp(value: string | null | undefined) {
   return value ? new Date(value).toLocaleString() : "—";
@@ -127,18 +128,7 @@ export function AiTab() {
       queryClient.invalidateQueries({ queryKey: ["classifierStatus"] }),
   });
   function invalidateAccepted() {
-    for (const key of [
-      "categories",
-      "categoryRules",
-      "sessions",
-      "activityStats",
-      "workSessionStats",
-      "categorySuggestions",
-      "multiPurposeKeys",
-      "classifierStatus",
-    ]) {
-      queryClient.invalidateQueries({ queryKey: [key] });
-    }
+    invalidateLabelingQueries(queryClient);
   }
 
   const setMultiPurpose = useMutation({

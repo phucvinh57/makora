@@ -107,7 +107,7 @@ fn name_clash(err: rusqlite::Error, name: &str, parent_id: Option<i64>) -> anyho
 }
 
 /// Turns the foreign key's opaque "constraint failed" into something the UI can show.
-fn ensure_exists(conn: &rusqlite::Connection, category_id: i64) -> Result<()> {
+pub(super) fn ensure_exists(conn: &rusqlite::Connection, category_id: i64) -> Result<()> {
     let exists: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM categories WHERE id = ?1)",
         params![category_id],
@@ -119,7 +119,7 @@ fn ensure_exists(conn: &rusqlite::Connection, category_id: i64) -> Result<()> {
     Ok(())
 }
 
-fn bump_classifier_input_revision(conn: &rusqlite::Connection) -> Result<()> {
+pub(super) fn bump_classifier_input_revision(conn: &rusqlite::Connection) -> Result<()> {
     conn.execute(
         "INSERT OR IGNORE INTO settings (key, value)
          VALUES ('ai_categorization_input_revision', '0')",
@@ -331,6 +331,19 @@ impl CategoryStore {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    pub fn list_activity_clusters(&self) -> Result<Vec<super::clusters::ActivityCluster>> {
+        super::clusters::list_activity_clusters(&self.conn)
+    }
+
+    pub fn assign_activity_cluster(
+        &self,
+        cluster_id: i64,
+        category_id: i64,
+        member_ids: &[i64],
+    ) -> Result<super::clusters::ClusterAssignment> {
+        super::clusters::assign_activity_cluster(&self.conn, cluster_id, category_id, member_ids)
     }
 
     pub fn set_multi_purpose_key(&self, key_kind: &str, key: &str, enabled: bool) -> Result<()> {

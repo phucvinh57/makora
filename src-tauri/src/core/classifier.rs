@@ -16,6 +16,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use tracing::{error, info};
 
 use super::category::{resolve_category, CompiledRule, KeyKind, SessionCategoryInput};
+use super::cluster::{cluster, label_cluster, ClusterInput, ClusterParams};
 use super::embed::{Embedder, Model2Vec};
 use super::store::sqlite::SharedConnection;
 
@@ -42,6 +43,11 @@ const MODEL_ID_SETTING_KEY: &str = "ai_categorization_model_id";
 const CATEGORY_SIGNATURE_SETTING_KEY: &str = "ai_categorization_category_signature";
 const HOLDOUT_ACCURACY_SETTING_KEY: &str = "ai_categorization_holdout_accuracy";
 const HOLDOUT_SAMPLE_COUNT_SETTING_KEY: &str = "ai_categorization_holdout_sample_count";
+const CLUSTER_GRANULARITY_SETTING_KEY: &str = "ai_categorization_cluster_granularity";
+const MAX_KEY_CLUSTER_INPUT: usize = 1500;
+const MAX_TITLE_CLUSTER_INPUT: usize = 600;
+const MAX_CLUSTERED_PARENTS: usize = 12;
+const MAX_CLUSTERS_PER_SCOPE: usize = 40;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -78,6 +84,50 @@ impl AiCategorizationSchedule {
             Self::Hourly => Some(intervals.hourly),
             Self::Daily => Some(intervals.daily),
             Self::Weekly => Some(intervals.weekly),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClusteringGranularity {
+    Broad,
+    Balanced,
+    Fine,
+}
+
+impl ClusteringGranularity {
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "broad" => Ok(Self::Broad),
+            "balanced" => Ok(Self::Balanced),
+            "fine" => Ok(Self::Fine),
+            _ => bail!("invalid AI clustering granularity: {value}"),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Broad => "broad",
+            Self::Balanced => "balanced",
+            Self::Fine => "fine",
+        }
+    }
+
+    fn params(self, max_inputs: usize) -> ClusterParams {
+        let (sigma_multiplier, min_similarity, max_members) = match self {
+            Self::Broad => (1.0, 0.20, 400),
+            Self::Balanced => (1.5, 0.30, 200),
+            Self::Fine => (2.0, 0.40, 100),
+        };
+        ClusterParams {
+            sigma_multiplier,
+            min_similarity,
+            max_similarity: 1.0,
+            min_members: 3,
+            max_members,
+            max_clusters: MAX_CLUSTERS_PER_SCOPE,
+            max_inputs,
         }
     }
 }
@@ -119,9 +169,11 @@ pub struct ClassifierStatus {
     pub confidence_threshold: f32,
     pub holdout_accuracy: Option<f32>,
     pub holdout_sample_count: usize,
+    pub cluster_granularity: String,
 }
 
 impl ClassifierStatus {
+    #[allow(clippy::too_many_arguments)]
     fn initial(
         schedule: AiCategorizationSchedule,
         last_completed_at: Option<String>,
@@ -129,6 +181,7 @@ impl ClassifierStatus {
         confidence_threshold: f32,
         holdout_accuracy: Option<f32>,
         holdout_sample_count: usize,
+        cluster_granularity: ClusteringGranularity,
         intervals: &ScheduleIntervals,
     ) -> Self {
         Self {
@@ -146,6 +199,7 @@ impl ClassifierStatus {
             confidence_threshold,
             holdout_accuracy,
             holdout_sample_count,
+            cluster_granularity: cluster_granularity.as_str().into(),
         }
     }
 }
@@ -154,6 +208,7 @@ enum ServiceMessage {
     Run,
     SetSchedule(AiCategorizationSchedule),
     SetConfidenceThreshold(f32),
+    SetClusteringGranularity(ClusteringGranularity),
 }
 
 #[derive(Clone)]
@@ -182,6 +237,7 @@ impl AiCategorizationService {
         let embedder: Arc<dyn Embedder> = Arc::new(Model2Vec::new()?);
         let schedule = load_schedule(&conn)?;
         let confidence_threshold = load_confidence_threshold(&conn)?;
+        let cluster_granularity = load_cluster_granularity(&conn)?;
         let last_completed_at = read_setting(&conn, LAST_COMPLETED_SETTING_KEY)?;
         let last_execution_duration_ms = read_setting(&conn, LAST_EXECUTION_DURATION_SETTING_KEY)?
             .and_then(|value| value.parse::<u64>().ok());
@@ -200,6 +256,7 @@ impl AiCategorizationService {
             confidence_threshold,
             holdout_accuracy,
             holdout_sample_count,
+            cluster_granularity,
             &intervals,
         )));
         let service = Self {
@@ -219,6 +276,7 @@ impl AiCategorizationService {
                         embedder,
                         schedule,
                         confidence_threshold,
+                        cluster_granularity,
                         intervals,
                         generation,
                         status,
@@ -280,6 +338,18 @@ impl AiCategorizationService {
             .send(ServiceMessage::SetConfidenceThreshold(threshold))
             .context("AI categorization worker is unavailable")
     }
+
+    pub fn set_clustering_granularity(&self, granularity: ClusteringGranularity) -> Result<()> {
+        write_setting(
+            &self.conn,
+            CLUSTER_GRANULARITY_SETTING_KEY,
+            granularity.as_str(),
+        )?;
+        self.status.lock().unwrap().cluster_granularity = granularity.as_str().into();
+        self.tx
+            .send(ServiceMessage::SetClusteringGranularity(granularity))
+            .context("AI categorization worker is unavailable")
+    }
 }
 
 struct ServiceRuntime {
@@ -287,6 +357,7 @@ struct ServiceRuntime {
     embedder: Arc<dyn Embedder>,
     schedule: AiCategorizationSchedule,
     confidence_threshold: f32,
+    cluster_granularity: ClusteringGranularity,
     intervals: ScheduleIntervals,
     generation: Arc<AtomicU64>,
     status: Arc<Mutex<ClassifierStatus>>,
@@ -300,6 +371,7 @@ fn run_service(runtime: ServiceRuntime, rx: mpsc::Receiver<ServiceMessage>) {
         embedder,
         mut schedule,
         mut confidence_threshold,
+        mut cluster_granularity,
         intervals,
         generation,
         status,
@@ -339,12 +411,17 @@ fn run_service(runtime: ServiceRuntime, rx: mpsc::Receiver<ServiceMessage>) {
             ServiceMessage::SetConfidenceThreshold(next) => {
                 confidence_threshold = next;
             }
+            ServiceMessage::SetClusteringGranularity(next) => {
+                cluster_granularity = next;
+            }
             ServiceMessage::Run => {
                 while let Ok(message) = rx.try_recv() {
                     if let ServiceMessage::SetSchedule(next) = message {
                         schedule = next;
                     } else if let ServiceMessage::SetConfidenceThreshold(next) = message {
                         confidence_threshold = next;
+                    } else if let ServiceMessage::SetClusteringGranularity(next) = message {
+                        cluster_granularity = next;
                     }
                 }
                 deadline = schedule_deadline(schedule, &intervals);
@@ -357,6 +434,7 @@ fn run_service(runtime: ServiceRuntime, rx: mpsc::Receiver<ServiceMessage>) {
                     &commit_gate,
                     &on_completed,
                     confidence_threshold,
+                    cluster_granularity,
                 );
                 deadline = schedule_deadline(schedule, &intervals);
                 update_schedule_status(&status, schedule, deadline.as_ref());
@@ -365,6 +443,7 @@ fn run_service(runtime: ServiceRuntime, rx: mpsc::Receiver<ServiceMessage>) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_job(
     conn: &SharedConnection,
     embedder: &dyn Embedder,
@@ -373,6 +452,7 @@ fn execute_job(
     commit_gate: &Mutex<()>,
     on_completed: &CompletionCallback,
     confidence_threshold: f32,
+    cluster_granularity: ClusteringGranularity,
 ) {
     let target = generation.load(Ordering::SeqCst);
     info!(generation = target, "AI categorization job started");
@@ -390,6 +470,7 @@ fn execute_job(
         generation,
         commit_gate,
         confidence_threshold,
+        cluster_granularity,
     );
     let current_generation = generation.load(Ordering::SeqCst);
     let execution_duration_ms = started_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
@@ -591,7 +672,7 @@ fn write_setting(conn: &SharedConnection, key: &str, value: &str) -> Result<()> 
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![key, value],
     )?;
-    if key == CONFIDENCE_THRESHOLD_SETTING_KEY {
+    if key == CONFIDENCE_THRESHOLD_SETTING_KEY || key == CLUSTER_GRANULARITY_SETTING_KEY {
         bump_input_revision(&conn)?;
     }
     Ok(())
@@ -649,6 +730,13 @@ fn load_confidence_threshold(conn: &SharedConnection) -> Result<f32> {
             Ok(threshold)
         }
         None => Ok(DEFAULT_CONFIDENCE_THRESHOLD),
+    }
+}
+
+fn load_cluster_granularity(conn: &SharedConnection) -> Result<ClusteringGranularity> {
+    match read_setting(conn, CLUSTER_GRANULARITY_SETTING_KEY)? {
+        Some(value) => ClusteringGranularity::parse(&value),
+        None => Ok(ClusteringGranularity::Balanced),
     }
 }
 
@@ -743,6 +831,243 @@ struct CachedEmbedding {
     vector: Vec<f32>,
 }
 
+#[derive(Debug, Clone)]
+struct PendingClusterMember {
+    key_kind: String,
+    key: String,
+    url_key: Option<String>,
+    window_title: Option<String>,
+    seconds: f64,
+    session_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct PendingCluster {
+    scope: &'static str,
+    parent: Option<Key>,
+    label: String,
+    category_id: Option<i64>,
+    confidence: Option<f32>,
+    lead: Option<f32>,
+    cohesion: f32,
+    seconds: f64,
+    members: Vec<PendingClusterMember>,
+}
+
+struct ClusterOutcome {
+    key_clusters: Vec<PendingCluster>,
+    title_clusters: Vec<PendingCluster>,
+    clustered_keys: HashSet<Key>,
+}
+
+fn cluster_category(
+    centroid: &[f32],
+    label_vectors: &HashMap<i64, Vec<f32>>,
+) -> (Option<i64>, Option<f32>, Option<f32>) {
+    rank_embedding(centroid, label_vectors)
+        .map(|(category, confidence, lead)| (Some(category), Some(confidence), Some(lead)))
+        .unwrap_or((None, None, None))
+}
+
+fn build_clusters(
+    documents: &[super::keydoc::KeyDocument],
+    activities: &[super::keydoc::ActivityDocument],
+    embeddings: &HashMap<Key, Vec<f32>>,
+    labels: &HashMap<Key, LabeledKey>,
+    label_vectors: &HashMap<i64, Vec<f32>>,
+    candidate_multi_purpose: &HashSet<Key>,
+    granularity: ClusteringGranularity,
+) -> ClusterOutcome {
+    let key_documents = documents
+        .iter()
+        .filter(|document| {
+            let key = (document.key_kind.clone(), document.key.clone());
+            !candidate_multi_purpose.contains(&key) && !labels.contains_key(&key)
+        })
+        .filter(|document| {
+            embeddings.contains_key(&(document.key_kind.clone(), document.key.clone()))
+        })
+        .collect::<Vec<_>>();
+    let key_ids = key_documents
+        .iter()
+        .map(|document| format!("{}\u{1f}{}", document.key_kind, document.key))
+        .collect::<Vec<_>>();
+    let key_inputs = key_documents
+        .iter()
+        .zip(&key_ids)
+        .map(|(document, id)| ClusterInput {
+            id,
+            vector: embeddings
+                .get(&(document.key_kind.clone(), document.key.clone()))
+                .expect("filtered key embedding must exist"),
+            seconds: document.seconds,
+            text: &document.document,
+        })
+        .collect::<Vec<_>>();
+    let mut key_clusters = Vec::new();
+    let key_pool_texts = key_inputs
+        .iter()
+        .map(|input| input.text)
+        .collect::<Vec<_>>();
+    let key_results = cluster(&key_inputs, granularity.params(MAX_KEY_CLUSTER_INPUT));
+    let mut clustered_keys = HashSet::new();
+    let key_session_counts =
+        activities
+            .iter()
+            .fold(HashMap::<Key, usize>::new(), |mut counts, activity| {
+                *counts
+                    .entry((activity.key_kind.clone(), activity.key.clone()))
+                    .or_default() += activity.session_ids.len();
+                counts
+            });
+    for result in key_results {
+        let mut member_positions = result.members.clone();
+        member_positions.sort_by(|left, right| {
+            key_inputs[*right]
+                .seconds
+                .total_cmp(&key_inputs[*left].seconds)
+                .then_with(|| key_inputs[*left].id.cmp(key_inputs[*right].id))
+        });
+        let member_texts = member_positions
+            .iter()
+            .map(|position| key_inputs[*position].text)
+            .collect::<Vec<_>>();
+        let members = member_positions
+            .iter()
+            .map(|position| {
+                let document = key_documents[*position];
+                let key = (document.key_kind.clone(), document.key.clone());
+                clustered_keys.insert(key);
+                PendingClusterMember {
+                    key_kind: document.key_kind.clone(),
+                    key: document.key.clone(),
+                    url_key: None,
+                    window_title: None,
+                    seconds: document.seconds,
+                    session_count: key_session_counts
+                        .get(&(document.key_kind.clone(), document.key.clone()))
+                        .copied()
+                        .unwrap_or_default(),
+                }
+            })
+            .collect::<Vec<_>>();
+        let (category_id, confidence, lead) = cluster_category(&result.centroid, label_vectors);
+        key_clusters.push(PendingCluster {
+            scope: "key",
+            parent: None,
+            label: label_cluster(&member_texts, &key_pool_texts, None),
+            category_id,
+            confidence,
+            lead,
+            cohesion: result.cohesion,
+            seconds: result.seconds,
+            members,
+        });
+    }
+
+    let mut parents = candidate_multi_purpose
+        .iter()
+        .filter_map(|parent| {
+            let seconds = activities
+                .iter()
+                .filter(|activity| &(activity.key_kind.clone(), activity.key.clone()) == parent)
+                .map(|activity| activity.seconds)
+                .sum::<f64>();
+            (seconds > 0.0).then_some((parent.clone(), seconds))
+        })
+        .collect::<Vec<_>>();
+    parents.sort_by(|(left, left_seconds), (right, right_seconds)| {
+        right_seconds
+            .total_cmp(left_seconds)
+            .then_with(|| left.cmp(right))
+    });
+    let mut title_clusters = Vec::new();
+    for (parent, _) in parents.into_iter().take(MAX_CLUSTERED_PARENTS) {
+        let pool = activities
+            .iter()
+            .filter(|activity| {
+                (activity.key_kind.clone(), activity.key.clone()) == parent
+                    && !activity.window_title.trim().is_empty()
+                    && activity.labeled_session_count == 0
+            })
+            .collect::<Vec<_>>();
+        let title_activities = pool
+            .iter()
+            .filter(|activity| {
+                embeddings.contains_key(&("title".to_string(), activity.cache_key()))
+            })
+            .collect::<Vec<_>>();
+        let title_ids = title_activities
+            .iter()
+            .map(|activity| activity.cache_key())
+            .collect::<Vec<_>>();
+        let inputs = title_activities
+            .iter()
+            .zip(&title_ids)
+            .map(|(activity, id)| ClusterInput {
+                id,
+                vector: embeddings
+                    .get(&("title".to_string(), id.clone()))
+                    .expect("filtered title embedding must exist"),
+                seconds: activity.seconds,
+                text: &activity.document,
+            })
+            .collect::<Vec<_>>();
+        let pool_texts = inputs.iter().map(|input| input.text).collect::<Vec<_>>();
+        for result in cluster(&inputs, granularity.params(MAX_TITLE_CLUSTER_INPUT)) {
+            let mut positions = result.members.clone();
+            positions.sort_by(|left, right| {
+                inputs[*right]
+                    .seconds
+                    .total_cmp(&inputs[*left].seconds)
+                    .then_with(|| inputs[*left].id.cmp(inputs[*right].id))
+            });
+            let member_texts = positions
+                .iter()
+                .map(|position| inputs[*position].text)
+                .collect::<Vec<_>>();
+            let members = positions
+                .iter()
+                .map(|position| {
+                    let activity = title_activities[*position];
+                    PendingClusterMember {
+                        key_kind: activity.key_kind.clone(),
+                        key: activity.key.clone(),
+                        url_key: activity.url_key.clone(),
+                        window_title: Some(activity.window_title.clone()),
+                        seconds: activity.seconds,
+                        session_count: activity.session_ids.len(),
+                    }
+                })
+                .collect::<Vec<_>>();
+            let (category_id, confidence, lead) = cluster_category(&result.centroid, label_vectors);
+            title_clusters.push(PendingCluster {
+                scope: "title",
+                parent: Some(parent.clone()),
+                label: label_cluster(&member_texts, &pool_texts, Some(&parent.1)),
+                category_id,
+                confidence,
+                lead,
+                cohesion: result.cohesion,
+                seconds: result.seconds,
+                members,
+            });
+        }
+    }
+    title_clusters.sort_by(|left, right| {
+        right
+            .seconds
+            .total_cmp(&left.seconds)
+            .then_with(|| left.parent.cmp(&right.parent))
+    });
+    title_clusters.truncate(MAX_CLUSTERS_PER_SCOPE);
+    ClusterOutcome {
+        key_clusters,
+        title_clusters,
+        clustered_keys,
+    }
+}
+
 fn update(
     conn: &SharedConnection,
     embedder: &dyn Embedder,
@@ -750,6 +1075,7 @@ fn update(
     generation: &AtomicU64,
     commit_gate: &Mutex<()>,
     confidence_threshold: f32,
+    cluster_granularity: ClusteringGranularity,
 ) -> Result<UpdateResult> {
     let snapshot_input_revision = load_input_revision(conn)?;
     let (documents, activities) = {
@@ -910,10 +1236,25 @@ fn update(
         .collect::<HashMap<_, _>>();
     candidate_multi_purpose.extend(dispersions.keys().cloned());
 
+    let cluster_outcome = build_clusters(
+        &documents,
+        &activities,
+        &embeddings,
+        &labels,
+        &label_vectors,
+        &candidate_multi_purpose,
+        cluster_granularity,
+    );
+
     let candidates = documents
         .iter()
         .filter(|document| {
             !candidate_multi_purpose.contains(&(document.key_kind.clone(), document.key.clone()))
+        })
+        .filter(|document| {
+            !cluster_outcome
+                .clustered_keys
+                .contains(&(document.key_kind.clone(), document.key.clone()))
         })
         .filter(|document| !labels.contains_key(&(document.key_kind.clone(), document.key.clone())))
         .filter_map(|document| {
@@ -1132,6 +1473,12 @@ fn update(
             ],
         )?;
     }
+    persist_clusters(
+        &tx,
+        &cluster_outcome,
+        &effective_multi_purpose,
+        model_version,
+    )?;
     write_setting_tx(&tx, MODEL_VERSION_SETTING_KEY, &model_version.to_string())?;
     write_setting_tx(&tx, MODEL_ID_SETTING_KEY, embedder.model_id())?;
     write_setting_tx(&tx, CATEGORY_SIGNATURE_SETTING_KEY, &category_signature)?;
@@ -1159,6 +1506,72 @@ fn write_setting_tx(tx: &rusqlite::Transaction<'_>, key: &str, value: &str) -> R
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         params![key, value],
     )?;
+    Ok(())
+}
+
+fn persist_clusters(
+    tx: &rusqlite::Transaction<'_>,
+    outcome: &ClusterOutcome,
+    effective_multi_purpose: &HashSet<Key>,
+    model_version: i64,
+) -> Result<()> {
+    tx.execute("DELETE FROM activity_clusters", [])?;
+    for cluster in outcome
+        .key_clusters
+        .iter()
+        .chain(outcome.title_clusters.iter())
+    {
+        if cluster.scope == "title"
+            && !cluster
+                .parent
+                .as_ref()
+                .is_some_and(|parent| effective_multi_purpose.contains(parent))
+        {
+            continue;
+        }
+        let (parent_kind, parent_key) = cluster
+            .parent
+            .as_ref()
+            .map(|(kind, key)| (Some(kind.as_str()), Some(key.as_str())))
+            .unwrap_or((None, None));
+        tx.execute(
+            "INSERT INTO activity_clusters
+                (scope, parent_kind, parent_key, label, category_id, confidence, lead,
+                 cohesion, member_count, seconds, model_version, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                cluster.scope,
+                parent_kind,
+                parent_key,
+                cluster.label,
+                cluster.category_id,
+                cluster.confidence,
+                cluster.lead,
+                cluster.cohesion,
+                cluster.members.len() as i64,
+                cluster.seconds.max(0.0),
+                model_version,
+                Utc::now().to_rfc3339(),
+            ],
+        )?;
+        let cluster_id = tx.last_insert_rowid();
+        for member in &cluster.members {
+            tx.execute(
+                "INSERT INTO activity_cluster_members
+                    (cluster_id, key_kind, key, url_key, window_title, seconds, session_count)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    cluster_id,
+                    member.key_kind,
+                    member.key,
+                    member.url_key,
+                    member.window_title,
+                    member.seconds.max(0.0),
+                    member.session_count as i64,
+                ],
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -1193,8 +1606,10 @@ fn load_categories(conn: &SharedConnection) -> Result<Vec<CategoryInfo>> {
 
 fn load_labeled_keys(conn: &SharedConnection) -> Result<HashMap<Key, LabeledKey>> {
     let conn = conn.lock().unwrap();
+    let multi_purpose = load_multi_purpose_keys_from_conn(&conn)?;
     let mut stmt = conn.prepare(
-        "SELECT category_key_kind, category_key, category_id, rule_category_id
+        "SELECT category_key_kind, category_key, url_key, window_title,
+                category_id, rule_category_id
          FROM sessions
          WHERE category_id IS NOT NULL OR rule_category_id IS NOT NULL",
     )?;
@@ -1203,12 +1618,29 @@ fn load_labeled_keys(conn: &SharedConnection) -> Result<HashMap<Key, LabeledKey>
         Ok((
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
-            row.get::<_, Option<i64>>(2)?,
-            row.get::<_, Option<i64>>(3)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, String>(3)?,
+            row.get::<_, Option<i64>>(4)?,
+            row.get::<_, Option<i64>>(5)?,
         ))
     })? {
-        let (kind, key, manual, rule) = row?;
-        let entry = evidence.entry((kind, key)).or_default();
+        let (kind, key, url_key, title, manual, rule) = row?;
+        let parent = (kind.clone(), key.clone());
+        let label_key = if multi_purpose.contains(&parent) {
+            if title.trim().is_empty() {
+                continue;
+            }
+            (
+                "title".to_string(),
+                super::keydoc::activity_cache_key(&kind, &key, url_key.as_deref(), &title),
+            )
+        } else {
+            // Multi-purpose keys are never offered as standalone suggestions, so excluding
+            // their mixed key document from training preserves the invariant that ruled keys
+            // stay labeled without poisoning the taxonomy with unrelated titles.
+            parent
+        };
+        let entry = evidence.entry(label_key).or_default();
         if let Some(category) = manual {
             *entry.manual.entry(category).or_default() += 1;
         } else if let Some(category) = rule {
@@ -1363,32 +1795,95 @@ fn build_label_vectors(
         .map(Vec::len)
         .or_else(|| embeddings.values().next().map(Vec::len))
         .unwrap_or_default();
+    let aggregates = build_label_aggregates(embeddings, labels, dimension);
+    let excluded = excluded.and_then(|key| {
+        labels.get(key).and_then(|label| {
+            embeddings
+                .get(key)
+                .map(|vector| (label.category_id, vector.as_slice(), label.weight))
+        })
+    });
+    build_label_vectors_from_aggregates(
+        categories,
+        &aggregates,
+        description_vectors,
+        dimension,
+        excluded,
+    )
+}
+
+fn build_label_aggregates(
+    embeddings: &HashMap<Key, Vec<f32>>,
+    labels: &HashMap<Key, LabeledKey>,
+    dimension: usize,
+) -> HashMap<i64, (Vec<f32>, usize)> {
+    let mut aggregates = HashMap::new();
+    for (key, label) in labels {
+        let Some(vector) = embeddings.get(key) else {
+            continue;
+        };
+        let entry = aggregates
+            .entry(label.category_id)
+            .or_insert_with(|| (vec![0.0; dimension], 0usize));
+        for (target, value) in entry.0.iter_mut().zip(vector) {
+            *target += *value * label.weight;
+        }
+        entry.1 += 1;
+    }
+    aggregates
+}
+
+fn build_category_vector(
+    category: &CategoryInfo,
+    aggregates: &HashMap<i64, (Vec<f32>, usize)>,
+    description_vectors: &HashMap<i64, Vec<f32>>,
+    dimension: usize,
+    excluded: Option<(i64, &[f32], f32)>,
+) -> Option<Vec<f32>> {
+    let (mut sum, mut count) = aggregates
+        .get(&category.id)
+        .cloned()
+        .unwrap_or_else(|| (vec![0.0; dimension], 0));
+    if let Some((excluded_category, vector, weight)) = excluded {
+        if excluded_category == category.id {
+            for (target, value) in sum.iter_mut().zip(vector) {
+                *target -= *value * weight;
+            }
+            count = count.saturating_sub(1);
+        }
+    }
+    let n = count as f32;
+    if n > 0.0 {
+        normalize(&mut sum);
+    }
+    let description = description_vectors
+        .get(&category.id)
+        .cloned()
+        .unwrap_or_else(|| vec![0.0; dimension]);
+    let mut blended = blend_vectors(&sum, &description, n);
+    normalize(&mut blended);
+    blended.iter().any(|value| *value != 0.0).then_some(blended)
+}
+
+fn build_label_vectors_from_aggregates(
+    categories: &[CategoryInfo],
+    aggregates: &HashMap<i64, (Vec<f32>, usize)>,
+    description_vectors: &HashMap<i64, Vec<f32>>,
+    dimension: usize,
+    excluded: Option<(i64, &[f32], f32)>,
+) -> HashMap<i64, Vec<f32>> {
     categories
         .iter()
         .filter(|category| category.is_leaf)
         .filter_map(|category| {
-            let examples = labels
-                .iter()
-                .filter(|(key, label)| label.category_id == category.id && excluded != Some(key))
-                .filter_map(|(key, label)| embeddings.get(key).map(|vector| (vector, label.weight)))
-                .collect::<Vec<_>>();
-            let n = examples.len() as f32;
-            let mut prototype = vec![0.0; dimension];
-            for (vector, weight) in &examples {
-                for (target, value) in prototype.iter_mut().zip(vector.iter()) {
-                    *target += *value * *weight;
-                }
-            }
-            if n > 0.0 {
-                normalize(&mut prototype);
-            }
-            let description = description_vectors
-                .get(&category.id)
-                .cloned()
-                .unwrap_or_else(|| vec![0.0; dimension]);
-            let mut blended = blend_vectors(&prototype, &description, n);
-            normalize(&mut blended);
-            (blended.iter().any(|value| *value != 0.0)).then_some((category.id, blended))
+            build_category_vector(
+                category,
+                aggregates,
+                description_vectors,
+                dimension,
+                excluded,
+            )
+            .map(|vector| (category.id, vector))
         })
         .collect()
 }
@@ -1405,10 +1900,10 @@ fn blend_vectors(prototype: &[f32], description: &[f32], n: f32) -> Vec<f32> {
         .collect()
 }
 
-fn score_embedding(
+fn rank_embedding(
     embedding: &[f32],
     label_vectors: &HashMap<i64, Vec<f32>>,
-) -> Option<(i64, f32)> {
+) -> Option<(i64, f32, f32)> {
     let mut scores = label_vectors
         .iter()
         .map(|(category, vector)| (*category, cosine(embedding, vector)))
@@ -1429,7 +1924,16 @@ fn score_embedding(
         .get(1)
         .map(|(_, probability)| *probability)
         .unwrap_or(0.0);
-    (confidence - next >= MIN_LEAD).then_some((category, confidence))
+    Some((category, confidence, confidence - next))
+}
+
+fn score_embedding(
+    embedding: &[f32],
+    label_vectors: &HashMap<i64, Vec<f32>>,
+) -> Option<(i64, f32)> {
+    rank_embedding(embedding, label_vectors)
+        .filter(|(_, _, lead)| *lead >= MIN_LEAD)
+        .map(|(category, confidence, _)| (category, confidence))
 }
 
 fn cosine(left: &[f32], right: &[f32]) -> f32 {
@@ -1459,20 +1963,41 @@ fn evaluate_holdout(
     labels: &HashMap<Key, LabeledKey>,
     description_vectors: &HashMap<i64, Vec<f32>>,
 ) -> (Option<f32>, usize) {
+    let dimension = description_vectors
+        .values()
+        .next()
+        .map(Vec::len)
+        .or_else(|| embeddings.values().next().map(Vec::len))
+        .unwrap_or_default();
+    let aggregates = build_label_aggregates(embeddings, labels, dimension);
+    let base_vectors = build_label_vectors_from_aggregates(
+        categories,
+        &aggregates,
+        description_vectors,
+        dimension,
+        None,
+    );
     let mut correct = 0usize;
     let mut sample_count = 0usize;
     for (key, label) in labels {
         let Some(embedding) = embeddings.get(key) else {
             continue;
         };
-        let label_vectors = build_label_vectors(
+        let Some(excluded) = labels
+            .get(key)
+            .map(|label| (label.category_id, embedding.as_slice(), label.weight))
+        else {
+            continue;
+        };
+        let Some(predicted) = best_category_excluding(
+            embedding,
+            &base_vectors,
             categories,
-            embeddings,
-            labels,
+            &aggregates,
             description_vectors,
-            Some(key),
-        );
-        let Some(predicted) = best_category(embedding, &label_vectors) else {
+            dimension,
+            excluded,
+        ) else {
             continue;
         };
         sample_count += 1;
@@ -1490,10 +2015,33 @@ fn evaluate_holdout(
     )
 }
 
-fn best_category(embedding: &[f32], label_vectors: &HashMap<i64, Vec<f32>>) -> Option<i64> {
-    label_vectors
+fn best_category_excluding(
+    embedding: &[f32],
+    base_vectors: &HashMap<i64, Vec<f32>>,
+    categories: &[CategoryInfo],
+    aggregates: &HashMap<i64, (Vec<f32>, usize)>,
+    description_vectors: &HashMap<i64, Vec<f32>>,
+    dimension: usize,
+    excluded: (i64, &[f32], f32),
+) -> Option<i64> {
+    categories
         .iter()
-        .map(|(category, vector)| (*category, cosine(embedding, vector)))
+        .filter(|category| category.is_leaf)
+        .filter_map(|category| {
+            let score = if category.id == excluded.0 {
+                let vector = build_category_vector(
+                    category,
+                    aggregates,
+                    description_vectors,
+                    dimension,
+                    Some(excluded),
+                )?;
+                cosine(embedding, &vector)
+            } else {
+                cosine(embedding, base_vectors.get(&category.id)?)
+            };
+            Some((category.id, score))
+        })
         .max_by(|(left_id, left), (right_id, right)| {
             left.total_cmp(right).then_with(|| right_id.cmp(left_id))
         })
@@ -1634,6 +2182,48 @@ mod tests {
         let label = &labels[&(String::from("domain"), String::from("facebook.com"))];
         assert_eq!(label.category_id, 1);
         assert_eq!(label.weight, 3.0);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn multi_purpose_pins_train_title_labels_without_labeling_the_parent_key() {
+        let path = std::env::temp_dir().join(format!(
+            "makora-classifier-title-labels-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let conn = open_connection(&path).unwrap();
+        conn.lock()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO categories (id, name, color) VALUES (1, 'Learning', '#111111');
+                 INSERT INTO multi_purpose_keys (key_kind, key, source, enabled)
+                    VALUES ('domain', 'youtube.com', 'user', 1);
+                 INSERT INTO sessions
+                    (app_name, exe_path, window_title, category_key, category_key_kind,
+                     url_key, start_time, end_time, category_id)
+                 VALUES ('Chrome', 'chrome', 'Rust lecture', 'youtube.com', 'domain',
+                         'youtube.com/watch', '2024-01-01T00:00:00Z',
+                         '2024-01-01T00:10:00Z', 1),
+                        ('Chrome', 'chrome', 'Game stream', 'youtube.com', 'domain',
+                         'youtube.com/watch', '2024-01-01T01:00:00Z',
+                         '2024-01-01T01:10:00Z', NULL);",
+            )
+            .unwrap();
+        let labels = load_labeled_keys(&conn).unwrap();
+        assert!(!labels.contains_key(&("domain".into(), "youtube.com".into())));
+        assert!(labels.contains_key(&(
+            "title".into(),
+            super::super::keydoc::activity_cache_key(
+                "domain",
+                "youtube.com",
+                Some("youtube.com/watch"),
+                "Rust lecture",
+            )
+        )));
         let _ = std::fs::remove_file(path);
     }
 
@@ -1809,7 +2399,16 @@ mod tests {
 
         let generation = AtomicU64::new(0);
         let commit_gate = Mutex::new(());
-        let result = update(&conn, &FixtureEmbedder, 0, &generation, &commit_gate, 0.75).unwrap();
+        let result = update(
+            &conn,
+            &FixtureEmbedder,
+            0,
+            &generation,
+            &commit_gate,
+            0.75,
+            ClusteringGranularity::Balanced,
+        )
+        .unwrap();
         assert!(matches!(result, UpdateResult::Completed { .. }));
 
         let db = conn.lock().unwrap();
@@ -1841,6 +2440,15 @@ mod tests {
             )
             .unwrap();
         assert!(distinct_ml >= 3);
+        let persisted_clusters: i64 = db
+            .query_row("SELECT COUNT(*) FROM activity_clusters", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(
+            persisted_clusters > 0,
+            "the title pass should materialize reviewable clusters"
+        );
         let top_share: f64 = db
             .query_row(
                 "SELECT top_share FROM multi_purpose_keys WHERE key = 'youtube.com'",

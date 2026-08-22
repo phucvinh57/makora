@@ -3,7 +3,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CategoriesTab } from "./-components/CategoriesTab";
 import { RulesTab } from "./-components/RulesTab";
 import { AiTab } from "./-components/AiTab";
+import { ClustersTab } from "./-components/ClustersTab";
 import { useLabelingStore, type LabelingTab } from "@/stores/labeling";
+
+const TABS: LabelingTab[] = ["categories", "rules", "ai", "clusters"];
 
 export const Route = createFileRoute("/labeling")({
   component: LabelingPage,
@@ -18,6 +21,7 @@ function LabelingPage() {
   const setRulesCategoryFilter = useLabelingStore(
     (state) => state.setRulesCategoryFilter,
   );
+  const activeTab = TABS.includes(tab) ? tab : "categories";
 
   return (
     <div className="flex h-full flex-col box-border">
@@ -27,12 +31,13 @@ function LabelingPage() {
       </header>
 
       <Tabs
-        value={tab}
+        value={activeTab}
         onValueChange={(value) => setTab(value as LabelingTab)}
         className="flex min-h-0 flex-1 flex-col"
       >
         <TabsList className="mb-4 self-start">
           <TabsTrigger value="ai">AI</TabsTrigger>
+          <TabsTrigger value="clusters">Clusters</TabsTrigger>
           <TabsTrigger value="categories">Categories</TabsTrigger>
           <TabsTrigger value="rules">Rules</TabsTrigger>
         </TabsList>
@@ -52,6 +57,9 @@ function LabelingPage() {
         </TabsContent>
         <TabsContent value="ai" className="flex min-h-0 flex-col">
           <AiTab />
+        </TabsContent>
+        <TabsContent value="clusters" className="flex min-h-0 flex-col">
+          <ClustersTab />
         </TabsContent>
       </Tabs>
     </div>

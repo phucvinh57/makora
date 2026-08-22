@@ -11,6 +11,7 @@ import { useEffect } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { router } from "./router";
+import { invalidateLabelingQueries } from "./queries";
 import "./styles.css";
 
 const queryClient = new QueryClient();
@@ -22,13 +23,7 @@ function AiCategorizationEvents() {
     let disposed = false;
     let stopListening: (() => void) | undefined;
     listen("ai-categorization-completed", () => {
-      queryClient.invalidateQueries({ queryKey: ["classifierStatus"] });
-      queryClient.invalidateQueries({ queryKey: ["categorySuggestions"] });
-      queryClient.invalidateQueries({ queryKey: ["multiPurposeKeys"] });
-      queryClient.invalidateQueries({ queryKey: ["categoryRules"] });
-      queryClient.invalidateQueries({ queryKey: ["sessions"] });
-      queryClient.invalidateQueries({ queryKey: ["activityStats"] });
-      queryClient.invalidateQueries({ queryKey: ["workSessionStats"] });
+      invalidateLabelingQueries(queryClient);
     }).then((unlisten) => {
       if (disposed) unlisten();
       else stopListening = unlisten;

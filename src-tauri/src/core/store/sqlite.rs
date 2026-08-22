@@ -320,6 +320,48 @@ fn migrations() -> Migrations<'static> {
                 ON category_suggestions(key_kind, key);",
         )
         .foreign_key_check(),
+        M::up(
+            "CREATE TABLE activity_clusters (
+                id            INTEGER PRIMARY KEY,
+                scope         TEXT NOT NULL CHECK(scope IN ('key', 'title')),
+                parent_kind   TEXT CHECK(parent_kind IS NULL OR parent_kind IN ('exe', 'domain')),
+                parent_key    TEXT,
+                label         TEXT NOT NULL,
+                category_id   INTEGER REFERENCES categories(id) ON DELETE CASCADE,
+                confidence    REAL CHECK(confidence IS NULL OR (confidence >= 0.0 AND confidence <= 1.0)),
+                lead          REAL CHECK(lead IS NULL OR (lead >= 0.0 AND lead <= 1.0)),
+                cohesion      REAL NOT NULL CHECK(cohesion >= -1.0 AND cohesion <= 1.0),
+                member_count  INTEGER NOT NULL CHECK(member_count > 0),
+                seconds       REAL NOT NULL CHECK(seconds >= 0.0),
+                model_version INTEGER NOT NULL,
+                created_at    TEXT NOT NULL,
+                CHECK ((scope = 'key'   AND parent_kind IS NULL     AND parent_key IS NULL) OR
+                       (scope = 'title' AND parent_kind IS NOT NULL AND parent_key IS NOT NULL))
+            );
+            CREATE INDEX idx_activity_clusters_scope
+                ON activity_clusters(scope, seconds DESC);
+
+            CREATE TABLE activity_cluster_members (
+                id            INTEGER PRIMARY KEY,
+                cluster_id    INTEGER NOT NULL REFERENCES activity_clusters(id) ON DELETE CASCADE,
+                key_kind      TEXT NOT NULL CHECK(key_kind IN ('exe', 'domain')),
+                key           TEXT NOT NULL,
+                url_key       TEXT,
+                window_title  TEXT,
+                seconds       REAL NOT NULL CHECK(seconds >= 0.0),
+                session_count INTEGER NOT NULL DEFAULT 0 CHECK(session_count >= 0)
+            );
+            CREATE INDEX idx_activity_cluster_members_cluster
+                ON activity_cluster_members(cluster_id);
+            -- Nullable identity fields cannot be part of a SQLite PRIMARY KEY expression.
+            CREATE UNIQUE INDEX idx_activity_cluster_members_identity
+                ON activity_cluster_members(cluster_id, key_kind, key,
+                                            COALESCE(url_key, ''), COALESCE(window_title, ''));
+
+            INSERT OR IGNORE INTO settings (key, value)
+                VALUES ('ai_categorization_cluster_granularity', 'balanced');",
+        )
+        .foreign_key_check(),
     ])
 }
 

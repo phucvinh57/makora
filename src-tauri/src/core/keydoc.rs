@@ -25,6 +25,7 @@ pub struct ActivityDocument {
     pub session_ids: Vec<i64>,
     pub observation_days: Vec<String>,
     pub distinct_days: usize,
+    pub labeled_session_count: usize,
     pub doc_hash: String,
 }
 
@@ -42,6 +43,7 @@ struct ActivityParts {
     session_ids: Vec<i64>,
     days: BTreeSet<String>,
     seconds: f64,
+    labeled_session_count: usize,
 }
 
 /// Builds one semantic document per stable categorization key.
@@ -117,7 +119,8 @@ pub fn build_activities(conn: &Connection) -> Result<Vec<ActivityDocument>> {
         "SELECT id, category_key_kind, category_key, app_name, window_title, url_key,
                 start_time, CASE WHEN end_time IS NULL THEN 0.0
                                  ELSE MAX(0.0, (julianday(end_time) - julianday(start_time)) * 86400.0)
-                            END
+                            END,
+                (category_id IS NOT NULL OR rule_category_id IS NOT NULL)
          FROM sessions",
     )?;
     let mut grouped: BTreeMap<(String, String, Option<String>, String), ActivityParts> =
@@ -132,13 +135,17 @@ pub fn build_activities(conn: &Connection) -> Result<Vec<ActivityDocument>> {
             row.get::<_, Option<String>>(5)?,
             row.get::<_, String>(6)?,
             row.get::<_, f64>(7)?.max(0.0),
+            row.get::<_, bool>(8)?,
         ))
     })?;
     for row in rows {
-        let (id, kind, key, app, title, url_key, start_time, seconds) = row?;
+        let (id, kind, key, app, title, url_key, start_time, seconds, labeled) = row?;
         let group_key = (kind, key, url_key, title);
         let parts = grouped.entry(group_key).or_default();
         parts.seconds += seconds;
+        if labeled {
+            parts.labeled_session_count += 1;
+        }
         parts.session_ids.push(id);
         if !app.trim().is_empty() {
             parts.apps.insert(app);
@@ -178,6 +185,7 @@ pub fn build_activities(conn: &Connection) -> Result<Vec<ActivityDocument>> {
                 session_ids: parts.session_ids,
                 observation_days: parts.days.iter().cloned().collect(),
                 distinct_days: parts.days.len(),
+                labeled_session_count: parts.labeled_session_count,
                 doc_hash,
             }
         })
@@ -186,14 +194,28 @@ pub fn build_activities(conn: &Connection) -> Result<Vec<ActivityDocument>> {
 
 impl ActivityDocument {
     pub fn cache_key(&self) -> String {
-        format!(
-            "{}\u{1f}{}\u{1f}{}\u{1f}{}",
-            self.key_kind,
-            self.key,
-            self.url_key.as_deref().unwrap_or_default(),
-            self.window_title
+        activity_cache_key(
+            &self.key_kind,
+            &self.key,
+            self.url_key.as_deref(),
+            &self.window_title,
         )
     }
+}
+
+/// The single cache-key format shared by activity documents and title-level training labels.
+pub fn activity_cache_key(
+    key_kind: &str,
+    key: &str,
+    url_key: Option<&str>,
+    window_title: &str,
+) -> String {
+    format!(
+        "{}\u{1f}{}\u{1f}{}\u{1f}{window_title}",
+        key_kind,
+        key,
+        url_key.unwrap_or_default(),
+    )
 }
 
 fn append_ranked(document: &mut String, label: &str, values: HashMap<String, f64>, limit: usize) {

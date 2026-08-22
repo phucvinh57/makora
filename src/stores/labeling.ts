@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-export type LabelingTab = "categories" | "rules" | "ai";
+export type LabelingTab = "categories" | "rules" | "ai" | "clusters";
 
 type RulesCategoryFilter = number | "all";
 

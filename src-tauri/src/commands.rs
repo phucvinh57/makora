@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
 use crate::core::{
-    ActivityStats, AiCategorizationSchedule, AiCategorizationService, Category, CategoryFilter,
-    CategoryRule, CategorySourceFilter, CategoryStore, CategorySuggestion, ClassifierStatus,
-    HistoryReader, IgnoreRule, IgnoreStore, MultiPurposeKey, RecategorizeOutcome, SeedTaxonomy,
-    SessionFilter, SessionRow, WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
+    ActivityCluster, ActivityStats, AiCategorizationSchedule, AiCategorizationService, Category,
+    CategoryFilter, CategoryRule, CategorySourceFilter, CategoryStore, CategorySuggestion,
+    ClassifierStatus, ClusterAssignment, ClusteringGranularity, HistoryReader, IgnoreRule,
+    IgnoreStore, MultiPurposeKey, RecategorizeOutcome, SeedTaxonomy, SessionFilter, SessionRow,
+    WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -158,6 +159,27 @@ pub fn list_multi_purpose_keys(
 }
 
 #[tauri::command]
+pub fn list_activity_clusters(
+    categories: State<CategoryStore>,
+) -> Result<Vec<ActivityCluster>, String> {
+    categories
+        .list_activity_clusters()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn assign_activity_cluster(
+    categories: State<CategoryStore>,
+    cluster_id: i64,
+    category_id: i64,
+    member_ids: Vec<i64>,
+) -> Result<ClusterAssignment, String> {
+    categories
+        .assign_activity_cluster(cluster_id, category_id, &member_ids)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn set_multi_purpose_key(
     categories: State<CategoryStore>,
     key_kind: String,
@@ -252,6 +274,16 @@ pub fn set_ai_categorization_confidence_threshold(
 ) -> Result<(), String> {
     ai.set_confidence_threshold(threshold)
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn set_ai_clustering_granularity(
+    ai: State<AiCategorizationService>,
+    granularity: String,
+) -> Result<(), String> {
+    let granularity = ClusteringGranularity::parse(&granularity).map_err(|e| e.to_string())?;
+    ai.set_clustering_granularity(granularity)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
