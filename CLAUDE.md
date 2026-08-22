@@ -1,107 +1,110 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## What this is
 
-Makora is a desktop app (Tauri 2 + Rust backend, React/TypeScript frontend) that tracks how long the user spends in each application as a series of focus sessions: a session starts when an app gains focus and ends when a different app takes it. Sessions are stored locally in SQLite — nothing leaves the machine. A companion browser WebExtension (`extension/`) reports the active tab's URL so browser time can be broken down per site instead of one opaque `chrome`/`firefox` block.
+Makora is a local desktop time tracker: Tauri 2 + Rust backend, React/TypeScript frontend, SQLite storage. It records one row per activity block — an app gains focus, a row opens; a different app takes focus, it closes. Nothing leaves the machine. An optional browser extension (`browser-extension/`) reports the active tab so browser time splits per site instead of one opaque `chrome` block.
 
 ## Commands
 
-Requires a Rust toolchain, Node.js, and — because `rusqlite` builds SQLite from source via the `bundled` feature — a C/C++ toolchain: MSVC build tools on Windows (Visual Studio Build Tools, "Desktop development with C++"), `build-essential` on Linux. Linux additionally needs Tauri's WebKitGTK stack (`libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libssl-dev patchelf`).
-
 ```
-bun install          # installs JS deps (bun.lock is present but bun scripts are what's wired up)
-bun tauri dev    # runs the full app (Vite dev server + Rust backend) — the normal dev loop
-bun dev           # frontend only (Vite), no Tauri/Rust backend
-bun run build          # tsc typecheck + vite build (frontend only)
+bun install
+bun tauri dev      # full app (Vite + Rust) — the normal dev loop
+bun dev            # frontend only
+bun run build      # tsc typecheck + vite build
 ```
 
-Rust backend (`src-tauri/`, a single crate — no workspace):
+From `src-tauri/` (single crate, no workspace): `cargo build`, `cargo test`, `cargo clippy`.
 
-```
-cargo build           # from src-tauri/
-cargo test             # run Rust unit tests (see src-tauri/src/core/category.rs and tracker.rs)
-cargo clippy
-```
+No ESLint/Prettier. TypeScript strictness is enforced by `tsc` in `bun run build`.
 
-There is no ESLint/Prettier config in the repo; TypeScript strictness (`strict`, `noUnusedLocals`, `noUnusedParameters`) is enforced via `tsc` in `bun run build`.
+Build deps: Rust, Node, and a C/C++ toolchain (`rusqlite` builds SQLite from source). Linux also needs Tauri's WebKitGTK stack (`libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libssl-dev patchelf`). macOS requires Accessibility permission for window titles; unsigned development rebuilds may need to be granted again after the app signature changes.
 
-The database is `makora.sqlite` in Tauri's own app-data directory, which is named after `tauri.conf.json`'s `identifier` on every platform (`%APPDATA%\dev.phucvinh57.makora\` on Windows, `~/Library/Application Support/dev.phucvinh57.makora/` on macOS, `~/.local/share/dev.phucvinh57.makora/` on Linux) — the same directory the webview keeps its own state in. `database_path` in `src-tauri/src/lib.rs` resolves it through `app.path().app_data_dir()`; there is no migration code, so an install that predates this still has its database in the old `directories`-crate location (`~/.local/share/makora/` on Linux) and has to be moved by hand.
+Database: `makora.sqlite` in Tauri's app-data dir (`~/.local/share/dev.phucvinh57.makora/` on Linux), resolved by `database_path` in `src-tauri/src/lib.rs`.
 
 ## Architecture
 
-### Backend: `src-tauri/src/core` is platform- and backend-agnostic
+### Backend
 
-Everything platform-specific or storage-specific is isolated behind two traits, so business logic (session semantics) doesn't depend on either:
+`src-tauri/src/core` is platform- and storage-agnostic, behind two traits:
 
-- **[`FocusWatcher`](src-tauri/src/core/watcher.rs)** — trait a platform implements to report focus changes. Owns its own event-loop thread and streams `WatchEvent::Focus` observations over the same channel Linux presence events use; it has no opinion on sessions.
-  - Windows (`src-tauri/src/core/platform/windows.rs`): event-driven via `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` — no polling, session boundaries line up exactly with focus changes.
-  - macOS (`src-tauri/src/core/platform/macos.rs`): `NSWorkspace` activation notifications + Accessibility API for window titles. Implemented but not yet exercised end-to-end the way Windows is.
-  - Linux (`src-tauri/src/core/platform/linux/`): a directory, not a file — see below.
-- **[`SessionStore`](src-tauri/src/core/store/mod.rs)** — trait a storage backend implements to open/close sessions. `SqliteStore` (`src-tauri/src/core/store/sqlite.rs`) is the only implementation. `HistoryReader` (`src-tauri/src/core/store/queries.rs`) is a *separate, read-only* connection to the same database used by the UI-facing query API — it never contends with the write path's lock.
-- **[`SessionTracker`](src-tauri/src/core/tracker.rs)** — the only place session semantics live (same exe = same session; different exe = close old, open new; away = close the row but retain the latest app/tab snapshot; return = open a fresh row). Every `FocusWatcher` impl and every `SessionStore` impl gets identical behavior for free.
+- **`FocusWatcher`** (`core/watcher.rs`) — a platform reports focus changes on its own thread. Impls in `core/platform/`: windows, macos, linux/.
+- **`SessionStore`** (`core/store/mod.rs`) — `SqliteStore` is the only impl. `HistoryReader` (`core/store/queries.rs`) is the read-only *API* for UI queries, but not a separate connection: `lib.rs` hands every store the same `Arc<Mutex<Connection>>`. `resolve_all` holds that mutex; the tracker thread blocks but loses nothing, since focus events carry their own timestamps and queue in the channel.
+- **`SessionTracker`** (`core/tracker.rs`) — the only place session semantics live: same exe = same session, different exe = close + open, away = close but retain the last app/tab snapshot, return = open fresh.
 
-`src-tauri/src/lib.rs` wires it all together in the Tauri `setup` hook: opens the database, starts the focus watcher on its own thread, spawns the tab-ingest HTTP server, builds the tray icon — all inside the single Tauri process. `src-tauri/src/commands.rs` exposes Tauri commands (currently `list_sessions`) that the frontend calls via `invoke`.
+`lib.rs` wires everything in the Tauri `setup` hook; `commands.rs` exposes the `invoke` API.
 
-Makora is single-instance (`tauri-plugin-single-instance`, registered before every other plugin so a second launch exits from inside its initializer, before `setup` opens the database). Launching it again — taskbar icon, desktop entry, autostart racing a manual start — just shows the running instance's window via `tray::show_main_window`. That has to hold: a second process would close the running instance's open activity row (`close_dangling_sessions` treats it as a crash leftover) and then fail to bind the ingest port. **All process-wide state must therefore be built inside `setup`, not before `tauri::Builder`** — anything constructed earlier runs in the doomed second instance too.
+**All process-wide state must be built inside `setup`, not before `tauri::Builder`.** The app is single-instance; a second launch exits from inside the single-instance plugin initializer, and anything constructed before the builder would run in that doomed process.
 
-Closing or minimizing the window hides it to the system tray instead of quitting (`on_window_event` in `lib.rs` calls `api.prevent_close()`); tracking keeps running in the background. Only "Quit" from the tray menu (`src-tauri/src/tray.rs`) actually exits, closing the currently open session with an accurate `end_time` first.
+Closing/minimizing hides to the tray and keeps tracking. Only tray "Quit" exits, closing the open session first.
 
-### Linux: focus has to come from inside the compositor
+### Logging
 
-Wayland gives a client no way to ask which window is focused, and on GNOME both usual workarounds are closed: `org.gnome.Shell.Introspect` is allowlisted to xdg-desktop-portal-gnome (everyone else gets `Access denied`), and `ext-foreign-toplevel-list-v1` — which Mutter *does* implement — carries only `title`/`app_id`/`identifier` and no focus state at all. Mutter does not implement `wlr-foreign-toplevel-management-v1`.
+`tracing`, installed by `logging::init` as the first thing in `setup` (it is process-wide state, so the same rule applies). Use `tracing::{info, warn, error}` — **no `println!`/`eprintln!` anywhere except the bootstrap fallback in `lib.rs`**, which fires when the subscriber itself failed to install.
 
-So there is no single Linux watcher, only one per desktop stack behind `ToplevelProvider` (`src-tauri/src/core/platform/linux/provider.rs`). `LinuxFocusWatcher` probes them in order at startup:
+- Debug builds log to stderr with ANSI; `bun tauri dev` shows them in the terminal.
+- Release builds have no terminal (`windows_subsystem = "windows"`), so they log to `<app-data>/logs/makora.<yyyy-mm-dd>.log`, rolled daily by `tracing-appender` and pruned to the newest 30 files.
+- Default filters are `makora=debug,warn` (dev) and `makora=info,warn` (release) — third-party crates stay at `warn` so tao/wry chatter doesn't drown the app's own events. `RUST_LOG` overrides both.
+- The non-blocking writer's `WorkerGuard` is parked in a `static OnceLock`; dropping it kills the writer thread, so it must live as long as the process.
 
-- `gnome.rs` — a zbus client for the GNOME Shell extension in `gnome-extension/`, which owns `dev.phucvinh57.MakoraShell` on the session bus and exports a `FocusChanged` signal plus a `GetFocusedWindow()` method (so the app picks up what's already focused instead of waiting for the next switch). The provider tolerates the extension being absent and re-syncs via `NameOwnerChanged` when it appears, so installing/enabling it needs no app restart. **The bus name, path, interface and `PROTOCOL_VERSION` are duplicated in `gnome-extension/extension.js` — change one, change the other**, same rule as the ingest port.
-- `wlr.rs` — `wlr-foreign-toplevel-management-v1` for sway/Hyprland/river. Its `state` event carries the `activated` flag Mutter's protocol lacks. Implemented but not exercised end-to-end.
+### Linux focus
 
-A provider only reports *what is focused*; `proc.rs` turns that into `AppInfo`. That split matters because `exe_path` is the session identity and has to stay stable: snap revisions (`/snap/firefox/<rev>/…`) are rewritten to `current` so an update doesn't split an app's history in two, flatpaks (whose `/proc/<pid>/exe` is `/app/bin/…` inside every sandbox) are keyed on their application id, and windows with no pid at all — wlr reports none — fall back to `wayland-app-id://<app_id>`. GNOME reports a *null* focus window whenever the Activities overview opens; that's dropped rather than treated as a focus change, so the open session survives it.
+Wayland gives clients no way to ask what's focused, and GNOME blocks the usual workarounds. So there's one provider per desktop stack behind `ToplevelProvider` (`core/platform/linux/provider.rs`), probed in order:
 
-`presence.rs` is separate from those focus providers and works across Linux desktops through systemd-logind. It resolves the app's graphical login session (falling back to the user's `Display` session for systemd-user/autostart launches), composes the session's `LockedHint` with the manager's `PrepareForSleep` state, and emits one `WatchEvent::Presence` only when effective presence changes. Lock or suspend closes the activity row; focus/tab observations received while away only update the retained snapshot; unlock/wake opens a fresh row. Input inactivity is deliberately not a presence signal because it cannot distinguish watching a video from leaving the computer. Custom wlroots lockers must maintain logind's `LockedHint` for lock detection to work.
+- `gnome.rs` — zbus client for the GNOME Shell extension in `gnome-extension/`. **Bus name, path, interface and `PROTOCOL_VERSION` are duplicated in `gnome-extension/extension.js` — change one, change the other.**
+- `wlr.rs` — `wlr-foreign-toplevel-management-v1` for sway/Hyprland/river. Untested.
+
+`proc.rs` turns a focused window into `AppInfo`. `exe_path` is the session identity and must stay stable, so snap revisions are rewritten to `current`, flatpaks are keyed on app id, and pid-less windows fall back to `wayland-app-id://<app_id>`.
+
+`presence.rs` uses systemd-logind (lock hint + sleep state) to close the row when the user leaves and open a fresh one on return. Input inactivity is deliberately *not* a presence signal.
 
 ### Per-site browser tracking
 
-`SessionTracker` normally only knows "chrome.exe is focused," not which site. The `extension/` WebExtension POSTs `{ browser, url, title }` to a local HTTP server on `127.0.0.1:47632` (`src-tauri/src/ingest.rs`) whenever the active tab changes; `SessionTracker::handle_tab_event` then closes the current row and opens a new one for the same app — exactly like switching apps does — so a long Chrome session becomes per-site rows instead of one row. A tab event is only applied while a session for the *matching* browser is currently focused, so a backgrounded browser's extension can't misattribute tab changes to whatever the OS says is focused. This is entirely optional — without the extension loaded, browsers behave like any other app.
-
-The ingest server has no shared-secret auth; it relies on binding to loopback plus checking the request's `Origin` header is a `chrome-extension://`/`moz-extension://` origin. Good enough to stop ordinary web pages, not a spoofed header from another local process.
-
-The port `47632` is hardcoded in both `extension/background.js` and `src-tauri/src/ingest.rs` — if you change one, change the other (see `extension/README.md`).
+The extension POSTs `{ browser, url, title }` to `127.0.0.1:47632` (`src-tauri/src/ingest.rs`) on tab change; `SessionTracker::handle_tab_event` closes and reopens a row for the same app. Tab events only apply while that browser is focused. **Port `47632` is hardcoded in both `browser-extension/background.js` and `ingest.rs` — change both.** Auth is loopback binding + an `Origin` header check; enough to stop web pages, not a local process.
 
 ### Data model
 
-SQLite table `sessions`, one row per activity block (plain app focus, or a browser tab if the extension is loaded):
+Table `sessions`: `id`, `app_name` (exe file stem), `exe_path`, `window_title` (at start, not updated), `url` (origin + path only — fragment and query string are stripped in `ingest::normalize_url`; `NULL` for non-browser rows), `start_time`, `end_time` (`NULL` while open).
 
-| column         | meaning |
-| -------------- | ------- |
-| `id`           | primary key |
-| `app_name`     | executable file stem, e.g. `chrome`, `Code` |
-| `exe_path`     | full path to the executable |
-| `window_title` | window/tab title at session start (does not update mid-session) |
-| `url`          | origin + path, plus any query params whitelisted for the domain (`url_query_whitelist` table, editable from Settings — e.g. YouTube's `v`); fragment never recorded; `NULL` unless a browser-tab row |
-| `start_time`   | RFC 3339 UTC timestamp |
-| `end_time`     | RFC 3339 UTC timestamp, `NULL` while the row is open |
+A row still open at startup means the last run crashed; it's deleted rather than closed at a guessed time (undercount rather than inflate).
 
-A row left with `end_time IS NULL` after a restart means the previous run was killed rather than shut down cleanly; it's closed at its own `start_time` on next startup (so a crash undercounts by one row rather than inflating it by however long the machine was off).
+**Blocks shorter than one second are deleted, not closed.** A redirect, a tab reported before its title has loaded, or a window flashing past on the way somewhere else all open and close a row within the same second, and none of them are activity. `SqliteStore::end_session` drops such a row instead of setting `end_time`; migration 20 purged the ones already recorded. Because no sub-second row can exist, **no query filters by duration** — don't add a `WHERE duration >= …` anywhere, and if the threshold ever changes, the migration and `MIN_SESSION_SECONDS` have to move together.
 
-`src-tauri/src/core/category.rs` derives two stable lookup keys per session, both computed once at write time so rule/override edits later re-categorize history without re-parsing: `category_key` (URL host for a browser-tab row, exe file name otherwise — coarse grouping) and `url_key` (host + path + whitelisted query, `NULL` for non-browser rows — lets two pages on the same domain, e.g. two Google Docs documents, resolve to different categories). `src-tauri/src/core/store/categories.rs` is the storage side.
+Categorization (`core/category.rs`, `core/store/categories.rs`):
 
-A session's category is resolved at read time via `COALESCE`, most specific tier first: a per-session pin (`sessions.category_id`), then a key-wide manual override (`category_overrides`), then the best-matching rule. Rule conflicts resolve purely by specificity (`category::rule_join_sql`) — categories have no manual ordering: a `url`-kind rule beats an `exe`/`domain`-kind rule, then match kind ranks `exact` > `prefix` > `substring` > `regex`, then the longer pattern wins.
-
-The history page's "Recategorize" button (`CategoryStore::recategorize_all`) is a start-over, not a top-up: one transaction erases *every* manual categorization in the database — all pins, all overrides, and the exact rules those overrides minted (`set_override` writes both halves; the rule half only exists to make a clicked-on app/site visible on the Categories page) — leaving history resolved purely from the rules the user keeps. It is deliberately unfiltered and skips nothing, since already-categorized rows are the ones a from-scratch pass exists to redo. A rule with no matching override row counts as hand-authored and survives; that pairing is the only thing distinguishing the two, so a mirror rule whose override an earlier pass already deleted is hand-authored from then on.
+- Two lookup keys are written per session: `category_key` (URL host, else exe name) and `url_key` (host + path, `NULL` for non-browser). Computed at write time so rule edits re-categorize history without re-parsing.
+- **Categorization is materialized, not resolved at read time.** Rust resolves `sessions.rule_category_id` when a row opens or closes and persists it in the same transaction; background AI jobs persist `ml_category_id`. Reads are a plain `COALESCE(s.category_id, s.rule_category_id, s.ml_category_id)` — no rule join or classifier call anywhere.
+- The classifier has two document levels: one key document per `(key_kind, category_key)` for coherent rule suggestions, and one activity document per `(key_kind, category_key, url_key, window_title)` for multi-purpose title classification. Activity documents include open rows with zero duration, and title embeddings use `key_embeddings.key_kind = 'title'` with stale entries pruned on each run.
+- `multi_purpose_keys` identifies domains/apps that need title-aware labels. Enabled exact `exe`/`domain` rules remain stored but are skipped at resolve time; `url` rules still win, so repeated stable paths can graduate from title predictions into reviewable URL rules. User removal is a disabled veto, not deletion.
+- Because nothing re-derives on read, **anything that can change the answer must replay history**: `store::resolve::resolve_all` is called by `create_rule`, `delete_rule`, `delete_category`, `recategorize_all`, seed application, and multi-purpose toggles, each inside the caller's own transaction. The classifier also replays inside the same transaction when automatic detection changes the enabled set. Miss one and history silently disagrees with the rule list.
+- Rule suggestions must be *clearable*. A key already resolved by a stored rule is never suggested (`rule_already_covers` asks the real resolver, so globs and prefixes count), a key whose pins disagree keeps its dominant pin as its label instead of falling out of `load_labeled_keys` and looking unlabeled, and accepting a suggestion retargets an existing exact rule rather than failing. Break any of the three and the same domains reappear on every run.
+- `sessions.category_id` stays a *pin only* — it is what `category_is_pinned` reports. Automatic labels never go there.
+- AI categorization is scheduled-only background work (`core/classifier.rs`). Startup, tracking, label/category/rule edits, and recategorization never enqueue it. Only `run_ai_categorization` or the persisted manual/hourly/daily/weekly scheduler may run it; missed intervals are skipped while the app is stopped. A successful title pass atomically replaces qualifying `ml_*` labels while preserving pins and surviving rules.
+- Rule conflicts resolve in Rust by specificity only, with no manual ordering: `url` kind beats `exe`/`domain`, then `exact` > `prefix` > `substring` > `glob`, then longer pattern, then lower rule id.
+- Category and ignore rules share the Rust matcher in `core/category.rs`. Matching is ASCII-case-insensitive; globs are anchored, `*` crosses `/`, and malformed new globs are rejected. Malformed legacy globs remain visible but inactive. Regex was retired in migration 14, which deletes every `match_kind = 'regex'` row from `category_rules` *and* `ignore_rules`.
+- **`MatchKind` lives in four places with no compiler help**: `core/category.rs`, the CHECK constraints in the migrations, `src/types.ts`, and the label maps in `RulesTab.tsx` / `IgnoreListSection.tsx`. Change one, change all four.
+- Activity duration does not affect categorization. A matching rule applies to open or closed rows; an unmatched row remains Uncategorized until it receives a manual pin or AI prediction.
+- "Recategorize" (`recategorize_all`) preserves every manual pin, clears AI predictions, and replays the rules. Rules are never touched, and pins continue to take precedence over the refreshed rule labels.
+- Categories are an arbitrarily deep tree (`parent_id`). Names are unique among siblings only. Rust expands descendants for history filtering, focus on-task marking, cycle prevention, and branch deletion; statistics rollup still happens in the UI.
+- A fresh database has no rules and no categories. Every category is user-owned; names such as "Distraction" have no reserved behavior. Activity stays Uncategorized until a rule, manual pin, or AI prediction labels it.
+- `settings` is a key/value table. It stores the AI schedule and last-completion timestamp, plus an internal resolver-version marker used to retry Rust migration backfills safely.
+- Foreign keys are on by default (`SQLITE_DEFAULT_FOREIGN_KEYS=1`). Migrations that rebuild a *referenced* table only work because `store::sqlite::migrate` lifts the check around `to_latest` — it can't be toggled inside a migration's transaction.
 
 ### Frontend
 
-`src/` is a small React + TypeScript app (Vite, Tailwind v4, TanStack Router file routes under `src/routes/`, base-ui-derived components in `src/components/ui/`). `src/api.ts` wraps Tauri `invoke` calls; `src/types.ts` mirrors the Rust `#[derive(Serialize)]` types returned by commands. `routes/history/` paginates through `list_sessions` and is where activities get categorized.
+React + TypeScript, Vite, Tailwind v4, TanStack Router file routes in `src/routes/`, base-ui-derived components in `src/components/ui/`. `src/api.ts` wraps `invoke`; `src/types.ts` mirrors the Rust serialize types.
 
-The history page's time filter lives in the URL as a `TimeRange`'s own fields (`?kind=…&from=&to=&sessionId=`, see `routes/history/-components/timeRange.ts`) so other pages can link into a scoped history — the Focus page's "See all activities" hands over a work session's id that way, and `validateSearch` resolves it to that session's window. Relative presets are stored as the preset, not the instants they currently resolve to, so "today" keeps meaning today. Rows *overlapping* the window match (unlike `activity_stats`, which buckets by `start_time`), so an activity that began before a focus session and ran into it still shows up in it.
+- No paged category API: pages load the whole flat list once (`listCategories`, query key `["categories"]`) and build the tree client-side with `src/categories.ts`. `src/components/CategoryOptions.tsx` renders every category dropdown, so all four `Select`s look alike.
+- **Any category or rule mutation must invalidate `["sessions"]` and `["activityStats"]`, not just `["categories"]`/`["categoryRules"]`.** Those mutations now rewrite `sessions` rows on the backend, so the cached history and statistics are genuinely stale, not merely out of sync.
+- AI completion and multi-purpose mutations must also invalidate `["sessions"]`, `["activityStats"]`, `["categoryRules"]`, and `["multiPurposeKeys"]` because they rewrite materialized session labels and rule effectiveness.
+- The history time filter lives in the URL (`?kind=…&from=&to=&sessionId=`, see `routes/history/-components/timeRange.ts`) so other pages can link into a scoped view. Relative presets are stored as the preset, so "today" keeps meaning today. Rows *overlapping* the window match — unlike `activity_stats`, which buckets by `start_time`.
+- History can also filter by effective category source: Manual means `sessions.category_id` is pinned, while AI means no manual/rule category wins and `ml_category_id` supplies the displayed category.
 
 ## Known limitations
 
-- Session identity is the executable path — switching between two windows of the *same* app doesn't end the session, only switching to a different app does.
-- Locking the screen or sleeping ends the current activity row on Linux through systemd-logind. Windows and macOS still keep the focused row open across lock/sleep until native presence watchers are added there.
-- Non-`http(s)` tabs (`chrome://`, `about:`, extension pages, ...) are never recorded, by design. The fragment never is either; the query string is stripped except for params whitelisted per domain in Settings.
-- The tray/hide-on-close behavior and the packaged app are exercised on Windows and Linux (GNOME); macOS's focus watcher is implemented but not exercised end-to-end.
-- On GNOME the tray depends on a StatusNotifierItem host, which vanilla GNOME does not provide (Ubuntu does, via its bundled AppIndicator extension). Left-clicking the tray icon to show the window does *not* work under libappindicator — only the tray menu's items do.
-- The `wlr.rs` provider (sway/Hyprland/river) is implemented but untested; that protocol reports no pid, so sessions there are keyed on `app_id` rather than an executable path.
+- Session identity is the exe path — switching between two windows of the same app doesn't end the session.
+- Lock/sleep only ends the row on Linux; Windows and macOS have no presence watcher yet.
+- macOS requires Accessibility permission for window titles. Without it, tracking continues but every `window_title` is empty; unsigned development rebuilds may need the permission granted again because the app signature changes.
+- Windows UWP/Store apps currently collapse under `ApplicationFrameHost.exe`; resolving their child windows is deferred until it can be tested on Windows hardware.
+- Non-`http(s)` tabs are never recorded. Query strings are stripped, so pages distinguished only by a param collapse (every YouTube video is `youtube.com/watch`).
+- macOS's focus watcher and the `wlr.rs` provider are implemented but not exercised end-to-end.
+- On GNOME the tray needs a StatusNotifierItem host (Ubuntu has one). Under libappindicator, left-clicking the tray icon does nothing — only menu items work.

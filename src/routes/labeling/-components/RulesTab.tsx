@@ -28,11 +28,16 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  categoryOptions,
+  categoryValueLabels,
+} from "@/components/CategoryOptions";
+import {
   createCategoryRule,
   deleteCategoryRule,
   listCategories,
   listCategoryRules,
 } from "@/api";
+import { categoryPath } from "@/categories";
 import { openDialog, useDialog } from "@/hooks/useDialog";
 import type { CategoryRule, KeyKind, MatchKind } from "@/types";
 
@@ -48,26 +53,16 @@ const MATCH_KIND_LABEL: Record<MatchKind, string> = {
   exact: "is",
   prefix: "starts with",
   substring: "contains",
-  regex: "matches",
+  glob: "matches",
 };
 
-// Base UI's <SelectValue> only shows an item's label if the root is told
-// what it is via `items` — it won't infer it from a matching <SelectItem>'s
-// children, so every select below needs its own map alongside the item list.
 const MATCH_KIND_SELECT_LABEL: Record<MatchKind, string> = {
   exact: "is",
   prefix: "starts with",
   substring: "contains",
-  regex: "matches (regex)",
+  glob: "matches (wildcard)",
 };
 
-// Strips the scheme, `www.` prefix, and port from a pasted `domain`/`url`
-// pattern -- so pasting a full URL straight from the address bar still
-// matches `category_key`/`url_key`, neither of which ever contains those.
-// Parsed via the native `URL` API rather than by hand; a pattern is only fed
-// to it as-is when it already looks absolute (contains `://`), otherwise an
-// `http://` scheme is assumed first -- feeding a bare `host:port` straight to
-// `URL` would otherwise get misparsed as `host` being the scheme.
 function stripSchemeAndWww(pattern: string): string {
   let url: URL;
   try {
@@ -83,10 +78,10 @@ function stripSchemeAndWww(pattern: string): string {
 }
 
 function matchKindPlaceholder(keyKind: KeyKind, matchKind: MatchKind): string {
-  if (matchKind === "regex") {
-    if (keyKind === "exe") return "^game\\d*\\.exe$";
-    if (keyKind === "domain") return "^.*\\.corp\\.example\\.com$";
-    return "^docs\\.google\\.com/document/d/.+$";
+  if (matchKind === "glob") {
+    if (keyKind === "exe") return "game*.exe";
+    if (keyKind === "domain") return "*.corp.example.com";
+    return "github.com/*/pulls";
   }
   if (keyKind === "url") {
     return matchKind === "exact"
@@ -128,22 +123,15 @@ export function RulesTab({
   const rules = rulesQuery.data ?? [];
   const categoryById = new Map(categories.map((c) => [c.id, c]));
   const selectedNewRuleCategoryId = newRuleCategoryId ?? categories[0]?.id;
-  const categorySelectItems = Object.fromEntries(
-    categories.map((cat) => [
-      String(cat.id),
-      <span className="flex items-center gap-1.5" key={cat.id}>
-        <span
-          className="size-2 shrink-0 rounded-full"
-          style={{ backgroundColor: cat.color }}
-        />
-        {cat.name}
-      </span>,
-    ]),
-  );
+  const categorySelectItems = categoryValueLabels(categories);
 
   function invalidateAll() {
     queryClient.invalidateQueries({ queryKey: ["categories"] });
     queryClient.invalidateQueries({ queryKey: ["categoryRules"] });
+    // Rules are applied when an activity ends and replayed over history on every edit, so
+    // a saved rule has already rewritten what these two queries hold.
+    queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    queryClient.invalidateQueries({ queryKey: ["activityStats"] });
   }
 
   const addRuleMutation = useMutation({
@@ -158,19 +146,14 @@ export function RulesTab({
       pattern: string;
       matchKind: MatchKind;
     }) => {
-      // Strip a pasted full URL down to the scheme-less form
-      // `category_key`/`url_key` are matched against, before any other
-      // normalization below.
+      // A wildcard host is not a URL — `new URL("http://*.corp.example.com")` mangles it,
+      // so glob patterns are stored exactly as typed.
       const stripped =
-        matchKind !== "regex" && (keyKind === "domain" || keyKind === "url")
+        matchKind !== "glob" && (keyKind === "domain" || keyKind === "url")
           ? stripSchemeAndWww(pattern.trim())
           : pattern.trim();
-      // Lowercasing canonicalizes exe/domain exact/prefix/substring patterns
-      // (matching is case-insensitive either way), but would corrupt
-      // case-sensitive regex escapes like `\D`/`\S`/`\W` and misrender a
-      // URL path's casing, so regex and url patterns are sent as-is.
       const normalized =
-        matchKind === "regex" || keyKind === "url"
+        matchKind === "glob" || keyKind === "url"
           ? stripped
           : stripped.toLowerCase();
       return createCategoryRule(keyKind, normalized, matchKind, categoryId);
@@ -247,17 +230,7 @@ export function RulesTab({
           </SelectTrigger>
           <SelectContent>
             <SelectItem value={ALL_CATEGORIES}>All categories</SelectItem>
-            {categories.map((cat) => (
-              <SelectItem key={cat.id} value={String(cat.id)}>
-                <span className="flex items-center gap-1.5">
-                  <span
-                    className="size-2 shrink-0 rounded-full"
-                    style={{ backgroundColor: cat.color }}
-                  />
-                  {cat.name}
-                </span>
-              </SelectItem>
-            ))}
+            {categoryOptions(categories)}
           </SelectContent>
         </Select>
         <Button
@@ -285,7 +258,10 @@ export function RulesTab({
               {filteredRules.map((rule) => {
                 const category = categoryById.get(rule.category_id);
                 return (
-                  <TableRow key={rule.id}>
+                  <TableRow
+                    key={rule.id}
+                    className={rule.inactive ? "opacity-60" : undefined}
+                  >
                     <TableCell>
                       <Badge variant="secondary">
                         {KEY_KIND_LABEL[rule.key_kind]}
@@ -295,16 +271,28 @@ export function RulesTab({
                       {MATCH_KIND_LABEL[rule.match_kind]}
                     </TableCell>
                     <TableCell className="truncate font-mono">
-                      {rule.pattern}
+                      <span className="flex items-center gap-2">
+                        <span className="truncate">{rule.pattern}</span>
+                        {rule.inactive && (
+                          <Badge variant="outline" className="shrink-0">
+                            Inactive — multi-purpose
+                          </Badge>
+                        )}
+                      </span>
                     </TableCell>
                     <TableCell className="truncate">
                       {category && (
-                        <span className="flex items-center gap-1.5">
+                        <span
+                          className="flex items-center gap-1.5"
+                          title={categoryPath(category, categories)}
+                        >
                           <span
                             className="size-2 shrink-0 rounded-full"
                             style={{ backgroundColor: category.color }}
                           />
-                          {category.name}
+                          <span className="truncate">
+                            {categoryPath(category, categories)}
+                          </span>
                         </span>
                       )}
                     </TableCell>
@@ -335,12 +323,6 @@ export function RulesTab({
           </Table>
         </div>
       </Card>
-
-      <p className="mt-3 text-xs text-muted-foreground">
-        When several rules match the same activity, the most specific one wins:
-        a URL rule beats a site/app rule, then "is" beats "starts with" beats
-        "contains" beats "matches", then the longer pattern wins.
-      </p>
 
       <Dialog open={addRuleDialog.open} onOpenChange={addRuleDialog.setOpen}>
         <DialogContent>
@@ -379,7 +361,7 @@ export function RulesTab({
                   <SelectItem value="exact">is</SelectItem>
                   <SelectItem value="prefix">starts with</SelectItem>
                   <SelectItem value="substring">contains</SelectItem>
-                  <SelectItem value="regex">matches (regex)</SelectItem>
+                  <SelectItem value="glob">matches (wildcard)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -405,19 +387,7 @@ export function RulesTab({
               <SelectTrigger className="w-full" aria-label="Category">
                 <SelectValue placeholder="Category…" />
               </SelectTrigger>
-              <SelectContent>
-                {categories.map((cat) => (
-                  <SelectItem key={cat.id} value={String(cat.id)}>
-                    <span className="flex items-center gap-1.5">
-                      <span
-                        className="size-2 shrink-0 rounded-full"
-                        style={{ backgroundColor: cat.color }}
-                      />
-                      {cat.name}
-                    </span>
-                  </SelectItem>
-                ))}
-              </SelectContent>
+              <SelectContent>{categoryOptions(categories)}</SelectContent>
             </Select>
             {addRuleMutation.isError && (
               <p className="text-xs text-destructive">

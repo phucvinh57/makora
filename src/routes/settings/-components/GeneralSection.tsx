@@ -31,7 +31,7 @@ export function GeneralSection() {
         <CardTitle>General</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-2 w-100">
+        <div className="flex items-center justify-between">
           <span className="text-sm">Theme</span>
           <div className="flex items-center gap-2">
             <Button
@@ -52,7 +52,7 @@ export function GeneralSection() {
             </Button>
           </div>
         </div>
-        <div className="flex items-center justify-between gap-2 w-100">
+        <div className="flex items-center justify-between">
           <label htmlFor="autostart-checkbox" className="text-sm">
             Run when system starts
           </label>

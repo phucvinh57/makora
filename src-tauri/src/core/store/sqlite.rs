@@ -3,12 +3,12 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use rusqlite_migration::{Migrations, M};
 
 use crate::core::category::{category_key, url_key};
 use crate::core::model::AppInfo;
-use crate::core::store::SessionStore;
+use crate::core::store::{resolve, SessionStore};
 
 pub type SharedConnection = Arc<Mutex<Connection>>;
 
@@ -19,8 +19,6 @@ fn migrations() -> Migrations<'static> {
                 name  TEXT NOT NULL UNIQUE,
                 color TEXT NOT NULL
             );
-            -- Built-in categorization: matches a session's (key_kind, category_key)
-            -- against an exe file name or a URL domain.
             CREATE TABLE IF NOT EXISTS category_rules (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 key_kind    TEXT NOT NULL CHECK (key_kind IN ('exe', 'domain')),
@@ -28,8 +26,6 @@ fn migrations() -> Migrations<'static> {
                 category_id INTEGER NOT NULL REFERENCES categories(id)
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_category_rules_key ON category_rules(key_kind, pattern);
-            -- User-set categorization, keyed the same way as `category_rules`. Checked
-            -- first so a manual choice always wins over the built-in rules.
             CREATE TABLE IF NOT EXISTS category_overrides (
                 key_kind    TEXT NOT NULL CHECK (key_kind IN ('exe', 'domain')),
                 pattern     TEXT NOT NULL,
@@ -37,10 +33,6 @@ fn migrations() -> Migrations<'static> {
                 PRIMARY KEY (key_kind, pattern)
             );",
         ),
-        // Added after the categories/rules/overrides step above (rather than
-        // reordered before it) so that a database which already applied that
-        // step picks up this one too instead of being skipped as
-        // already-migrated.
         M::up("CREATE TABLE IF NOT EXISTS sessions (
                 id                 INTEGER PRIMARY KEY AUTOINCREMENT,
                 app_name           TEXT NOT NULL,
@@ -56,13 +48,7 @@ fn migrations() -> Migrations<'static> {
             CREATE INDEX IF NOT EXISTS idx_sessions_start_time ON sessions(start_time);
             CREATE INDEX IF NOT EXISTS idx_sessions_category_key ON sessions(category_key_kind, category_key);",
         ),
-        // Per-session category pin, checked before the key-wide override and
-        // rules — lets a single activity be categorized on its own instead of
-        // always affecting every session sharing its app/site key.
         M::up("ALTER TABLE sessions ADD COLUMN category_id INTEGER REFERENCES categories(id);"),
-        // User-configured apps/sites to exclude from tracking entirely (see
-        // `core::ignore::IgnorePolicy`). Matched as a substring of the exe
-        // file name or URL domain, not an exact key like `category_rules`.
         M::up("CREATE TABLE IF NOT EXISTS ignore_rules (
                 id      INTEGER PRIMARY KEY AUTOINCREMENT,
                 kind    TEXT NOT NULL CHECK (kind IN ('app', 'site')),
@@ -70,34 +56,18 @@ fn migrations() -> Migrations<'static> {
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_ignore_rules_pattern ON ignore_rules(kind, pattern);",
         ),
-        // Lets a rule match a substring or a regex instead of only an exact
-        // key (see `category::rule_join_sql`), so e.g. one rule can catch
-        // every `*.corp.example.com` subdomain instead of one row per host.
-        // The old (key_kind, pattern) unique index is replaced with one that
-        // also includes match_kind, since the same pattern text can now be
-        // meaningful under more than one match kind at once.
         M::up("ALTER TABLE category_rules ADD COLUMN match_kind TEXT NOT NULL DEFAULT 'exact'
                 CHECK (match_kind IN ('exact', 'substring', 'regex'));
             DROP INDEX IF EXISTS idx_category_rules_key;
             CREATE UNIQUE INDEX IF NOT EXISTS idx_category_rules_key
                 ON category_rules(key_kind, match_kind, pattern);",
         ),
-        // Gives `ignore_rules` the same exact/substring/regex matching as
-        // `category_rules` (see `category::MatchKind`) instead of only ever
-        // matching a substring. Existing rows default to 'substring' so
-        // their behavior is unchanged by the migration. The old (kind,
-        // pattern) unique index is replaced the same way the category_rules
-        // one was above.
         M::up("ALTER TABLE ignore_rules ADD COLUMN match_kind TEXT NOT NULL DEFAULT 'substring'
                 CHECK (match_kind IN ('exact', 'substring', 'regex'));
             DROP INDEX IF EXISTS idx_ignore_rules_pattern;
             CREATE UNIQUE INDEX IF NOT EXISTS idx_ignore_rules_pattern
                 ON ignore_rules(kind, match_kind, pattern);",
         ),
-        // Superseded by the next migration: per-rule priority turned out to
-        // be finer-grained than needed (see below), but this step may
-        // already be applied on some databases, so it's kept rather than
-        // edited in place — never rewrite a migration once it may have run.
         M::up("ALTER TABLE category_rules ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
             UPDATE category_rules
             SET priority = ranked.rn
@@ -110,19 +80,6 @@ fn migrations() -> Migrations<'static> {
             ) AS ranked
             WHERE category_rules.id = ranked.id;",
         ),
-        // Lets the winner between two rules that both match the same
-        // session key (e.g. a `Substring` rule in one category and a
-        // narrower one in another, both matching an overlapping domain) be
-        // manually ordered from the Categories page — by dragging whole
-        // categories, not individual rules, since which specific rule wins
-        // never matters on its own (only its category does; see
-        // `category::rule_join_sql` and `CategoryStore::reorder_categories`).
-        // Lower `priority` wins; backfilled here in category creation order
-        // as the best available default — unlike the per-rule priority it
-        // replaces, this can't exactly reproduce every key's prior
-        // resolution (that depended on match-kind specificity per rule, not
-        // just category), so some already-ambiguous keys may resolve to a
-        // different category until manually reordered.
         M::up("ALTER TABLE category_rules DROP COLUMN priority;
             ALTER TABLE categories ADD COLUMN priority INTEGER NOT NULL DEFAULT 0;
             UPDATE categories
@@ -133,18 +90,6 @@ fn migrations() -> Migrations<'static> {
             ) AS ranked
             WHERE categories.id = ranked.id;",
         ),
-        // Replaces category priority ordering with pure specificity-based
-        // rule resolution (see `category::rule_join_sql`): a `url` rule now
-        // beats a `domain`/`exe` rule, then match kind ranks `exact` >
-        // `prefix` > `substring` > `regex`, then longer pattern wins. This
-        // makes per-category ordering unnecessary — a rule pattern already
-        // belongs to exactly one category (`idx_category_rules_key`) — so
-        // `categories.priority` and the drag-to-reorder UI it backed are
-        // removed entirely.
-        //
-        // `category_rules`' CHECK constraints can't be altered in place, so
-        // the table is rebuilt to add the `url` key_kind and `prefix` match
-        // kind rather than just adding a column as earlier migrations did.
         M::up("CREATE TABLE category_rules_new (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 key_kind    TEXT NOT NULL CHECK (key_kind IN ('exe', 'domain', 'url')),
@@ -160,18 +105,8 @@ fn migrations() -> Migrations<'static> {
             CREATE UNIQUE INDEX IF NOT EXISTS idx_category_rules_key
                 ON category_rules(key_kind, match_kind, pattern);
             ALTER TABLE categories DROP COLUMN priority;
-            -- Normalized URL match target for `url` rules (see
-            -- `category::url_key`), computed at write time like
-            -- `category_key`. NULL for non-browser rows.
             ALTER TABLE sessions ADD COLUMN url_key TEXT;",
         ),
-        // Lets query-string params be selectively kept per domain instead of
-        // always stripped (see `ingest::normalize_url` and
-        // `store::QueryWhitelistStore`) — e.g. keeping YouTube's `v` so
-        // different videos become different sessions rather than one
-        // continuous `youtube.com` block. Seeded here (rather than in
-        // `seed_default_categories`-style startup logic) so a user who
-        // deliberately empties the list isn't re-seeded on next launch.
         M::up("CREATE TABLE IF NOT EXISTS url_query_whitelist (
                 id     INTEGER PRIMARY KEY AUTOINCREMENT,
                 domain TEXT NOT NULL,
@@ -180,16 +115,6 @@ fn migrations() -> Migrations<'static> {
             CREATE UNIQUE INDEX IF NOT EXISTS idx_url_query_whitelist ON url_query_whitelist(domain, param);
             INSERT INTO url_query_whitelist (domain, param) VALUES ('youtube.com', 'v');",
         ),
-        // User-created focus blocks (see `store::WorkSessionStore`), evaluated
-        // after the fact against tracked `sessions` rows overlapping
-        // [start_time, end_time). `end_time` is always set — computed as
-        // start + target at creation (the session "auto-ends" by simply
-        // reaching it) and rewritten on an early stop or a manual edit.
-        // `target_seconds` stays as the original plan for comparing planned
-        // vs. actual. The join table lists which categories count as
-        // "on-task"; rows are cascaded manually in `WorkSessionStore` /
-        // `CategoryStore::delete_category` since the connection doesn't
-        // enable SQLite foreign-key enforcement.
         M::up("CREATE TABLE IF NOT EXISTS work_sessions (
                 id             INTEGER PRIMARY KEY AUTOINCREMENT,
                 name           TEXT NOT NULL,
@@ -206,34 +131,203 @@ fn migrations() -> Migrations<'static> {
                 PRIMARY KEY (work_session_id, category_id)
             );",
         ),
+        M::up("DROP TABLE IF EXISTS category_overrides;
+            DROP TABLE IF EXISTS url_query_whitelist;
+            DELETE FROM work_session_categories;
+            DELETE FROM category_rules;
+            UPDATE sessions SET category_id = NULL;
+            DELETE FROM categories;
+            DELETE FROM sqlite_sequence WHERE name IN ('categories', 'category_rules');",
+        ),
+        M::up("CREATE TABLE categories_new (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                name      TEXT NOT NULL,
+                color     TEXT NOT NULL,
+                parent_id INTEGER REFERENCES categories(id)
+            );
+            INSERT INTO categories_new (id, name, color) SELECT id, name, color FROM categories;
+            DROP TABLE categories;
+            ALTER TABLE categories_new RENAME TO categories;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_name
+                ON categories(COALESCE(parent_id, 0), name);
+            CREATE INDEX IF NOT EXISTS idx_categories_parent ON categories(parent_id);",
+        ),
+        // Glob replaces regex and categorization gains a materialized automatic result.
+        // Runtime matching and the data backfill happen in Rust after the schema commits.
+        M::up(
+            "DELETE FROM category_rules WHERE match_kind = 'regex';
+            CREATE TABLE category_rules_new (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                key_kind    TEXT NOT NULL CHECK (key_kind IN ('exe', 'domain', 'url')),
+                pattern     TEXT NOT NULL,
+                category_id INTEGER NOT NULL REFERENCES categories(id),
+                match_kind  TEXT NOT NULL DEFAULT 'exact'
+                    CHECK (match_kind IN ('exact', 'prefix', 'substring', 'glob'))
+            );
+            INSERT INTO category_rules_new (id, key_kind, pattern, category_id, match_kind)
+                SELECT id, key_kind, pattern, category_id, match_kind FROM category_rules;
+            DROP TABLE category_rules;
+            ALTER TABLE category_rules_new RENAME TO category_rules;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_category_rules_key
+                ON category_rules(key_kind, match_kind, pattern);
+
+            -- `prefix` joins the ignore-list CHECK too: IgnoreStore has accepted
+            -- MatchKind::Prefix since it was added, but the constraint never listed it, so
+            -- such a rule failed with an opaque constraint error.
+            DELETE FROM ignore_rules WHERE match_kind = 'regex';
+            CREATE TABLE ignore_rules_new (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind       TEXT NOT NULL CHECK (kind IN ('app', 'site')),
+                pattern    TEXT NOT NULL,
+                match_kind TEXT NOT NULL DEFAULT 'substring'
+                    CHECK (match_kind IN ('exact', 'prefix', 'substring', 'glob'))
+            );
+            INSERT INTO ignore_rules_new (id, kind, pattern, match_kind)
+                SELECT id, kind, pattern, match_kind FROM ignore_rules;
+            DROP TABLE ignore_rules;
+            ALTER TABLE ignore_rules_new RENAME TO ignore_rules;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_ignore_rules_pattern
+                ON ignore_rules(kind, match_kind, pattern);
+
+            -- ADD COLUMN … UNIQUE is rejected outright, so the uniqueness is a partial
+            -- index instead. Rust adopts or creates the built-in after migration.
+            ALTER TABLE categories ADD COLUMN system_key TEXT;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_categories_system_key
+                ON categories(system_key) WHERE system_key IS NOT NULL;
+
+            ALTER TABLE sessions ADD COLUMN rule_category_id INTEGER REFERENCES categories(id);
+            CREATE INDEX IF NOT EXISTS idx_sessions_rule_category ON sessions(rule_category_id);
+            CREATE INDEX IF NOT EXISTS idx_sessions_category ON sessions(category_id);
+
+            CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            INSERT OR IGNORE INTO settings (key, value)
+                VALUES ('distraction_threshold_seconds', '10');",
+        )
+        .foreign_key_check(),
+        // Compatibility marker: databases that ran the earlier development version of
+        // migration 14 need one Rust replay to replace its SQL-derived values.
+        M::up(
+            "INSERT OR IGNORE INTO settings (key, value)
+                VALUES ('category_resolver_version', '0');",
+        ),
+        M::up(
+            "ALTER TABLE sessions ADD COLUMN ml_category_id INTEGER REFERENCES categories(id);
+             ALTER TABLE sessions ADD COLUMN ml_confidence REAL;
+             ALTER TABLE sessions ADD COLUMN ml_model_version INTEGER;
+             CREATE INDEX IF NOT EXISTS idx_sessions_ml_category ON sessions(ml_category_id);",
+        ),
+        M::up(
+            "INSERT OR IGNORE INTO settings (key, value)
+                VALUES ('ai_categorization_schedule', 'manual');",
+        ),
+        M::up(
+            "UPDATE sessions
+             SET rule_category_id = NULL
+             WHERE rule_category_id IN (
+                 SELECT id FROM categories WHERE system_key = 'distraction'
+             );
+             DROP INDEX IF EXISTS idx_categories_system_key;
+             DELETE FROM settings WHERE key = 'distraction_threshold_seconds';
+             ALTER TABLE categories DROP COLUMN system_key;",
+        )
+        .foreign_key_check(),
+        M::up(
+            "INSERT OR IGNORE INTO settings (key, value)
+                VALUES ('ai_categorization_confidence_threshold', '0.75');",
+        ),
+        // Sub-second blocks are event noise, never activity. Existing history is purged once
+        // here; `end_session` keeps new ones out.
+        //
+        // `unixepoch(…, 'subsec')` rather than the `julianday` arithmetic the read queries
+        // use: a julianday difference is a fraction of a day, so a row of exactly one second
+        // comes back as 0.9999999… and would be deleted by a `< 1.0` test.
+        M::up(
+            "DELETE FROM sessions
+             WHERE end_time IS NOT NULL
+               AND unixepoch(end_time, 'subsec') - unixepoch(start_time, 'subsec') < 1.0;",
+        ),
+        M::up(
+            "ALTER TABLE categories ADD COLUMN description TEXT;
+
+             CREATE TABLE category_suggestions (
+                 id            INTEGER PRIMARY KEY,
+                 key_kind      TEXT NOT NULL CHECK(key_kind IN ('exe', 'domain')),
+                 key           TEXT NOT NULL,
+                 category_id   INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+                 confidence    REAL NOT NULL,
+                 seconds       REAL NOT NULL,
+                 model_version INTEGER NOT NULL,
+                 created_at    TEXT NOT NULL,
+                 status        TEXT NOT NULL DEFAULT 'pending'
+                               CHECK(status IN ('pending', 'dismissed')),
+                 UNIQUE(key_kind, key)
+             );
+
+             CREATE TABLE key_embeddings (
+                 key_kind TEXT NOT NULL,
+                 key      TEXT NOT NULL,
+                 doc_hash TEXT NOT NULL,
+                 model_id TEXT NOT NULL,
+                 vector   BLOB NOT NULL,
+                 PRIMARY KEY (key_kind, key)
+             );
+
+             INSERT OR IGNORE INTO settings (key, value)
+                 VALUES ('ai_categorization_model_version', '0');
+             INSERT OR IGNORE INTO settings (key, value)
+                 VALUES ('ai_categorization_input_revision', '0');
+
+             UPDATE sessions
+                SET ml_category_id = NULL,
+                    ml_confidence = NULL,
+                    ml_model_version = NULL;",
+        )
+        .foreign_key_check(),
+        M::up(
+            "CREATE TABLE multi_purpose_keys (
+                key_kind    TEXT NOT NULL CHECK(key_kind IN ('exe', 'domain')),
+                key         TEXT NOT NULL,
+                source      TEXT NOT NULL CHECK(source IN ('seed', 'auto', 'user')),
+                enabled     INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
+                top_share   REAL CHECK(top_share IS NULL OR (top_share >= 0.0 AND top_share <= 1.0)),
+                detected_at TEXT,
+                PRIMARY KEY (key_kind, key)
+            );
+
+            CREATE TABLE category_suggestions_new (
+                id            INTEGER PRIMARY KEY,
+                key_kind      TEXT NOT NULL CHECK(key_kind IN ('exe', 'domain', 'url')),
+                key           TEXT NOT NULL,
+                category_id   INTEGER NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+                confidence    REAL NOT NULL,
+                seconds       REAL NOT NULL,
+                model_version INTEGER NOT NULL,
+                created_at    TEXT NOT NULL,
+                status        TEXT NOT NULL DEFAULT 'pending'
+                              CHECK(status IN ('pending', 'dismissed')),
+                UNIQUE(key_kind, key)
+            );
+            INSERT INTO category_suggestions_new
+                (id, key_kind, key, category_id, confidence, seconds, model_version, created_at, status)
+                SELECT id, key_kind, key, category_id, confidence, seconds, model_version, created_at, status
+                FROM category_suggestions;
+            DROP TABLE category_suggestions;
+            ALTER TABLE category_suggestions_new RENAME TO category_suggestions;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_category_suggestions_key
+                ON category_suggestions(key_kind, key);",
+        )
+        .foreign_key_check(),
     ])
 }
 
-/// Registers the `regexp` scalar function SQLite dispatches `X REGEXP Y`
-/// to (as `regexp(Y, X)` — pattern first, then the text being tested), so
-/// `category::rule_join_sql`'s `Regex` match arm has an operator to use.
-/// Matching is case-insensitive, same convention as the `Substring` arm's
-/// `lower()`/`instr()`. An invalid pattern (e.g. a rule someone is still
-/// mid-edit on) simply never matches rather than erroring the whole query.
-fn register_regexp_function(conn: &Connection) -> Result<()> {
-    conn.create_scalar_function(
-        "regexp",
-        2,
-        rusqlite::functions::FunctionFlags::SQLITE_UTF8
-            | rusqlite::functions::FunctionFlags::SQLITE_DETERMINISTIC,
-        |ctx| {
-            let pattern = ctx.get::<String>(0)?;
-            let text = ctx.get::<String>(1)?;
-            let matched = regex::RegexBuilder::new(&pattern)
-                .case_insensitive(true)
-                .build()
-                .map(|re| re.is_match(&text))
-                .unwrap_or(false);
-            Ok(matched)
-        },
-    )?;
-    Ok(())
-}
+/// A focus or tab change that is undone within a second never was activity: a page redirects,
+/// a browser reports a tab before its title has loaded and corrects itself, a window flashes
+/// past on the way somewhere else. Rows that short are deleted instead of closed, so no query
+/// downstream has to filter by duration.
+const MIN_SESSION_SECONDS: i64 = 1;
 
 pub fn open_connection(path: &Path) -> Result<SharedConnection> {
     if let Some(parent) = path.parent() {
@@ -242,16 +336,60 @@ pub fn open_connection(path: &Path) -> Result<SharedConnection> {
     }
     let mut conn = Connection::open(path)
         .with_context(|| format!("opening database at {}", path.display()))?;
-    register_regexp_function(&conn).context("registering regexp SQL function")?;
-    migrations()
-        .to_latest(&mut conn)
-        .context("migrating schema")?;
-    seed_default_categories(&conn).context("seeding default categories")?;
+    migrate(&mut conn).context("migrating schema")?;
     Ok(Arc::new(Mutex::new(conn)))
 }
 
-/// A `SessionStore` backed by a local SQLite file. Timestamps are stored as
-/// RFC 3339 strings in UTC.
+/// The bundled SQLite enforces foreign keys by default, which a migration that rebuilds a
+/// referenced table (`DROP TABLE categories` while rules and pins point at it) would trip
+/// over. SQLite's own recipe is to lift the check for the duration — it cannot be toggled
+/// inside a transaction, so it has to happen out here rather than inside a migration.
+fn migrate(conn: &mut Connection) -> Result<()> {
+    conn.pragma_update(None, "foreign_keys", "OFF")?;
+    let result = migrations().to_latest(conn);
+    conn.pragma_update(None, "foreign_keys", "ON")?;
+    result?;
+
+    let tx = conn.transaction()?;
+    let resolver_version: Option<String> = tx
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'category_resolver_version'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if resolver_version.as_deref() != Some("2") {
+        resolve::resolve_all(&tx)?;
+        tx.execute(
+            "INSERT INTO settings (key, value) VALUES ('category_resolver_version', '2')
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+/// A row whose `start_time` is missing or unparseable is left alone — an unreadable timestamp
+/// is a reason to keep the row, not to throw it away.
+fn is_too_short(tx: &rusqlite::Transaction<'_>, id: i64, at: DateTime<Utc>) -> Result<bool> {
+    let start: Option<String> = tx
+        .query_row(
+            "SELECT start_time FROM sessions WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(start) = start.as_deref().and_then(|start| {
+        DateTime::parse_from_rfc3339(start)
+            .ok()
+            .map(|start| start.with_timezone(&Utc))
+    }) else {
+        return Ok(false);
+    };
+    Ok(at.signed_duration_since(start).num_milliseconds() < MIN_SESSION_SECONDS * 1000)
+}
+
 pub struct SqliteStore {
     conn: SharedConnection,
 }
@@ -260,103 +398,6 @@ impl SqliteStore {
     pub fn new(conn: SharedConnection) -> Self {
         Self { conn }
     }
-}
-
-fn seed_default_categories(conn: &Connection) -> Result<()> {
-    let already_seeded: bool =
-        conn.query_row("SELECT EXISTS(SELECT 1 FROM categories)", [], |row| {
-            row.get(0)
-        })?;
-    if already_seeded {
-        return Ok(());
-    }
-
-    // (name, color, exe rules, domain rules)
-    const DEFAULTS: &[(&str, &str, &[&str], &[&str])] = &[
-        (
-            "Development",
-            "#6366f1",
-            &[
-                "code.exe",
-                "devenv.exe",
-                "pycharm64.exe",
-                "windowsterminal.exe",
-                "powershell.exe",
-                "pwsh.exe",
-                "cmd.exe",
-            ],
-            &[
-                "github.com",
-                "gitlab.com",
-                "stackoverflow.com",
-                "developer.mozilla.org",
-            ],
-        ),
-        (
-            "Communication",
-            "#22c55e",
-            &[
-                "slack.exe",
-                "discord.exe",
-                "teams.exe",
-                "outlook.exe",
-                "whatsapp.exe",
-                "whatsapp.root.exe",
-                "signal.exe",
-            ],
-            &["mail.google.com", "outlook.office.com"],
-        ),
-        (
-            "Entertainment",
-            "#f97316",
-            &["spotify.exe", "steam.exe", "vlc.exe"],
-            &[
-                "youtube.com",
-                "netflix.com",
-                "twitch.tv",
-                "open.spotify.com",
-            ],
-        ),
-        (
-            "Social Media",
-            "#ec4899",
-            &[],
-            &[
-                "twitter.com",
-                "x.com",
-                "facebook.com",
-                "instagram.com",
-                "reddit.com",
-            ],
-        ),
-        (
-            "Productivity",
-            "#0ea5e9",
-            &["winword.exe", "excel.exe", "powerpnt.exe", "notion.exe"],
-            &["notion.so", "docs.google.com"],
-        ),
-    ];
-
-    for (name, color, exe_patterns, domain_patterns) in DEFAULTS {
-        conn.execute(
-            "INSERT INTO categories (name, color) VALUES (?1, ?2)",
-            params![name, color],
-        )?;
-        let category_id = conn.last_insert_rowid();
-        for pattern in *exe_patterns {
-            conn.execute(
-                "INSERT INTO category_rules (key_kind, pattern, category_id) VALUES ('exe', ?1, ?2)",
-                params![pattern, category_id],
-            )?;
-        }
-        for pattern in *domain_patterns {
-            conn.execute(
-                "INSERT INTO category_rules (key_kind, pattern, category_id) VALUES ('domain', ?1, ?2)",
-                params![pattern, category_id],
-            )?;
-        }
-    }
-    Ok(())
 }
 
 impl SessionStore for SqliteStore {
@@ -369,29 +410,40 @@ impl SessionStore for SqliteStore {
     ) -> Result<i64> {
         let (key_kind, key) = category_key(&app.exe_path, url);
         let url_key_value = url.and_then(url_key);
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute(
             "INSERT INTO sessions (app_name, exe_path, window_title, url, category_key, category_key_kind, url_key, start_time)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![app.app_name, app.exe_path, window_title, url, key, key_kind.as_str(), url_key_value, at.to_rfc3339()],
         )?;
-        Ok(conn.last_insert_rowid())
+        let id = tx.last_insert_rowid();
+        resolve::resolve_session(&tx, id)?;
+        tx.commit()?;
+        Ok(id)
     }
 
+    /// Closes the row and derives its category in Rust in one transaction, unless the block
+    /// lasted less than [`MIN_SESSION_SECONDS`], in which case the row is dropped instead.
     fn end_session(&mut self, id: i64, at: DateTime<Utc>) -> Result<()> {
-        self.conn.lock().unwrap().execute(
-            "UPDATE sessions SET end_time = ?1 WHERE id = ?2",
-            params![at.to_rfc3339(), id],
+        let end_time = at.to_rfc3339();
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        if is_too_short(&tx, id, at)? {
+            tx.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+            tx.commit()?;
+            return Ok(());
+        }
+        let category_id = resolve::resolve_session_category(&tx, id)?;
+        tx.execute(
+            "UPDATE sessions SET end_time = ?1, rule_category_id = ?2 WHERE id = ?3",
+            params![end_time, category_id, id],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
     fn close_dangling_sessions(&mut self) -> Result<()> {
-        // A session still open at startup means the previous run never saw
-        // its end (crash, kill, power loss). We can't know the real end
-        // time, so close it at its own start rather than "now" — that
-        // undercounts one session instead of silently inflating it by
-        // however long the machine was off.
         self.conn
             .lock()
             .unwrap()
@@ -404,6 +456,8 @@ impl SessionStore for SqliteStore {
 mod tests {
     use super::*;
 
+    type MigratedResolution = (i64, Option<i64>, Option<i64>, Option<i64>);
+
     fn temp_db_path() -> std::path::PathBuf {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -413,25 +467,11 @@ mod tests {
         std::env::temp_dir().join(format!("makora-sqlite-migration-test-{unique}.sqlite"))
     }
 
-    /// Simulates an install upgrading across the migration that replaced
-    /// per-rule `priority` with per-category `priority` (see `migrations`):
-    /// stops at the pre-existing schema, inserts categories the way an
-    /// older build's `create_category` would have (no `priority` column in
-    /// play yet), then migrates through that step and checks the backfill
-    /// assigned priority in category creation (id) order — the best
-    /// available default described in that migration's comment. `priority`
-    /// was itself later dropped entirely (rules now resolve by specificity,
-    /// see `category::rule_join_sql`), so this only pins down the
-    /// now-historical backfill behavior rather than any current-schema
-    /// guarantee.
     #[test]
     fn category_priority_backfill_orders_by_creation_id_ascending() {
         let path = temp_db_path();
         let mut conn = Connection::open(&path).unwrap();
-        register_regexp_function(&conn).unwrap();
         let migs = migrations();
-        // Version 7: through the superseded per-rule `priority` migration,
-        // one short of the per-category `priority` migration being tested.
         migs.to_version(&mut conn, 7).unwrap();
         conn.execute_batch(
             "INSERT INTO categories (name, color) VALUES ('First', '#111111');
@@ -440,8 +480,6 @@ mod tests {
         )
         .unwrap();
 
-        // Version 8: through the per-category `priority` backfill, one short
-        // of the migration that drops `priority` again.
         migs.to_version(&mut conn, 8).unwrap();
 
         let mut stmt = conn
@@ -464,15 +502,79 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// After migrating to latest, `categories.priority` is gone and
-    /// `category_rules` accepts the new `url` key_kind and `prefix`
-    /// match_kind (its CHECK constraints were rebuilt, not just extended).
+    #[test]
+    fn subcategory_migration_keeps_existing_categories_and_scopes_names_to_their_parent() {
+        let path = temp_db_path();
+        let mut conn = Connection::open(&path).unwrap();
+        let migs = migrations();
+        migs.to_version(&mut conn, 12).unwrap();
+        conn.execute_batch(
+            "INSERT INTO categories (name, color) VALUES ('Work', '#111111');
+             INSERT INTO categories (name, color) VALUES ('Personal', '#222222');",
+        )
+        .unwrap();
+        let work_id: i64 = conn
+            .query_row("SELECT id FROM categories WHERE name = 'Work'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        conn.execute(
+            "INSERT INTO category_rules (key_kind, pattern, match_kind, category_id)
+             VALUES ('exe', 'code.exe', 'exact', ?1)",
+            params![work_id],
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let surviving: Vec<(i64, String)> = conn
+            .prepare("SELECT id, name FROM categories ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            surviving,
+            vec![(1, "Work".to_string()), (2, "Personal".to_string())],
+            "the rebuild has to keep ids, since rules and pins point at them"
+        );
+        let rules_still_pointing: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM category_rules WHERE category_id = ?1",
+                params![work_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rules_still_pointing, 1);
+
+        conn.execute(
+            "INSERT INTO categories (name, color, parent_id) VALUES ('Reading', '#333333', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO categories (name, color, parent_id) VALUES ('Reading', '#444444', 2)",
+            [],
+        )
+        .expect("the same subcategory name under a different parent is a different category");
+        assert!(
+            conn.execute(
+                "INSERT INTO categories (name, color, parent_id) VALUES ('Reading', '#555555', 1)",
+                [],
+            )
+            .is_err(),
+            "two subcategories of the same parent must not share a name"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn latest_schema_drops_category_priority_and_accepts_url_and_prefix_rules() {
         let path = temp_db_path();
         let mut conn = Connection::open(&path).unwrap();
-        register_regexp_function(&conn).unwrap();
-        migrations().to_latest(&mut conn).unwrap();
+        migrate(&mut conn).unwrap();
 
         let priority_column_count: i64 = conn
             .query_row(
@@ -495,6 +597,521 @@ mod tests {
             params![category_id],
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO category_rules (key_kind, pattern, match_kind, category_id)
+             VALUES ('url', 'github.com/*/pulls', 'glob', ?1)",
+            params![category_id],
+        )
+        .unwrap();
+        assert!(
+            conn.execute(
+                "INSERT INTO category_rules (key_kind, pattern, match_kind, category_id)
+                 VALUES ('exe', 'anything', 'regex', ?1)",
+                params![category_id],
+            )
+            .is_err(),
+            "regex was retired; the CHECK is what keeps a stale client from reintroducing it"
+        );
+
+        let threshold_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM settings WHERE key = 'distraction_threshold_seconds'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(threshold_count, 0);
+
+        let ai_schedule: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'ai_categorization_schedule'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ai_schedule, "manual");
+
+        let ai_confidence_threshold: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'ai_categorization_confidence_threshold'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ai_confidence_threshold, "0.75");
+
+        let resolved_column_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'rule_category_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(resolved_column_count, 1);
+
+        let description_column_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('categories') WHERE name = 'description'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(description_column_count, 1);
+        let model_version: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'ai_categorization_model_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(model_version, "0");
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name IN ('category_suggestions', 'key_embeddings')",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            2
+        );
+
+        let system_key_column_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('categories') WHERE name = 'system_key'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(system_key_column_count, 0);
+        let category_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM categories", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            category_count, 1,
+            "only the Test category inserted by this test exists"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn migration_22_preserves_suggestions_and_accepts_url_kind() {
+        let path = temp_db_path();
+        let mut conn = Connection::open(&path).unwrap();
+        migrations().to_version(&mut conn, 21).unwrap();
+        conn.execute(
+            "INSERT INTO categories (id, name, color) VALUES (1, 'Learning', '#111111')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO category_suggestions
+                (id, key_kind, key, category_id, confidence, seconds, model_version, created_at, status)
+             VALUES
+                (7, 'domain', 'example.com', 1, 0.81, 120.0, 3, '2024-01-01T00:00:00Z', 'pending'),
+                (8, 'exe', 'player', 1, 0.61, 80.0, 2, '2024-01-02T00:00:00Z', 'dismissed')",
+            [],
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO category_suggestions
+                (id, key_kind, key, category_id, confidence, seconds, model_version, created_at)
+             VALUES (9, 'url', 'example.com/learning', 1, 0.9, 50.0, 4, '2024-01-03T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let rows: Vec<(i64, String, String, String)> = conn
+            .prepare("SELECT id, key_kind, key, status FROM category_suggestions ORDER BY id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (7, "domain".into(), "example.com".into(), "pending".into()),
+                (8, "exe".into(), "player".into(), "dismissed".into()),
+                (
+                    9,
+                    "url".into(),
+                    "example.com/learning".into(),
+                    "pending".into()
+                ),
+            ]
+        );
+        let foreign_key_violations: Vec<String> = conn
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(foreign_key_violations.is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Everything the schema migration and Rust bootstrap have to get right on a v13 database.
+    fn migrated_from_v13(setup: &str) -> (Connection, std::path::PathBuf) {
+        let path = temp_db_path();
+        let mut conn = Connection::open(&path).unwrap();
+        migrations().to_version(&mut conn, 13).unwrap();
+        conn.execute_batch(setup).unwrap();
+        migrate(&mut conn).unwrap();
+        (conn, path)
+    }
+
+    #[test]
+    fn migration_14_drops_regex_rules_from_both_tables_and_keeps_the_rest() {
+        let (conn, path) = migrated_from_v13(
+            "INSERT INTO categories (id, name, color) VALUES (1, 'Work', '#111111');
+             INSERT INTO category_rules (key_kind, pattern, match_kind, category_id)
+                VALUES ('exe', 'code.exe', 'exact', 1), ('exe', '^code', 'regex', 1);
+             INSERT INTO ignore_rules (kind, pattern, match_kind)
+                VALUES ('app', 'steam', 'substring'), ('app', '^game', 'regex');",
+        );
+
+        let surviving_rules: Vec<String> = conn
+            .prepare("SELECT pattern FROM category_rules ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(surviving_rules, vec!["code.exe".to_string()]);
+
+        let surviving_ignores: Vec<String> = conn
+            .prepare("SELECT pattern FROM ignore_rules ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(surviving_ignores, vec!["steam".to_string()]);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn rust_bootstrap_backfills_resolved_categories_over_existing_history() {
+        let (conn, path) = migrated_from_v13(
+            "INSERT INTO categories (id, name, color) VALUES (1, 'Work', '#111111');
+             INSERT INTO category_rules (key_kind, pattern, match_kind, category_id)
+                VALUES ('exe', 'code.exe', 'exact', 1);
+             INSERT INTO sessions (app_name, exe_path, window_title, category_key, category_key_kind, start_time, end_time)
+                VALUES ('code.exe', 'code.exe', 't', 'code.exe', 'exe', '2024-06-15T00:00:00Z', '2024-06-15T00:10:00Z'),
+                       ('code.exe', 'code.exe', 't', 'code.exe', 'exe', '2024-06-15T01:00:00Z', '2024-06-15T01:00:04Z'),
+                       ('other.exe', 'other.exe', 't', 'other.exe', 'exe', '2024-06-15T02:00:00Z', '2024-06-15T02:30:00Z'),
+                       ('blip.exe', 'blip.exe', 't', 'blip.exe', 'exe', '2024-06-15T03:00:00Z', '2024-06-15T03:00:03Z');
+             INSERT INTO sessions (app_name, exe_path, window_title, category_key, category_key_kind, start_time)
+                VALUES ('code.exe', 'code.exe', 't', 'code.exe', 'exe', '2024-06-15T04:00:00Z');",
+        );
+
+        let resolved: Vec<Option<i64>> = conn
+            .prepare("SELECT rule_category_id FROM sessions ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            resolved,
+            vec![Some(1), Some(1), None, None, Some(1)],
+            "rules apply regardless of duration; unmatched rows remain uncategorized"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn migration_keeps_a_category_the_user_already_named_distraction() {
+        let (conn, path) = migrated_from_v13(
+            "INSERT INTO categories (id, name, color) VALUES (7, 'Distraction', '#ff0000');
+             INSERT INTO category_rules (key_kind, pattern, match_kind, category_id)
+                VALUES ('domain', 'reddit.com', 'exact', 7);",
+        );
+
+        let kept: Vec<(i64, String, String)> = conn
+            .prepare("SELECT id, name, color FROM categories WHERE name = 'Distraction'")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            kept,
+            vec![(7, "Distraction".to_string(), "#ff0000".to_string())],
+            "an ordinary category keeps its id, colour and rules"
+        );
+
+        let rules_kept: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM category_rules WHERE category_id = 7",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rules_kept, 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn migration_15_replays_a_database_that_already_ran_the_old_sql_resolver() {
+        let path = temp_db_path();
+        let mut conn = Connection::open(&path).unwrap();
+        migrations().to_version(&mut conn, 14).unwrap();
+        conn.execute_batch(
+            "INSERT INTO categories (id, name, color, system_key)
+                VALUES (1, 'Work', '#111111', NULL),
+                       (2, 'Distraction', '#a1a1aa', 'distraction');
+             INSERT INTO category_rules (key_kind, pattern, match_kind, category_id)
+                VALUES ('exe', 'code.exe', 'exact', 1);
+             INSERT INTO sessions (
+                 app_name, exe_path, window_title, category_key, category_key_kind,
+                 start_time, end_time, rule_category_id
+             ) VALUES (
+                 'code.exe', 'code.exe', 't', 'code.exe', 'exe',
+                 '2024-06-15T00:00:00Z', '2024-06-15T00:10:00Z', 2
+             );",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let resolved: Option<i64> = conn
+            .query_row("SELECT rule_category_id FROM sessions LIMIT 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(resolved, Some(1));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn migration_18_clears_only_automatic_distraction_assignments() {
+        let path = temp_db_path();
+        let mut conn = Connection::open(&path).unwrap();
+        migrations().to_version(&mut conn, 17).unwrap();
+        conn.execute_batch(
+            "INSERT INTO categories (id, name, color, system_key)
+                VALUES (1, 'Work', '#111111', NULL),
+                       (2, 'Distraction', '#a1a1aa', 'distraction');
+             INSERT INTO category_rules (key_kind, pattern, match_kind, category_id)
+                VALUES ('exe', 'noise.exe', 'exact', 2);
+             INSERT INTO sessions (
+                 id, app_name, exe_path, window_title, category_key, category_key_kind,
+                 start_time, end_time, category_id, rule_category_id, ml_category_id,
+                 ml_confidence, ml_model_version
+             ) VALUES
+                (1, 'random.exe', 'random.exe', 't', 'random.exe', 'exe',
+                 '2024-06-15T00:00:00Z', '2024-06-15T00:00:03Z', NULL, 2, NULL, NULL, NULL),
+                (2, 'noise.exe', 'noise.exe', 't', 'noise.exe', 'exe',
+                 '2024-06-15T01:00:00Z', '2024-06-15T01:00:03Z', NULL, 2, NULL, NULL, NULL),
+                (3, 'manual.exe', 'manual.exe', 't', 'manual.exe', 'exe',
+                 '2024-06-15T02:00:00Z', '2024-06-15T02:00:03Z', 2, 2, NULL, NULL, NULL),
+                (4, 'predicted.exe', 'predicted.exe', 't', 'predicted.exe', 'exe',
+                 '2024-06-15T03:00:00Z', '2024-06-15T03:00:03Z', NULL, 2, 2, 0.9, 7);
+             INSERT INTO work_sessions (
+                 id, name, target_seconds, start_time, end_time, created_at
+             ) VALUES (
+                 1, 'Focus', 600, '2024-06-15T00:00:00Z',
+                 '2024-06-15T00:10:00Z', '2024-06-15T00:00:00Z'
+             );
+             INSERT INTO work_session_categories (work_session_id, category_id) VALUES (1, 2);",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let categories: Vec<(i64, String, String)> = conn
+            .prepare("SELECT id, name, color FROM categories ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            categories,
+            vec![
+                (1, "Work".to_string(), "#111111".to_string()),
+                (2, "Distraction".to_string(), "#a1a1aa".to_string()),
+            ]
+        );
+
+        let resolved: Vec<MigratedResolution> = conn
+            .prepare(
+                "SELECT id, category_id, rule_category_id, ml_category_id
+                 FROM sessions ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            resolved,
+            vec![
+                (1, None, None, None),
+                (2, None, Some(2), None),
+                (3, Some(2), None, None),
+                (4, None, None, None),
+            ],
+            "fallback labels are cleared, while rule, manual and AI assignments remain"
+        );
+
+        let work_session_link: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM work_session_categories
+                 WHERE work_session_id = 1 AND category_id = 2",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(work_session_link, 1);
+        let obsolete_schema: i64 = conn
+            .query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM pragma_table_info('categories') WHERE name = 'system_key') +
+                    (SELECT COUNT(*) FROM settings WHERE key = 'distraction_threshold_seconds')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(obsolete_schema, 0);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn migration_20_drops_sub_second_history_and_keeps_open_rows() {
+        let path = temp_db_path();
+        let mut conn = Connection::open(&path).unwrap();
+        migrations().to_version(&mut conn, 19).unwrap();
+        conn.execute_batch(
+            "INSERT INTO sessions (
+                 app_name, exe_path, window_title, category_key, category_key_kind,
+                 start_time, end_time
+             ) VALUES
+                ('chrome', 'chrome', 'https://a.example/', 'a.example', 'domain',
+                 '2024-06-15T00:00:00+00:00', '2024-06-15T00:00:00.400+00:00'),
+                ('chrome', 'chrome', 'Real title', 'a.example', 'domain',
+                 '2024-06-15T00:01:00+00:00', '2024-06-15T00:01:01+00:00'),
+                ('code', 'code', 'main.rs', 'code', 'exe',
+                 '2024-06-15T00:02:00+00:00', '2024-06-15T00:12:00+00:00');
+             INSERT INTO sessions (
+                 app_name, exe_path, window_title, category_key, category_key_kind, start_time
+             ) VALUES ('code', 'code', 'still open', 'code', 'exe', '2024-06-15T00:20:00+00:00');",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let surviving: Vec<String> = conn
+            .prepare("SELECT window_title FROM sessions ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            surviving,
+            vec![
+                "Real title".to_string(),
+                "main.rs".to_string(),
+                "still open".to_string(),
+            ],
+            "only the sub-second block goes; a row still open has no duration to judge yet"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ending_a_sub_second_block_deletes_the_row_instead_of_closing_it() {
+        let path = temp_db_path();
+        let conn = open_connection(&path).unwrap();
+        let mut store = SqliteStore::new(conn.clone());
+        let app = AppInfo {
+            process_id: 1,
+            exe_path: "chrome.exe".to_string(),
+            app_name: "chrome".to_string(),
+        };
+        let start = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+
+        let blip = store
+            .start_session(
+                &app,
+                "https://a.example/",
+                Some("https://a.example/"),
+                start,
+            )
+            .unwrap();
+        store
+            .end_session(blip, start + chrono::Duration::milliseconds(400))
+            .unwrap();
+        let kept = store
+            .start_session(&app, "Real title", Some("https://b.example/"), start)
+            .unwrap();
+        store
+            .end_session(kept, start + chrono::Duration::seconds(1))
+            .unwrap();
+
+        let surviving: Vec<(i64, String)> = conn
+            .lock()
+            .unwrap()
+            .prepare("SELECT id, window_title FROM sessions ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            surviving,
+            vec![(kept, "Real title".to_string())],
+            "exactly one second is long enough to keep; anything under it is noise"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn migration_19_adds_the_ai_confidence_threshold_without_overwriting_settings() {
+        let path = temp_db_path();
+        let mut conn = Connection::open(&path).unwrap();
+        migrations().to_version(&mut conn, 18).unwrap();
+        conn.execute(
+            "UPDATE settings SET value = 'daily' WHERE key = 'ai_categorization_schedule'",
+            [],
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let threshold: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'ai_categorization_confidence_threshold'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let schedule: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'ai_categorization_schedule'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(threshold, "0.75");
+        assert_eq!(schedule, "daily");
 
         let _ = std::fs::remove_file(&path);
     }

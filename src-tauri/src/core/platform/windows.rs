@@ -19,20 +19,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use crate::core::model::{AppInfo, FocusEvent, WatchEvent};
 use crate::core::watcher::FocusWatcher;
 
-// The WinEvent callback is a plain `extern "system" fn`, not a closure, so it
-// can't capture the channel. Out-of-context hooks deliver their callback on
-// the thread that registered them, so a thread-local set right before the
-// message loop starts is a safe way to hand it the sender.
 thread_local! {
     static EVENT_TX: RefCell<Option<Sender<WatchEvent>>> = RefCell::new(None);
 }
 
-/// Watches the Windows foreground window via `SetWinEventHook`
-/// (`EVENT_SYSTEM_FOREGROUND`) and reports every focus change.
-///
-/// This is event-driven, not polled: Windows calls back the instant focus
-/// moves to a different window, so session boundaries line up with the
-/// exact switch moment and no CPU is burned while focus is unchanged.
 #[derive(Default)]
 pub struct WindowsFocusWatcher {
     thread: Option<thread::JoinHandle<()>>,
@@ -55,9 +45,6 @@ impl FocusWatcher for WindowsFocusWatcher {
     }
 }
 
-/// Registers the hook and pumps messages for its lifetime. WinEvent hooks
-/// require the registering thread to run a Win32 message loop even though
-/// no window is created — the OS delivers callbacks through that queue.
 fn run_event_loop(tx: Sender<WatchEvent>) {
     EVENT_TX.with(|cell| *cell.borrow_mut() = Some(tx));
 
@@ -72,16 +59,12 @@ fn run_event_loop(tx: Sender<WatchEvent>) {
             WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
         );
         if hook.is_null() {
-            eprintln!("makora: SetWinEventHook failed; app-usage tracking is disabled");
+            tracing::error!("SetWinEventHook failed; app-usage tracking is disabled");
             return;
         }
 
         let mut msg: MSG = std::mem::zeroed();
-        while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
-            // No TranslateMessage/DispatchMessage needed: WinEvent callbacks
-            // for an out-of-context hook fire directly while this thread
-            // pumps GetMessageW, they aren't posted as window messages.
-        }
+        while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {}
 
         UnhookWinEvent(hook);
     }
@@ -96,8 +79,6 @@ unsafe extern "system" fn win_event_proc(
     _event_thread: u32,
     _event_time: u32,
 ) {
-    // OBJID_WINDOW/CHILDID_SELF filters out events for controls *within* a
-    // window (scrollbars, menus, ...) so only whole-window focus counts.
     if event != EVENT_SYSTEM_FOREGROUND
         || hwnd.is_null()
         || id_object != OBJID_WINDOW
@@ -152,11 +133,6 @@ fn app_info_for_window(hwnd: HWND) -> Option<AppInfo> {
     })
 }
 
-/// Resolves a process id to its executable's full path.
-///
-/// `PROCESS_QUERY_LIMITED_INFORMATION` is used deliberately: it's the access
-/// right unprivileged processes can request even against elevated or
-/// protected ones, so this works without running makora as administrator.
 fn process_exe_path(process_id: u32) -> Option<String> {
     unsafe {
         let handle: HANDLE = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, process_id);

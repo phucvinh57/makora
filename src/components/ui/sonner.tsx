@@ -16,13 +16,6 @@ function Toaster(props: React.ComponentProps<typeof SonnerToaster>) {
         } as React.CSSProperties
       }
       toastOptions={{
-        // Sonner lays the icon, title/description, and action button out as
-        // a single non-wrapping row by default. An action label long enough
-        // to matter here — "Apply to all N app.exe activities" — then fights
-        // the description column for that row's width instead of wrapping,
-        // so the button visually overlaps the text rather than sitting
-        // below it. Forcing the button onto its own full-width row avoids
-        // that regardless of how long the label ends up being.
         classNames: {
           toast: "flex-wrap! items-start!",
           content: "flex-1! min-w-0!",

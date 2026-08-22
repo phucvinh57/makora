@@ -1,19 +1,13 @@
+use std::cmp::Reverse;
+use std::collections::{HashMap, HashSet};
+
+use anyhow::{anyhow, Result};
 use url::Url;
 
-/// Which kind of pattern a session's [`category_key`] was derived from, or
-/// (for [`Url`](KeyKind::Url)) a rule-only target matched against a
-/// session's `url_key` instead. Stored on `category_key_kind` alongside the
-/// key so it can be matched against rules/overrides of the same kind without
-/// re-deriving it (and without the different kinds of pattern ever being
-/// confused for one another).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KeyKind {
     Exe,
     Domain,
-    /// Rule-only: [`category_key`] never produces this kind. Matches a
-    /// session's [`url_key`] (host + path + whitelisted query) instead of
-    /// its `category_key`, so two pages on the same domain — e.g. two
-    /// Google Docs documents — can resolve to different categories.
     Url,
 }
 
@@ -36,22 +30,13 @@ impl KeyKind {
     }
 }
 
-/// How a [`crate::core::store::CategoryRule`]'s `pattern` is matched against
-/// a session's key (`category_key`, or `url_key` for a [`KeyKind::Url`]
-/// rule). Also doubles as this system's specificity ranking, most to least
-/// specific: [`Exact`](MatchKind::Exact) > [`Prefix`](MatchKind::Prefix) >
-/// [`Substring`](MatchKind::Substring) > [`Regex`](MatchKind::Regex) — see
-/// [`rule_join_sql`]. A `Substring` rule of `"steam"` also catches
-/// `steamwebhelper.exe`; a `Prefix` rule of `"docs.google.com/document/d/ABC"`
-/// catches that one document (and its sub-paths) but not other documents on
-/// the same domain; a `Regex` rule can express things like "any
-/// `*.corp.example.com` subdomain" that none of the others can.
+/// How a rule's pattern is compared against a session key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MatchKind {
     Exact,
     Prefix,
     Substring,
-    Regex,
+    Glob,
 }
 
 impl MatchKind {
@@ -60,7 +45,7 @@ impl MatchKind {
             Self::Exact => "exact",
             Self::Prefix => "prefix",
             Self::Substring => "substring",
-            Self::Regex => "regex",
+            Self::Glob => "glob",
         }
     }
 
@@ -69,76 +54,361 @@ impl MatchKind {
             "exact" => Some(Self::Exact),
             "prefix" => Some(Self::Prefix),
             "substring" => Some(Self::Substring),
-            "regex" => Some(Self::Regex),
+            "glob" => Some(Self::Glob),
             _ => None,
         }
     }
 }
 
-/// A `LEFT JOIN ... ON ...` clause resolving `sessions_alias` against
-/// `category_rules`, honoring each rule's `match_kind` (case-insensitive
-/// exact equality, prefix, substring — all via `lower`/`instr`, same
-/// convention as `ignore_rules` — or a case-insensitive regex via the
-/// `regexp` SQLite function registered in `store::sqlite::open_connection`,
-/// backing the `REGEXP` operator). A [`KeyKind::Url`] rule matches
-/// `sessions_alias.url_key`; an `Exe`/`Domain` rule matches
-/// `(category_key_kind, category_key)` as before.
-///
-/// When more than one rule matches the same session (e.g. a `url` rule for
-/// one Google Docs document and a broader `domain` rule for
-/// `docs.google.com` both apply), the subquery picks a single deterministic
-/// winner by **specificity** — there is no user-managed ordering (categories
-/// have no priority) — so this join can never fan a session row out into
-/// duplicates the way a plain multi-match `ON` condition would:
-///
-/// 1. Target: a `url` rule beats an `exe`/`domain` rule.
-/// 2. Match kind, most to least specific: `exact` > `prefix` > `substring` >
-///    `regex` (see [`MatchKind`]'s doc comment).
-/// 3. Longer pattern wins (a rough proxy for "more specific").
-/// 4. Lowest rule id, as a final tiebreak — only matters when two rules in
-///    the *same* category both match, where the winner is immaterial since
-///    they resolve to the same category either way.
-///
-/// `rule_alias` names the joined `category_rules` row; `sessions_alias`
-/// names the table/subquery being joined against (must expose
-/// `category_key_kind`/`category_key`/`url_key` columns).
-pub fn rule_join_sql(rule_alias: &str, sessions_alias: &str) -> String {
-    format!(
-        "LEFT JOIN category_rules {rule_alias} ON {rule_alias}.id = (
-            SELECT r2.id FROM category_rules r2
-            WHERE
-                (r2.key_kind = {sessions_alias}.category_key_kind AND (
-                    (r2.match_kind = 'exact' AND lower(r2.pattern) = lower({sessions_alias}.category_key))
-                    OR (r2.match_kind = 'prefix' AND instr(lower({sessions_alias}.category_key), lower(r2.pattern)) = 1)
-                    OR (r2.match_kind = 'substring' AND instr(lower({sessions_alias}.category_key), lower(r2.pattern)) > 0)
-                    OR (r2.match_kind = 'regex' AND {sessions_alias}.category_key REGEXP r2.pattern)
-                ))
-                OR (r2.key_kind = 'url' AND {sessions_alias}.url_key IS NOT NULL AND (
-                    (r2.match_kind = 'exact' AND lower(r2.pattern) = lower({sessions_alias}.url_key))
-                    OR (r2.match_kind = 'prefix' AND instr(lower({sessions_alias}.url_key), lower(r2.pattern)) = 1)
-                    OR (r2.match_kind = 'substring' AND instr(lower({sessions_alias}.url_key), lower(r2.pattern)) > 0)
-                    OR (r2.match_kind = 'regex' AND {sessions_alias}.url_key REGEXP r2.pattern)
-                ))
-            ORDER BY
-                CASE r2.key_kind WHEN 'url' THEN 0 ELSE 1 END,
-                CASE r2.match_kind
-                    WHEN 'exact' THEN 0
-                    WHEN 'prefix' THEN 1
-                    WHEN 'substring' THEN 2
-                    ELSE 3
-                END,
-                length(r2.pattern) DESC,
-                r2.id
-            LIMIT 1
-        )"
-    )
+#[derive(Debug, Clone)]
+enum PatternMatcher {
+    Exact(String),
+    Prefix(String),
+    Substring(String),
+    Glob(GlobPattern),
 }
 
-/// The stable lookup key used to categorize a session: the URL's host for a
-/// browser-tab row, or the executable's file name for a plain app-focus row.
-/// Computed once when the session is written so that changing a rule or
-/// override later re-categorizes historical sessions without needing to
-/// re-parse the URL or path at query time.
+impl PatternMatcher {
+    fn compile(kind: MatchKind, pattern: &str) -> Result<Self> {
+        let folded = pattern.to_ascii_lowercase();
+        Ok(match kind {
+            MatchKind::Exact => Self::Exact(folded),
+            MatchKind::Prefix => Self::Prefix(folded),
+            MatchKind::Substring => Self::Substring(folded),
+            MatchKind::Glob => Self::Glob(GlobPattern::compile(&folded)?),
+        })
+    }
+
+    fn matches(&self, candidate: &str) -> bool {
+        let candidate = candidate.to_ascii_lowercase();
+        match self {
+            Self::Exact(pattern) => candidate == *pattern,
+            Self::Prefix(pattern) => candidate.starts_with(pattern),
+            Self::Substring(pattern) => candidate.contains(pattern),
+            Self::Glob(pattern) => pattern.matches(&candidate),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GlobPattern {
+    tokens: Vec<GlobToken>,
+}
+
+#[derive(Debug, Clone)]
+enum GlobToken {
+    Literal(char),
+    AnyChar,
+    AnySequence,
+    Class(CharClass),
+}
+
+#[derive(Debug, Clone)]
+struct CharClass {
+    negated: bool,
+    items: Vec<ClassItem>,
+}
+
+#[derive(Debug, Clone)]
+enum ClassItem {
+    Literal(char),
+    Range(char, char),
+}
+
+impl GlobPattern {
+    fn compile(pattern: &str) -> Result<Self> {
+        let chars: Vec<char> = pattern.chars().collect();
+        let mut tokens = Vec::new();
+        let mut index = 0;
+        while index < chars.len() {
+            match chars[index] {
+                '*' => {
+                    if !matches!(tokens.last(), Some(GlobToken::AnySequence)) {
+                        tokens.push(GlobToken::AnySequence);
+                    }
+                    index += 1;
+                }
+                '?' => {
+                    tokens.push(GlobToken::AnyChar);
+                    index += 1;
+                }
+                '[' => {
+                    let (class, next) = CharClass::parse(&chars, index)?;
+                    tokens.push(GlobToken::Class(class));
+                    index = next;
+                }
+                literal => {
+                    tokens.push(GlobToken::Literal(literal));
+                    index += 1;
+                }
+            }
+        }
+        Ok(Self { tokens })
+    }
+
+    fn matches(&self, candidate: &str) -> bool {
+        let chars: Vec<char> = candidate.chars().collect();
+        let mut memo = HashMap::new();
+        self.matches_from(0, 0, &chars, &mut memo)
+    }
+
+    fn matches_from(
+        &self,
+        token_index: usize,
+        char_index: usize,
+        chars: &[char],
+        memo: &mut HashMap<(usize, usize), bool>,
+    ) -> bool {
+        if let Some(result) = memo.get(&(token_index, char_index)) {
+            return *result;
+        }
+        let result = match self.tokens.get(token_index) {
+            None => char_index == chars.len(),
+            Some(GlobToken::AnySequence) => {
+                self.matches_from(token_index + 1, char_index, chars, memo)
+                    || (char_index < chars.len()
+                        && self.matches_from(token_index, char_index + 1, chars, memo))
+            }
+            Some(GlobToken::AnyChar) => {
+                char_index < chars.len()
+                    && self.matches_from(token_index + 1, char_index + 1, chars, memo)
+            }
+            Some(GlobToken::Literal(expected)) => {
+                chars.get(char_index) == Some(expected)
+                    && self.matches_from(token_index + 1, char_index + 1, chars, memo)
+            }
+            Some(GlobToken::Class(class)) => {
+                chars
+                    .get(char_index)
+                    .is_some_and(|value| class.matches(*value))
+                    && self.matches_from(token_index + 1, char_index + 1, chars, memo)
+            }
+        };
+        memo.insert((token_index, char_index), result);
+        result
+    }
+}
+
+impl CharClass {
+    fn parse(chars: &[char], opening: usize) -> Result<(Self, usize)> {
+        let mut index = opening + 1;
+        let negated = chars.get(index) == Some(&'^');
+        if negated {
+            index += 1;
+        }
+
+        let mut members = Vec::new();
+        if chars.get(index) == Some(&']') {
+            members.push(']');
+            index += 1;
+        }
+        while let Some(value) = chars.get(index).copied() {
+            if value == ']' {
+                break;
+            }
+            members.push(value);
+            index += 1;
+        }
+        if chars.get(index) != Some(&']') || members.is_empty() {
+            return Err(anyhow!(
+                "invalid glob pattern: unterminated or empty character class"
+            ));
+        }
+
+        let mut items = Vec::new();
+        let mut member_index = 0;
+        while member_index < members.len() {
+            if member_index + 2 < members.len() && members[member_index + 1] == '-' {
+                let start = members[member_index];
+                let end = members[member_index + 2];
+                if start > end {
+                    return Err(anyhow!("invalid glob pattern: descending character range"));
+                }
+                items.push(ClassItem::Range(start, end));
+                member_index += 3;
+            } else {
+                items.push(ClassItem::Literal(members[member_index]));
+                member_index += 1;
+            }
+        }
+        Ok((Self { negated, items }, index + 1))
+    }
+
+    fn matches(&self, value: char) -> bool {
+        let contained = self.items.iter().any(|item| match *item {
+            ClassItem::Literal(expected) => expected == value,
+            ClassItem::Range(start, end) => (start..=end).contains(&value),
+        });
+        contained != self.negated
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RuleSpec {
+    pub id: i64,
+    pub key_kind: KeyKind,
+    pub pattern: String,
+    pub match_kind: MatchKind,
+    pub category_id: i64,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CompiledRule {
+    id: i64,
+    key_kind: KeyKind,
+    pattern_len: usize,
+    match_kind: MatchKind,
+    matcher: PatternMatcher,
+    category_id: i64,
+}
+
+impl RuleSpec {
+    pub(crate) fn compile(self) -> Result<CompiledRule> {
+        Ok(CompiledRule {
+            id: self.id,
+            key_kind: self.key_kind,
+            pattern_len: self.pattern.chars().count(),
+            match_kind: self.match_kind,
+            matcher: PatternMatcher::compile(self.match_kind, &self.pattern)?,
+            category_id: self.category_id,
+        })
+    }
+}
+
+pub(crate) fn validate_pattern(kind: MatchKind, pattern: &str) -> Result<()> {
+    PatternMatcher::compile(kind, pattern).map(|_| ())
+}
+
+pub(crate) fn pattern_matches(kind: MatchKind, pattern: &str, candidate: &str) -> bool {
+    PatternMatcher::compile(kind, pattern).is_ok_and(|matcher| matcher.matches(candidate))
+}
+
+pub(crate) fn compile_rules<I>(rules: I) -> Vec<CompiledRule>
+where
+    I: IntoIterator<Item = RuleSpec>,
+{
+    let mut compiled: Vec<_> = rules
+        .into_iter()
+        // Old SQLite-backed versions accepted malformed globs. They remain visible in the
+        // rule list, but cannot prevent the rest of history from being categorized.
+        .filter_map(|rule| rule.compile().ok())
+        .collect();
+    compiled.sort_by_key(|rule| {
+        (
+            if rule.key_kind == KeyKind::Url { 0 } else { 1 },
+            match_priority(rule.match_kind),
+            Reverse(rule.pattern_len),
+            rule.id,
+        )
+    });
+    compiled
+}
+
+fn match_priority(kind: MatchKind) -> u8 {
+    match kind {
+        MatchKind::Exact => 0,
+        MatchKind::Prefix => 1,
+        MatchKind::Substring => 2,
+        MatchKind::Glob => 3,
+    }
+}
+
+pub(crate) struct SessionCategoryInput<'a> {
+    pub key_kind: KeyKind,
+    pub key: &'a str,
+    pub url_key: Option<&'a str>,
+    pub multi_purpose: bool,
+}
+
+pub(crate) fn resolve_category(
+    rules: &[CompiledRule],
+    input: &SessionCategoryInput<'_>,
+) -> Option<i64> {
+    for rule in rules {
+        let candidate = match rule.key_kind {
+            KeyKind::Url => input.url_key,
+            kind if kind == input.key_kind && !input.multi_purpose => Some(input.key),
+            _ => None,
+        };
+        if candidate.is_some_and(|candidate| rule.matcher.matches(candidate)) {
+            return Some(rule.category_id);
+        }
+    }
+
+    None
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CategoryTree {
+    ids: HashSet<i64>,
+    children: HashMap<i64, Vec<i64>>,
+}
+
+impl CategoryTree {
+    pub(crate) fn new<I>(categories: I) -> Self
+    where
+        I: IntoIterator<Item = (i64, Option<i64>)>,
+    {
+        let mut ids = HashSet::new();
+        let mut children: HashMap<i64, Vec<i64>> = HashMap::new();
+        for (id, parent_id) in categories {
+            ids.insert(id);
+            if let Some(parent_id) = parent_id {
+                children.entry(parent_id).or_default().push(id);
+            }
+        }
+        for child_ids in children.values_mut() {
+            child_ids.sort_unstable();
+        }
+        Self { ids, children }
+    }
+
+    pub(crate) fn contains(&self, id: i64) -> bool {
+        self.ids.contains(&id)
+    }
+
+    pub(crate) fn descendants(&self, root: i64) -> Vec<i64> {
+        if !self.contains(root) {
+            return Vec::new();
+        }
+        let mut result = Vec::new();
+        let mut visited = HashSet::new();
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            if !visited.insert(id) {
+                continue;
+            }
+            result.push(id);
+            if let Some(children) = self.children.get(&id) {
+                stack.extend(children.iter().rev().copied());
+            }
+        }
+        result
+    }
+
+    pub(crate) fn deletion_order(&self, root: i64) -> Vec<i64> {
+        let descendants = self.descendants(root);
+        let descendant_set: HashSet<_> = descendants.iter().copied().collect();
+        let mut depth = HashMap::new();
+        depth.insert(root, 0usize);
+        let mut stack = vec![root];
+        while let Some(id) = stack.pop() {
+            let next_depth = depth.get(&id).copied().unwrap_or(0) + 1;
+            if let Some(children) = self.children.get(&id) {
+                for child in children {
+                    if descendant_set.contains(child) && !depth.contains_key(child) {
+                        depth.insert(*child, next_depth);
+                        stack.push(*child);
+                    }
+                }
+            }
+        }
+        let mut ordered = descendants;
+        ordered.sort_by_key(|id| (Reverse(depth.get(id).copied().unwrap_or(0)), *id));
+        ordered
+    }
+}
+
 pub fn category_key(exe_path: &str, url: Option<&str>) -> (KeyKind, String) {
     match url.and_then(normalized_domain) {
         Some(domain) => (KeyKind::Domain, domain),
@@ -146,28 +416,15 @@ pub fn category_key(exe_path: &str, url: Option<&str>) -> (KeyKind, String) {
     }
 }
 
-/// The lowercased, `www.`-stripped host of `url` — the same normalization
-/// [`category_key`] applies to a browser-tab row's key, exposed separately so
-/// other lookups against a URL (e.g. [`crate::core::store::IgnoreStore`]) key
-/// on it identically instead of re-deriving their own notion of "domain".
 pub fn normalized_domain(url: &str) -> Option<String> {
     let host = domain_of(url)?.to_ascii_lowercase();
-    Some(host.strip_prefix("www.").map(str::to_string).unwrap_or(host))
+    Some(
+        host.strip_prefix("www.")
+            .map(str::to_string)
+            .unwrap_or(host),
+    )
 }
 
-/// The normalized match target for a [`KeyKind::Url`] rule: lowercased,
-/// `www.`-stripped host (same as [`normalized_domain`]) plus the path
-/// (trailing `/` trimmed) plus `?query` when the query is non-empty. `None`
-/// for anything [`domain_of`] can't extract a host from.
-///
-/// `url` is expected to already be query-filtered (see
-/// [`filter_query_params`]) — this function doesn't filter it itself, so
-/// that the same normalized form always reflects whatever was actually
-/// stored on the session.
-///
-/// Examples: `https://www.YouTube.com/watch?v=XYZ` → `youtube.com/watch?v=XYZ`;
-/// `https://docs.google.com/document/d/ABC/edit` →
-/// `docs.google.com/document/d/ABC/edit`; `https://example.com/` → `example.com`.
 pub fn url_key(url: &str) -> Option<String> {
     let domain = normalized_domain(url)?;
     let parsed = parse_lenient(url);
@@ -191,14 +448,6 @@ pub fn url_key(url: &str) -> Option<String> {
     Some(key)
 }
 
-/// Filters `url`'s query string down to only the params in `allowed`
-/// (matched by the raw param name, i.e. the text before `=`, case-sensitive),
-/// re-emitted sorted by name for a canonical form. The fragment is always
-/// dropped. An empty `allowed` list drops the whole query string.
-///
-/// This is the privacy boundary for query params (see
-/// `store::QueryWhitelistStore`) — everything not explicitly whitelisted for
-/// the URL's domain is stripped before the URL is ever stored.
 pub fn filter_query_params(url: &str, allowed: &[String]) -> String {
     let Some(mut parsed) = parse_lenient(url) else {
         return url.split('#').next().unwrap_or(url).to_string();
@@ -219,16 +468,6 @@ pub fn filter_query_params(url: &str, allowed: &[String]) -> String {
     parsed.to_string()
 }
 
-/// The file-name component of an executable path, split on either
-/// separator rather than only the host's.
-///
-/// `exe_path` is a lookup key here, never something that gets opened, and
-/// the same stored path has to produce the same key everywhere: `Path`
-/// treats `\` as an ordinary filename character off Windows, so
-/// `Path::file_name` would key a Windows-recorded session on its *entire*
-/// path when that database is read on Linux — silently splitting one app
-/// into two categories. Splitting on both separators is unambiguous for
-/// every path this app records, since neither platform's paths mix them.
 pub(crate) fn exe_file_name(exe_path: &str) -> &str {
     exe_path
         .rsplit(['/', '\\'])
@@ -237,20 +476,12 @@ pub(crate) fn exe_file_name(exe_path: &str) -> &str {
         .unwrap_or(exe_path)
 }
 
-/// Parses `input` as an absolute URL via the `url` crate, retrying with an
-/// assumed `http://` scheme when it has none — covers a bare domain
-/// (`example.com`) or a rule pattern pasted without a scheme
-/// (`docs.google.com/document/d/ABC`), neither of which `Url::parse` accepts
-/// on its own.
 fn parse_lenient(input: &str) -> Option<Url> {
     Url::parse(input)
         .or_else(|_| Url::parse(&format!("http://{input}")))
         .ok()
 }
 
-/// Extracts the host from a URL — see `TabEvent::url`. Falls back gracefully
-/// on anything else since this only ever feeds a lookup key, never a
-/// security decision.
 pub(crate) fn domain_of(url: &str) -> Option<String> {
     let host = parse_lenient(url)?.host_str()?.to_string();
     if host.is_empty() {
@@ -265,6 +496,151 @@ mod tests {
     use super::*;
 
     #[test]
+    fn match_kind_parses_glob_and_no_longer_accepts_the_retired_regex_kind() {
+        assert_eq!(MatchKind::parse("glob"), Some(MatchKind::Glob));
+        assert_eq!(MatchKind::Glob.as_str(), "glob");
+        assert_eq!(MatchKind::parse("regex"), None);
+    }
+
+    #[test]
+    fn all_match_kinds_are_ascii_case_insensitive() {
+        assert!(pattern_matches(MatchKind::Exact, "Code.EXE", "code.exe"));
+        assert!(pattern_matches(
+            MatchKind::Prefix,
+            "GITHUB",
+            "github.com/path"
+        ));
+        assert!(pattern_matches(
+            MatchKind::Substring,
+            "Hub.Com",
+            "github.com"
+        ));
+        assert!(pattern_matches(
+            MatchKind::Glob,
+            "GAME*.EXE",
+            "gameClient.exe"
+        ));
+    }
+
+    #[test]
+    fn glob_is_anchored_crosses_slashes_and_supports_classes() {
+        assert!(pattern_matches(
+            MatchKind::Glob,
+            "github.com/*/pulls",
+            "github.com/org/repo/pulls"
+        ));
+        assert!(!pattern_matches(
+            MatchKind::Glob,
+            "*.corp.example.com",
+            "corp.example.com.attacker.net"
+        ));
+        assert!(pattern_matches(
+            MatchKind::Glob,
+            "game[0-9].exe",
+            "game7.exe"
+        ));
+        assert!(pattern_matches(MatchKind::Glob, "file[^0-9]", "filex"));
+        assert!(pattern_matches(MatchKind::Glob, "[[]draft]", "[draft]"));
+        assert!(pattern_matches(
+            MatchKind::Glob,
+            "github.com/**/pulls",
+            "github.com/org/repo/pulls"
+        ));
+    }
+
+    #[test]
+    fn malformed_globs_are_rejected() {
+        assert!(validate_pattern(MatchKind::Glob, "unterminated[").is_err());
+        assert!(validate_pattern(MatchKind::Glob, "[]").is_err());
+        assert!(validate_pattern(MatchKind::Glob, "[z-a]").is_err());
+    }
+
+    #[test]
+    fn resolver_uses_the_highest_ranked_matching_rule() {
+        let rules = compile_rules([
+            RuleSpec {
+                id: 1,
+                key_kind: KeyKind::Domain,
+                pattern: "github.com".into(),
+                match_kind: MatchKind::Exact,
+                category_id: 10,
+            },
+            RuleSpec {
+                id: 2,
+                key_kind: KeyKind::Url,
+                pattern: "github.com/org/repo".into(),
+                match_kind: MatchKind::Prefix,
+                category_id: 20,
+            },
+        ]);
+        let input = SessionCategoryInput {
+            key_kind: KeyKind::Domain,
+            key: "github.com",
+            url_key: Some("github.com/org/repo/pulls"),
+            multi_purpose: false,
+        };
+        assert_eq!(resolve_category(&rules, &input), Some(20));
+    }
+
+    #[test]
+    fn unmatched_sessions_remain_uncategorized() {
+        let input = SessionCategoryInput {
+            key_kind: KeyKind::Exe,
+            key: "unknown.exe",
+            url_key: None,
+            multi_purpose: false,
+        };
+        assert_eq!(resolve_category(&[], &input), None);
+    }
+
+    #[test]
+    fn multi_purpose_keys_skip_domain_rules_but_keep_url_rules() {
+        let rules = compile_rules([
+            RuleSpec {
+                id: 1,
+                key_kind: KeyKind::Domain,
+                pattern: "youtube.com".into(),
+                match_kind: MatchKind::Exact,
+                category_id: 10,
+            },
+            RuleSpec {
+                id: 2,
+                key_kind: KeyKind::Url,
+                pattern: "youtube.com/@rust".into(),
+                match_kind: MatchKind::Exact,
+                category_id: 20,
+            },
+        ]);
+        let input = SessionCategoryInput {
+            key_kind: KeyKind::Domain,
+            key: "youtube.com",
+            url_key: Some("youtube.com/@rust"),
+            multi_purpose: true,
+        };
+        assert_eq!(resolve_category(&rules, &input), Some(20));
+
+        let input = SessionCategoryInput {
+            url_key: Some("youtube.com/watch"),
+            ..input
+        };
+        assert_eq!(resolve_category(&rules, &input), None);
+    }
+
+    #[test]
+    fn category_tree_expands_descendants_and_deletes_deepest_first() {
+        let tree = CategoryTree::new([
+            (1, None),
+            (2, Some(1)),
+            (3, Some(2)),
+            (4, Some(1)),
+            (5, None),
+        ]);
+        assert_eq!(tree.descendants(1), vec![1, 2, 3, 4]);
+        assert_eq!(tree.deletion_order(1), vec![3, 2, 4, 1]);
+        assert!(tree.descendants(99).is_empty());
+    }
+
+    #[test]
     fn app_focus_row_keys_on_lowercased_exe_file_name() {
         let (kind, key) = category_key(r"C:\Program Files\Code\Code.exe", None);
         assert_eq!(kind, KeyKind::Exe);
@@ -273,14 +649,9 @@ mod tests {
 
     #[test]
     fn exe_keys_are_identical_whichever_platform_reads_the_database() {
-        // The same key regardless of which separator the recording platform
-        // used, and regardless of which platform is running this code —
-        // `Path::file_name` gives neither guarantee.
         assert_eq!(exe_file_name(r"C:\Program Files\Code\Code.exe"), "Code.exe");
         assert_eq!(exe_file_name("/opt/google/chrome/chrome"), "chrome");
         assert_eq!(exe_file_name("chrome.exe"), "chrome.exe");
-        // The Linux watcher's fallback identity for a window with no
-        // readable process still reduces to the app id.
         assert_eq!(
             exe_file_name("wayland-app-id://org.gnome.Nautilus"),
             "org.gnome.Nautilus"
@@ -311,7 +682,10 @@ mod tests {
 
     #[test]
     fn domain_extraction_handles_missing_scheme() {
-        assert_eq!(domain_of("example.com/path"), Some("example.com".to_string()));
+        assert_eq!(
+            domain_of("example.com/path"),
+            Some("example.com".to_string())
+        );
     }
 
     #[test]
@@ -328,8 +702,14 @@ mod tests {
             url_key("https://docs.google.com/document/d/ABC/edit"),
             Some("docs.google.com/document/d/ABC/edit".to_string())
         );
-        assert_eq!(url_key("https://example.com/"), Some("example.com".to_string()));
-        assert_eq!(url_key("https://example.com"), Some("example.com".to_string()));
+        assert_eq!(
+            url_key("https://example.com/"),
+            Some("example.com".to_string())
+        );
+        assert_eq!(
+            url_key("https://example.com"),
+            Some("example.com".to_string())
+        );
     }
 
     #[test]
@@ -346,7 +726,7 @@ mod tests {
     }
 
     #[test]
-    fn filter_query_params_keeps_only_whitelisted_names() {
+    fn filter_query_params_keeps_only_allowed_names() {
         let allowed = vec!["v".to_string()];
         assert_eq!(
             filter_query_params("https://youtube.com/watch?v=XYZ&list=abc", &allowed),
@@ -386,5 +766,4 @@ mod tests {
             "https://example.com/p"
         );
     }
-
 }

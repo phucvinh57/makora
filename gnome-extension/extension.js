@@ -1,20 +1,3 @@
-/**
- * Makora's focus reporter.
- *
- * Wayland deliberately gives a client no way to ask which window is focused,
- * and GNOME closes the two loopholes that exist elsewhere: the
- * `org.gnome.Shell.Introspect` D-Bus API is allowlisted to
- * xdg-desktop-portal-gnome and answers everyone else with `Access denied`,
- * and `ext-foreign-toplevel-list-v1` — which Mutter does implement — carries
- * no focus state at all. So the only way for Makora to know what you're
- * working in is for something to run inside GNOME Shell and tell it. That's
- * this extension, and that's all it does.
- *
- * The bus name, object path, interface and protocol version below are
- * duplicated in `src-tauri/src/core/platform/linux/gnome.rs` — change one,
- * change the other. See README.md for the contract.
- */
-
 import Gio from "gi://Gio";
 import GLib from "gi://GLib";
 import Shell from "gi://Shell";
@@ -24,12 +7,6 @@ const BUS_NAME = "dev.phucvinh57.MakoraShell";
 const OBJECT_PATH = "/dev/phucvinh57/MakoraShell";
 const PROTOCOL_VERSION = 1;
 
-/**
- * `present` is false when nothing is focused — most commonly because the
- * Activities overview is open. Makora treats that as "no change" and keeps
- * the running session open rather than ending it, so glancing at the
- * overview doesn't chop a session in two.
- */
 const INTERFACE = `
 <node>
   <interface name="dev.phucvinh57.MakoraShell.Focus1">
@@ -63,8 +40,6 @@ class FocusReporter {
   }
 
   start() {
-    // Export before claiming the name, so there is no instant where a
-    // client can see the name and find nothing behind it.
     this._exported.export(Gio.DBus.session, OBJECT_PATH);
     this._nameId = Gio.bus_own_name(
       Gio.BusType.SESSION,
@@ -91,12 +66,6 @@ class FocusReporter {
     this._exported.unexport();
   }
 
-  /**
-   * Lets Makora ask what is focused the moment it connects. Without this
-   * it would record nothing until the next time you switched apps —
-   * which, if you start Makora and then keep working in the same window,
-   * could be hours.
-   */
   GetFocusedWindow() {
     return this._describe(global.display.focus_window);
   }
@@ -109,17 +78,9 @@ class FocusReporter {
     );
   }
 
-  /**
-   * @param {Meta.Window|null} win the focused window, if any
-   * @returns {[boolean, number, string, string, string]} the wire payload
-   */
   _describe(win) {
     if (!win) return [false, 0, "", "", ""];
 
-    // Makora keys sessions on the executable behind the window, which it
-    // reads from /proc/<pid>/exe. `get_pid` returns -1 for windows the
-    // compositor has no process for; 0 is the wire's "unknown", and
-    // Makora falls back to the app id in that case.
     const pid = win.get_pid();
     const app = Shell.WindowTracker.get_default().get_window_app(win);
 
@@ -140,9 +101,6 @@ export default class MakoraFocusExtension extends Extension {
   }
 
   disable() {
-    // Must fully tear down: `session-modes` is `user` only, so GNOME
-    // disables this extension whenever the screen locks, and a leaked
-    // signal handler or bus name would survive into the lock screen.
     this._reporter?.stop();
     this._reporter = null;
   }

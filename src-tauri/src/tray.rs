@@ -2,20 +2,24 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 
-/// Builds the tray icon: left-click (or the "Show" menu item) restores the
-/// main window, "Quit" exits the app. This is the only way back once the
-/// window has been closed.
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let show_item = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
 
-    TrayIconBuilder::new()
-        .icon(
-            app.default_window_icon()
-                .cloned()
-                .expect("app icon configured in tauri.conf.json"),
-        )
+    let builder = TrayIconBuilder::new();
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .icon(tauri::include_image!("icons/tray.png"))
+        .icon_as_template(true);
+    #[cfg(not(target_os = "macos"))]
+    let builder = builder.icon(
+        app.default_window_icon()
+            .cloned()
+            .expect("app icon configured in tauri.conf.json"),
+    );
+
+    builder
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
@@ -38,14 +42,6 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-/// Restores the main window, rebuilding it from `tauri.conf.json`'s window
-/// config if it was destroyed (see `lib.rs`'s `ExitRequested` handling) —
-/// closing the window frees its WebView2 process, so there's nothing to
-/// show/focus until a fresh one is built.
-///
-/// Also the single-instance handler: launching Makora again (taskbar icon,
-/// desktop entry) surfaces the running instance's window instead of starting
-/// a second process.
 pub fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
@@ -62,7 +58,7 @@ pub fn show_main_window(app: &AppHandle) {
         .find(|config| config.label == "main")
         .cloned()
     else {
-        eprintln!("makora: no \"main\" window config to rebuild the window from");
+        tracing::error!("no \"main\" window config to rebuild the window from");
         return;
     };
 
@@ -71,7 +67,10 @@ pub fn show_main_window(app: &AppHandle) {
     {
         Ok(window) => window,
         Err(err) => {
-            eprintln!("makora: failed to rebuild main window: {err:#}");
+            tracing::error!(
+                error = format!("{err:#}"),
+                "failed to rebuild the main window"
+            );
             return;
         }
     };

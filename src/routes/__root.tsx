@@ -21,9 +21,9 @@ type NavItem = { to: string; label: string; icon: typeof History };
 
 const NAV_ITEMS: NavItem[] = [
   { to: "/statistics", label: "Statistics", icon: BarChart3 },
-  { to: "/focus", label: "Focus", icon: Target },
+  { to: "/labeling", label: "Labeling", icon: Tags },
   { to: "/history", label: "History", icon: History },
-  { to: "/labelling", label: "Labelling", icon: Tags },
+  { to: "/focus", label: "Focus", icon: Target },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 

@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { AiCategorizationSettingsSection } from "./-components/AiCategorizationSettingsSection";
 import { GeneralSection } from "./-components/GeneralSection";
 import { IgnoreListSection } from "./-components/IgnoreListSection";
-import { QueryParamSection } from "./-components/QueryParamSection";
 
 export const Route = createFileRoute("/settings")({
   component: SettingsPage,
@@ -17,8 +17,8 @@ function SettingsPage() {
         </p>
       </header>
       <GeneralSection />
+      <AiCategorizationSettingsSection />
       <IgnoreListSection />
-      <QueryParamSection />
     </div>
   );
 }

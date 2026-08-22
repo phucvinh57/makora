@@ -1,14 +1,14 @@
 [package]
-name = "makora-app"
+name = "makora"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "makora_app_lib"
+name = "makora_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [[bin]]
-name = "makora-app"
+name = "makora"
 path = "src/main.rs"
 
 [build-dependencies]
@@ -23,10 +23,14 @@ chrono = "0.4.45"
 tiny_http = "0.12.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-rusqlite = { version = "0.40.1", features = ["bundled", "functions"] }
+rusqlite = { version = "0.40.1", features = ["bundled"] }
 rusqlite_migration = "2.6.0"
-regex = "1.11.3"
 url = "2.5.7"
+model2vec-rs = { version = "0.2.1", default-features = false, features = ["local-only", "fancy-regex"] }
+tauri-plugin-opener = "2"
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [
@@ -41,10 +45,6 @@ objc2 = "0.6"
 block2 = "0.6"
 core-foundation-sys = "0.8"
 
-# The GNOME provider talks to the shell extension over the session bus, and
-# the wlroots provider speaks Wayland directly. `zbus`'s blocking API is used
-# deliberately: the focus watcher owns a plain thread on every platform, and
-# nothing else in this crate needs an async runtime.
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "5"
 wayland-client = "0.31"

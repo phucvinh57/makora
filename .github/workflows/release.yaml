@@ -43,13 +43,12 @@ jobs:
             target: ""
             files: |
               src-tauri/target/release/bundle/deb/*.deb
-              src-tauri/target/release/bundle/rpm/*.rpm
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          lfs: true
 
-      # Tauri renders its webview with WebKitGTK and its tray icon with
-      # libayatana-appindicator, neither of which the runner image carries.
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -77,11 +76,28 @@ jobs:
 
       - name: Update app version
         shell: bash
+        env:
+          VERSION: ${{ steps.get_version.outputs.version }}
         run: |
-          VERSION="${{ steps.get_version.outputs.version }}"
-          echo "Updating version to $VERSION"
-          sed -i -e "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
-          node -e "const fs=require('fs');const p='src-tauri/tauri.conf.json';const c=JSON.parse(fs.readFileSync(p));c.version='$VERSION';fs.writeFileSync(p, JSON.stringify(c, null, 2) + '\n');"
+          node <<'NODE'
+          const fs = require("fs");
+          const version = process.env.VERSION;
+          const cargoPath = "src-tauri/Cargo.toml";
+          const cargo = fs.readFileSync(cargoPath, "utf8");
+          const updatedCargo = cargo.replace(
+            /^version = ".*"$/m,
+            `version = "${version}"`,
+          );
+          if (updatedCargo === cargo) {
+            throw new Error("package version was not found in Cargo.toml");
+          }
+          fs.writeFileSync(cargoPath, updatedCargo);
+
+          const configPath = "src-tauri/tauri.conf.json";
+          const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+          config.version = version;
+          fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+          NODE
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable

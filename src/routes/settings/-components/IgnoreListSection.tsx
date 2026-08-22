@@ -39,22 +39,19 @@ const MATCH_KIND_LABEL: Record<MatchKind, string> = {
   exact: "is",
   prefix: "starts with",
   substring: "contains",
-  regex: "matches",
+  glob: "matches",
 };
 
-// Base UI's <SelectValue> only shows an item's label if the root is told
-// what it is via `items` — it won't infer it from a matching <SelectItem>'s
-// children.
 const MATCH_KIND_SELECT_LABEL: Record<MatchKind, string> = {
   exact: "is",
   prefix: "starts with",
   substring: "contains",
-  regex: "matches (regex)",
+  glob: "matches (wildcard)",
 };
 
 function matchKindPlaceholder(kind: IgnoreKind, matchKind: MatchKind): string {
-  if (matchKind === "regex") {
-    return kind === "app" ? "^game\\d*\\.exe$" : "^.*\\.corp\\.example\\.com$";
+  if (matchKind === "glob") {
+    return kind === "app" ? "game*.exe" : "*.corp.example.com";
   }
   return kind === "app" ? "steam.exe" : "youtube.com";
 }
@@ -78,13 +75,8 @@ export function IgnoreListSection() {
 
   const createMutation = useMutation({
     mutationFn: () => {
-      // Lowercasing canonicalizes exact/substring patterns (matching is
-      // case-insensitive either way), but would corrupt case-sensitive
-      // regex escapes like `\D`/`\S`/`\W`, so regex patterns are sent as-is —
-      // same convention as the labelling rule form.
-      const normalized =
-        matchKind === "regex" ? pattern.trim() : pattern.trim().toLowerCase();
-      return createIgnoreRule(kind, normalized, matchKind);
+      // Both sides are lower()ed in SQL, so the stored form can be folded unconditionally.
+      return createIgnoreRule(kind, pattern.trim().toLowerCase(), matchKind);
     },
     onSuccess: () => {
       setPattern("");
@@ -185,7 +177,7 @@ export function IgnoreListSection() {
                 <SelectContent>
                   <SelectItem value="exact">is</SelectItem>
                   <SelectItem value="substring">contains</SelectItem>
-                  <SelectItem value="regex">matches (regex)</SelectItem>
+                  <SelectItem value="glob">matches (wildcard)</SelectItem>
                 </SelectContent>
               </Select>
             </div>

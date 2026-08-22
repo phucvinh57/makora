@@ -18,26 +18,9 @@ use objc2::{class, msg_send};
 use crate::core::model::{AppInfo, FocusEvent, WatchEvent};
 use crate::core::watcher::FocusWatcher;
 
-// `class!(NSWorkspace)` and friends resolve at link time, not through any
-// generated binding crate, so the frameworks that own those classes have to
-// be linked explicitly. Cocoa is the umbrella framework for AppKit
-// (NSWorkspace) + Foundation (NSString, NSOperationQueue, ...); the `ax`
-// module below links ApplicationServices separately for the Accessibility
-// calls it makes.
 #[link(name = "Cocoa", kind = "framework")]
 extern "C" {}
 
-/// Watches app activation via `NSWorkspace`'s
-/// `didActivateApplicationNotification` and reports every focus change.
-///
-/// This is event-driven, not polled: macOS posts the notification the
-/// instant a different app becomes frontmost. Unlike the Windows watcher
-/// (which hooks per-window foreground changes), `NSWorkspace` only reports
-/// *app*-level activation, but that's all `SessionTracker` needs — window
-/// title is filled in separately via the Accessibility API, which requires
-/// the user to have granted this process Accessibility permission (System
-/// Settings > Privacy & Security > Accessibility). Until granted, sessions
-/// are still recorded, just with an empty window title.
 #[derive(Default)]
 pub struct MacFocusWatcher {
     thread: Option<thread::JoinHandle<()>>,
@@ -60,28 +43,21 @@ impl FocusWatcher for MacFocusWatcher {
     }
 }
 
-/// Registers the `NSWorkspace` observer and parks. Delivery happens on a
-/// dedicated `NSOperationQueue` (see below), not by pumping a run loop on
-/// this thread, so this thread's only remaining job is to stay alive for the
-/// process's lifetime — dropping it would drop the block (and the `tx` it
-/// owns) along with it.
 fn run_watcher(tx: Sender<WatchEvent>) {
     unsafe {
+        if ax::AXIsProcessTrusted() == 0 {
+            tracing::warn!(
+                "macOS Accessibility permission is not granted; tracking will continue, but window titles will remain empty until Makora is allowed in System Settings → Privacy & Security → Accessibility"
+            );
+        }
+
         let workspace: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
         let center: *mut AnyObject = msg_send![workspace, notificationCenter];
 
-        // A dedicated queue means delivery doesn't depend on any thread
-        // (this one included) running an `NSRunLoop` — the queue manages its
-        // own GCD-backed thread(s) and invokes the block there directly.
         let queue: *mut AnyObject = msg_send![class!(NSOperationQueue), new];
         let name = ns_string("NSWorkspaceDidActivateApplicationNotification");
 
         let block = RcBlock::new(move |notification: *mut AnyObject| {
-            // This thread never runs Cocoa's usual per-iteration autorelease
-            // pool (no NSRunLoop, no NSApplication), so without one here,
-            // autoreleased objects created while resolving the event (the
-            // NSString/NSURL churn in `focus_event_from_notification`) would
-            // otherwise leak for the lifetime of the process.
             autoreleasepool(|_pool| {
                 let event = focus_event_from_notification(notification);
                 if let Some(event) = event {
@@ -97,10 +73,6 @@ fn run_watcher(tx: Sender<WatchEvent>) {
             queue: queue,
             usingBlock: &*block,
         ];
-        // `_observer` is intentionally dropped: `NSNotificationCenter` keeps
-        // its own strong reference to it until `removeObserver:` is called,
-        // so nothing here needs to hold onto it for the registration to stay
-        // live.
     }
 
     loop {
@@ -108,12 +80,6 @@ fn run_watcher(tx: Sender<WatchEvent>) {
     }
 }
 
-/// Extracts a [`FocusEvent`] from an `NSWorkspaceDidActivateApplicationNotification`.
-///
-/// Returns `None` if any expected field is missing — that's a signal to drop
-/// the observation, not a bug: `NSWorkspaceApplicationKey` is documented as
-/// always present on this notification, but this stays defensive rather than
-/// unwrapping across an FFI boundary.
 unsafe fn focus_event_from_notification(notification: *mut AnyObject) -> Option<FocusEvent> {
     if notification.is_null() {
         return None;
@@ -135,9 +101,6 @@ unsafe fn focus_event_from_notification(notification: *mut AnyObject) -> Option<
         return None;
     }
 
-    // Mirrors `WINEVENT_SKIPOWNPROCESS` on Windows: `NSWorkspace` has no
-    // built-in way to exclude the observing process itself, so activating
-    // Makora's own window would otherwise be recorded as a focus change.
     if pid == std::process::id() as i32 {
         return None;
     }
@@ -184,12 +147,6 @@ unsafe fn ns_string(s: &str) -> *mut AnyObject {
     msg_send![class!(NSString), stringWithUTF8String: c.as_ptr()]
 }
 
-/// Reads the title of `pid`'s focused window via the Accessibility API.
-///
-/// Requires this process to have been granted Accessibility permission;
-/// until then `AXUIElementCopyAttributeValue` returns `kAXErrorAPIDisabled`
-/// and this simply yields `None`, which callers treat as an empty title
-/// rather than a hard failure.
 fn focused_window_title(pid: i32) -> Option<String> {
     unsafe {
         let app_element = ax::AXUIElementCreateApplication(pid);
@@ -234,7 +191,6 @@ unsafe fn cfstring_to_string(s: CFStringRef) -> Option<String> {
         return None;
     }
     let len = CFStringGetLength(s);
-    // Worst case for a UTF-16 CFString is 3 UTF-8 bytes per unit, plus a NUL.
     let capacity = (len as usize).saturating_mul(3) + 1;
     let mut buf = vec![0 as c_char; capacity];
     if CFStringGetCString(
@@ -249,11 +205,6 @@ unsafe fn cfstring_to_string(s: CFStringRef) -> Option<String> {
     Some(CStr::from_ptr(buf.as_ptr()).to_string_lossy().into_owned())
 }
 
-/// Minimal bindings for the handful of Accessibility (`AXUIElement`) calls
-/// used above. No published crate wraps these in a way that composes with
-/// `core-foundation-sys`'s types, so they're declared directly against
-/// ApplicationServices, matching how `windows.rs` calls its Win32 APIs
-/// directly rather than through a higher-level wrapper.
 mod ax {
     use core_foundation_sys::base::CFTypeRef;
     use core_foundation_sys::string::CFStringRef;
@@ -265,6 +216,7 @@ mod ax {
 
     #[link(name = "ApplicationServices", kind = "framework")]
     extern "C" {
+        pub fn AXIsProcessTrusted() -> core_foundation_sys::base::Boolean;
         pub fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
         pub fn AXUIElementCopyAttributeValue(
             element: AXUIElementRef,

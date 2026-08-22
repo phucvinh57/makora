@@ -1,8 +1,8 @@
 use anyhow::Result;
 use serde::Serialize;
 
+use super::categories::load_category_tree;
 use super::sqlite::SharedConnection;
-use crate::core::category;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionRow {
@@ -16,10 +16,10 @@ pub struct SessionRow {
     pub category_id: Option<i64>,
     pub category_name: Option<String>,
     pub category_color: Option<String>,
-    pub category_is_override: bool,
+    pub category_is_pinned: bool,
+    pub category_source: Option<String>,
+    pub category_confidence: Option<f32>,
 }
-/// Total time and top breakdowns for `HistoryReader::activity_stats` over a
-/// date range — the aggregate counterpart to `list_sessions`'s raw rows.
 #[derive(Debug, Clone, Serialize)]
 pub struct ActivityStats {
     pub total_seconds: f64,
@@ -29,8 +29,6 @@ pub struct ActivityStats {
     pub daily: Vec<DailyStat>,
 }
 
-/// Time spent under one resolved category (or `None`/`null` for
-/// "Uncategorized"), ordered by `total_seconds` descending.
 #[derive(Debug, Clone, Serialize)]
 pub struct CategoryStat {
     pub category_id: Option<i64>,
@@ -40,8 +38,6 @@ pub struct CategoryStat {
     pub session_count: i64,
 }
 
-/// Time spent under one app/site categorization key, ordered by
-/// `total_seconds` descending and capped to the top entries.
 #[derive(Debug, Clone, Serialize)]
 pub struct AppStat {
     pub label: String,
@@ -51,15 +47,12 @@ pub struct AppStat {
     pub session_count: i64,
 }
 
-/// Total time tracked on one local-time calendar day, ordered oldest first.
 #[derive(Debug, Clone, Serialize)]
 pub struct DailyStat {
     pub day: String,
     pub total_seconds: f64,
 }
 
-/// How many app/site rows `HistoryReader::activity_stats` returns in its
-/// `apps` breakdown — enough to be useful without overwhelming the chart.
 const TOP_APPS_LIMIT: i64 = 15;
 
 pub struct HistoryReader {
@@ -71,32 +64,22 @@ impl HistoryReader {
         Self { conn }
     }
 
-    /// Total number of activity rows matching `filter`, for pagination.
     pub fn count_sessions(&self, filter: &SessionFilter) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
-        let (where_sql, binds) = filter.to_sql();
+        let category_ids = expanded_category_ids(&conn, filter)?;
+        let (where_sql, binds) = filter.to_sql(category_ids.as_deref());
         let sql = format!(
             "SELECT COUNT(*)
              FROM sessions s
-             LEFT JOIN category_overrides ov
-                    ON ov.key_kind = s.category_key_kind AND ov.pattern = s.category_key
-             {rule_join}
              LEFT JOIN categories cat
-                    ON cat.id = COALESCE(s.category_id, ov.category_id, r.category_id)
-             WHERE {where_sql}",
-            rule_join = category::rule_join_sql("r", "s"),
+                    ON cat.id = COALESCE(s.category_id, s.rule_category_id, s.ml_category_id)
+             WHERE {where_sql}"
         );
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             binds.iter().map(|b| b.as_ref()).collect();
         Ok(conn.query_row(&sql, param_refs.as_slice(), |row| row.get(0))?)
     }
 
-    /// A page of activity rows (app focus and browser-tab rows alike)
-    /// matching `filter`, newest first. Category is resolved at read time —
-    /// a per-session pin wins over a key-wide override, which wins over a
-    /// rule, via `COALESCE` — rather than stored denormalized, so editing a
-    /// rule or override re-categorizes historical sessions immediately
-    /// instead of only affecting future ones.
     pub fn list_sessions(
         &self,
         limit: i64,
@@ -104,20 +87,25 @@ impl HistoryReader {
         filter: &SessionFilter,
     ) -> Result<Vec<SessionRow>> {
         let conn = self.conn.lock().unwrap();
-        let (where_sql, mut binds) = filter.to_sql();
+        let category_ids = expanded_category_ids(&conn, filter)?;
+        let (where_sql, mut binds) = filter.to_sql(category_ids.as_deref());
         let sql = format!(
             "SELECT s.id, s.app_name, s.exe_path, s.window_title, s.url, s.start_time, s.end_time,
-                    cat.id, cat.name, cat.color, (s.category_id IS NOT NULL OR ov.category_id IS NOT NULL)
+                    cat.id, cat.name, cat.color, (s.category_id IS NOT NULL),
+                    CASE
+                      WHEN s.category_id IS NOT NULL THEN 'manual'
+                      WHEN s.rule_category_id IS NOT NULL THEN 'rule'
+                      WHEN s.ml_category_id IS NOT NULL THEN 'ai'
+                      ELSE NULL
+                    END,
+                    CASE WHEN s.category_id IS NULL AND s.rule_category_id IS NULL
+                         THEN s.ml_confidence ELSE NULL END
              FROM sessions s
-             LEFT JOIN category_overrides ov
-                    ON ov.key_kind = s.category_key_kind AND ov.pattern = s.category_key
-             {rule_join}
              LEFT JOIN categories cat
-                    ON cat.id = COALESCE(s.category_id, ov.category_id, r.category_id)
+                    ON cat.id = COALESCE(s.category_id, s.rule_category_id, s.ml_category_id)
              WHERE {where_sql}
              ORDER BY s.start_time DESC
-             LIMIT ? OFFSET ?",
-            rule_join = category::rule_join_sql("r", "s"),
+             LIMIT ? OFFSET ?"
         );
         binds.push(Box::new(limit));
         binds.push(Box::new(offset));
@@ -138,31 +126,15 @@ impl HistoryReader {
                     category_id: row.get(7)?,
                     category_name: row.get(8)?,
                     category_color: row.get(9)?,
-                    category_is_override: row.get(10)?,
+                    category_is_pinned: row.get(10)?,
+                    category_source: row.get(11)?,
+                    category_confidence: row.get(12)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
-    /// Aggregates tracked time between `start` and `end` (RFC 3339 UTC
-    /// bounds, half-open: `start_time >= start AND start_time < end`) into a
-    /// total, a per-category breakdown, a top-apps/sites breakdown, and a
-    /// per-day breakdown bucketed in the machine's local time zone (so a
-    /// "day" lines up with the user's clock even though `start_time` is
-    /// stored in UTC).
-    ///
-    /// A session still open (`end_time IS NULL`) contributes nothing yet —
-    /// its duration isn't known until it closes — rather than guessing with
-    /// `now()`, which would make the same range's total grow every time this
-    /// is called while a session is focused.
-    ///
-    /// Category resolution reuses the exact join stack `list_sessions` uses
-    /// (per-session pin, then key-wide override, then rule, via
-    /// `category::rule_join_sql`'s deterministic single-winner subquery) so
-    /// a `SUM` here can never double-count a session across categories, and
-    /// a total here always agrees with what the history page would show for
-    /// the same range/category filter.
     pub fn activity_stats(&self, start: &str, end: &str) -> Result<ActivityStats> {
         const DURATION: &str = "(julianday(s.end_time) - julianday(s.start_time)) * 86400.0";
         let conn = self.conn.lock().unwrap();
@@ -177,14 +149,8 @@ impl HistoryReader {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
 
-        let category_join = format!(
-            "LEFT JOIN category_overrides ov
-                    ON ov.key_kind = s.category_key_kind AND ov.pattern = s.category_key
-             {rule_join}
-             LEFT JOIN categories cat
-                    ON cat.id = COALESCE(s.category_id, ov.category_id, r.category_id)",
-            rule_join = category::rule_join_sql("r", "s"),
-        );
+        let category_join = "             LEFT JOIN categories cat
+                    ON cat.id = COALESCE(s.category_id, s.rule_category_id, s.ml_category_id)";
 
         let mut stmt = conn.prepare(&format!(
             "SELECT cat.id, cat.name, cat.color, COALESCE(SUM({DURATION}), 0.0), COUNT(*)
@@ -258,9 +224,6 @@ impl HistoryReader {
     }
 }
 
-/// How the category filter narrows `list_sessions`/`count_sessions`: show
-/// everything, only rows with no resolved category, or only rows resolving
-/// to one specific category.
 #[derive(Debug, Clone, Default)]
 pub enum CategoryFilter {
     #[default]
@@ -269,32 +232,28 @@ pub enum CategoryFilter {
     Category(i64),
 }
 
-/// The search box, category picker, and time-range picker on the history
-/// page, combined into a single filter so `list_sessions`/`count_sessions`
-/// stay in lockstep (a page of rows and its total must be counted under the
-/// same conditions).
+#[derive(Debug, Clone, Default)]
+pub enum CategorySourceFilter {
+    #[default]
+    All,
+    Manual,
+    Ai,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct SessionFilter {
-    /// Substring matched (case-insensitively) against app name, window
-    /// title, and URL.
     pub search: Option<String>,
     pub category: CategoryFilter,
-    /// RFC 3339 UTC bounds, each optional. A row matches when it *overlaps*
-    /// the range — not when its `start_time` falls inside it, the way
-    /// `activity_stats` buckets — because the question this filter answers
-    /// is "what was I doing between these two instants", and an activity
-    /// that began before the range and ran into it is part of that answer.
-    /// A still-open row (`end_time IS NULL`) counts as running through the
-    /// present, so it overlaps anything starting after it began.
+    pub source: CategorySourceFilter,
     pub start: Option<String>,
     pub end: Option<String>,
 }
 
 impl SessionFilter {
-    /// Builds a `WHERE`-clause body (without the `WHERE` keyword, always
-    /// non-empty thanks to the `1=1` filler) and its bound parameters, in
-    /// the order they appear in the SQL.
-    fn to_sql(&self) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
+    fn to_sql(
+        &self,
+        expanded_category_ids: Option<&[i64]>,
+    ) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>) {
         let mut clauses = vec!["1=1".to_string()];
         let mut binds: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
@@ -317,14 +276,40 @@ impl SessionFilter {
         match &self.category {
             CategoryFilter::All => {}
             CategoryFilter::Uncategorized => clauses.push("cat.id IS NULL".to_string()),
-            CategoryFilter::Category(id) => {
-                clauses.push("cat.id = ?".to_string());
-                binds.push(Box::new(*id));
+            // Picking a parent means "this category and everything filed under it".
+            CategoryFilter::Category(_) => {
+                let ids = expanded_category_ids.unwrap_or_default();
+                if ids.is_empty() {
+                    clauses.push("0=1".to_string());
+                } else {
+                    clauses.push(format!(
+                        "cat.id IN ({})",
+                        std::iter::repeat_n("?", ids.len())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                    binds.extend(
+                        ids.iter()
+                            .copied()
+                            .map(|id| Box::new(id) as Box<dyn rusqlite::types::ToSql>),
+                    );
+                }
             }
         }
 
-        // Overlap, not containment: a row is in range unless it ends before
-        // the range opens or starts after it closes.
+        match self.source {
+            CategorySourceFilter::All => {}
+            CategorySourceFilter::Manual => {
+                clauses.push("s.category_id IS NOT NULL".to_string());
+            }
+            CategorySourceFilter::Ai => {
+                clauses.push(
+                    "s.category_id IS NULL AND s.rule_category_id IS NULL AND s.ml_category_id IS NOT NULL"
+                        .to_string(),
+                );
+            }
+        }
+
         if let Some(start) = &self.start {
             clauses.push("(s.end_time IS NULL OR s.end_time > ?)".to_string());
             binds.push(Box::new(start.clone()));
@@ -338,6 +323,16 @@ impl SessionFilter {
     }
 }
 
+fn expanded_category_ids(
+    conn: &rusqlite::Connection,
+    filter: &SessionFilter,
+) -> Result<Option<Vec<i64>>> {
+    match filter.category {
+        CategoryFilter::Category(id) => Ok(Some(load_category_tree(conn)?.descendants(id))),
+        _ => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod stats_tests {
     use rusqlite::params;
@@ -346,10 +341,6 @@ mod stats_tests {
     use crate::core::store::categories::CategoryStore;
     use crate::core::store::sqlite::open_connection;
 
-    // Same disposable-file convention as `categories.rs`'s tests: a fresh
-    // on-disk SQLite database per test (migrations register the `regexp`
-    // function and seed default categories, which an in-memory `:memory:`
-    // connection would need to redo identically anyway).
     fn temp_reader() -> (
         HistoryReader,
         CategoryStore,
@@ -392,6 +383,11 @@ mod stats_tests {
                 params![app_name, url, category_key, category_key_kind, start_time, end_time],
             )
             .unwrap();
+        // Categorization is materialized at write time, so a raw insert would sit at NULL
+        // no matter what the rules say — the tracker resolves every row it writes.
+        let conn = conn.lock().unwrap();
+        let id = conn.last_insert_rowid();
+        crate::core::store::resolve::resolve_session(&conn, id).unwrap();
     }
 
     #[test]
@@ -405,7 +401,7 @@ mod stats_tests {
             "exe",
             "2024-06-15T10:00:00Z",
             Some("2024-06-15T10:10:00Z"),
-        ); // 600s
+        );
         insert_session(
             &conn,
             "chrome.exe",
@@ -414,7 +410,7 @@ mod stats_tests {
             "exe",
             "2024-06-15T11:00:00Z",
             None,
-        ); // still open
+        );
 
         let stats = reader
             .activity_stats("2024-06-15T00:00:00Z", "2024-06-16T00:00:00Z")
@@ -439,7 +435,7 @@ mod stats_tests {
             "exe",
             "2024-06-14T23:59:00Z",
             Some("2024-06-15T00:00:00Z"),
-        ); // before range
+        );
         insert_session(
             &conn,
             "code.exe",
@@ -448,7 +444,7 @@ mod stats_tests {
             "exe",
             "2024-06-15T00:00:00Z",
             Some("2024-06-15T00:10:00Z"),
-        ); // at start: included
+        );
         insert_session(
             &conn,
             "code.exe",
@@ -457,7 +453,7 @@ mod stats_tests {
             "exe",
             "2024-06-16T00:00:00Z",
             Some("2024-06-16T00:10:00Z"),
-        ); // at end: excluded
+        );
 
         let stats = reader
             .activity_stats("2024-06-15T00:00:00Z", "2024-06-16T00:00:00Z")
@@ -470,11 +466,7 @@ mod stats_tests {
     #[test]
     fn category_breakdown_resolves_via_rules_and_groups_uncategorized_separately() {
         let (reader, categories, conn, path) = temp_reader();
-        // Deliberately not one of the seeded default `exe` patterns (see
-        // `sqlite::seed_default_categories`), so this rule doesn't collide
-        // with a pre-existing one on the unique (key_kind, match_kind,
-        // pattern) index.
-        let cat = categories.create_category("Dev", "#111111").unwrap();
+        let cat = categories.create_category("Dev", "#111111", None).unwrap();
         categories
             .create_rule("exe", "myeditor.exe", "exact", cat.id)
             .unwrap();
@@ -487,7 +479,7 @@ mod stats_tests {
             "exe",
             "2024-06-15T10:00:00Z",
             Some("2024-06-15T10:10:00Z"),
-        ); // 600s, Dev
+        );
         insert_session(
             &conn,
             "plainapp.exe",
@@ -496,7 +488,7 @@ mod stats_tests {
             "exe",
             "2024-06-15T11:00:00Z",
             Some("2024-06-15T11:05:00Z"),
-        ); // 300s, uncategorized
+        );
 
         let stats = reader
             .activity_stats("2024-06-15T00:00:00Z", "2024-06-16T00:00:00Z")
@@ -514,6 +506,117 @@ mod stats_tests {
             .find(|c| c.category_id.is_none())
             .unwrap();
         assert!((uncategorized.total_seconds - 300.0).abs() < 0.01);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn filtering_by_a_parent_category_includes_everything_nested_under_it() {
+        let (reader, categories, conn, path) = temp_reader();
+        let work = categories.create_category("Work", "#111111", None).unwrap();
+        let reading = categories
+            .create_category("Reading", "#222222", Some(work.id))
+            .unwrap();
+        let papers = categories
+            .create_category("Papers", "#333333", Some(reading.id))
+            .unwrap();
+        let personal = categories
+            .create_category("Personal", "#444444", None)
+            .unwrap();
+        categories
+            .create_rule("exe", "work.exe", "exact", work.id)
+            .unwrap();
+        categories
+            .create_rule("exe", "papers.exe", "exact", papers.id)
+            .unwrap();
+        categories
+            .create_rule("exe", "personal.exe", "exact", personal.id)
+            .unwrap();
+
+        for exe in ["work.exe", "papers.exe", "personal.exe"] {
+            insert_session(
+                &conn,
+                exe,
+                None,
+                exe,
+                "exe",
+                "2024-06-15T10:00:00Z",
+                Some("2024-06-15T10:10:00Z"),
+            );
+        }
+
+        let filter = SessionFilter {
+            category: CategoryFilter::Category(work.id),
+            ..Default::default()
+        };
+        let mut names: Vec<String> = reader
+            .list_sessions(50, 0, &filter)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.app_name)
+            .collect();
+        names.sort();
+        assert_eq!(names, ["papers.exe", "work.exe"]);
+        assert_eq!(reader.count_sessions(&filter).unwrap(), 2);
+
+        let leaf_only = SessionFilter {
+            category: CategoryFilter::Category(papers.id),
+            ..Default::default()
+        };
+        assert_eq!(reader.count_sessions(&leaf_only).unwrap(), 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn source_filter_distinguishes_effective_manual_and_ai_categories() {
+        let (reader, categories, conn, path) = temp_reader();
+        let manual = categories
+            .create_category("Manual", "#111111", None)
+            .unwrap();
+        let predicted = categories
+            .create_category("Predicted", "#222222", None)
+            .unwrap();
+        let conn = conn.lock().unwrap();
+        conn.execute_batch(&format!(
+            "INSERT INTO sessions (
+                 app_name, exe_path, window_title, category_key, category_key_kind,
+                 start_time, end_time, category_id, rule_category_id, ml_category_id
+             ) VALUES
+                 ('manual.exe', 'manual.exe', 't', 'manual.exe', 'exe',
+                  '2024-06-15T10:00:00Z', '2024-06-15T10:10:00Z', {manual_id}, NULL, NULL),
+                 ('rule.exe', 'rule.exe', 't', 'rule.exe', 'exe',
+                  '2024-06-15T11:00:00Z', '2024-06-15T11:10:00Z', NULL, {manual_id}, {predicted_id}),
+                 ('ai.exe', 'ai.exe', 't', 'ai.exe', 'exe',
+                  '2024-06-15T12:00:00Z', '2024-06-15T12:10:00Z', NULL, NULL, {predicted_id}),
+                 ('both.exe', 'both.exe', 't', 'both.exe', 'exe',
+                  '2024-06-15T13:00:00Z', '2024-06-15T13:10:00Z', {manual_id}, NULL, {predicted_id}),
+                 ('none.exe', 'none.exe', 't', 'none.exe', 'exe',
+                  '2024-06-15T14:00:00Z', '2024-06-15T14:10:00Z', NULL, NULL, NULL);",
+            manual_id = manual.id,
+            predicted_id = predicted.id,
+        ))
+        .unwrap();
+        drop(conn);
+
+        let manual_filter = SessionFilter {
+            source: CategorySourceFilter::Manual,
+            ..Default::default()
+        };
+        let manual_rows = reader.list_sessions(50, 0, &manual_filter).unwrap();
+        assert_eq!(reader.count_sessions(&manual_filter).unwrap(), 2);
+        assert!(manual_rows
+            .iter()
+            .all(|row| row.category_source.as_deref() == Some("manual")));
+
+        let ai_filter = SessionFilter {
+            source: CategorySourceFilter::Ai,
+            ..Default::default()
+        };
+        let ai_rows = reader.list_sessions(50, 0, &ai_filter).unwrap();
+        assert_eq!(reader.count_sessions(&ai_filter).unwrap(), 1);
+        assert_eq!(ai_rows[0].app_name, "ai.exe");
+        assert_eq!(ai_rows[0].category_source.as_deref(), Some("ai"));
 
         let _ = std::fs::remove_file(&path);
     }
@@ -552,7 +655,7 @@ mod stats_tests {
             "exe",
             "2024-06-15T08:00:00Z",
             Some("2024-06-15T09:00:00Z"),
-        ); // ends before the range opens
+        );
         insert_session(
             &conn,
             "straddles.exe",
@@ -561,7 +664,7 @@ mod stats_tests {
             "exe",
             "2024-06-15T09:30:00Z",
             Some("2024-06-15T10:30:00Z"),
-        ); // began before the range but ran into it
+        );
         insert_session(
             &conn,
             "inside.exe",
@@ -579,7 +682,7 @@ mod stats_tests {
             "exe",
             "2024-06-15T11:30:00Z",
             None,
-        ); // still open: runs through the present
+        );
         insert_session(
             &conn,
             "after.exe",
@@ -588,7 +691,7 @@ mod stats_tests {
             "exe",
             "2024-06-15T13:00:00Z",
             Some("2024-06-15T13:10:00Z"),
-        ); // starts after the range closes
+        );
 
         let filter = SessionFilter {
             start: Some("2024-06-15T10:00:00Z".to_string()),
@@ -614,7 +717,7 @@ mod stats_tests {
             "exe",
             "2024-06-15T10:00:00Z",
             Some("2024-06-15T10:10:00Z"),
-        ); // 600s
+        );
         insert_session(
             &conn,
             "code.exe",
@@ -623,7 +726,7 @@ mod stats_tests {
             "exe",
             "2024-06-16T10:00:00Z",
             Some("2024-06-16T10:20:00Z"),
-        ); // 1200s
+        );
 
         let stats = reader
             .activity_stats("2024-06-15T00:00:00Z", "2024-06-17T00:00:00Z")

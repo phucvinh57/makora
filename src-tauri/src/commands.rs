@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use crate::core::{
-    ActivityStats, CategorizePreview, Category, CategoryFilter, CategoryRule, CategoryStore,
-    HistoryReader, IgnoreRule, IgnoreStore, QueryWhitelistEntry, QueryWhitelistStore,
-    RecategorizeOutcome, SessionFilter, SessionRow, WorkSession,
-    WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
+    ActivityStats, AiCategorizationSchedule, AiCategorizationService, Category, CategoryFilter,
+    CategoryRule, CategorySourceFilter, CategoryStore, CategorySuggestion, ClassifierStatus,
+    HistoryReader, IgnoreRule, IgnoreStore, MultiPurposeKey, RecategorizeOutcome, SeedTaxonomy,
+    SessionFilter, SessionRow, WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -16,24 +16,15 @@ pub struct SessionsPage {
     pub total: i64,
 }
 
-/// One page of activity rows (app focus and browser-tab rows alike) matching
-/// `search`/`category`/the `start`..`end` window, newest first.
-///
-/// `category` selects the category filter: omitted or `null` shows every
-/// row, `"uncategorized"` shows rows with no resolved category, and any
-/// other value is parsed as a category id.
-///
-/// `start`/`end` are optional RFC 3339 timestamps; rows *overlapping* that
-/// window match (see `SessionFilter`), so scoping history to a focus
-/// session's window shows the activity that ran through it, not only the
-/// activity that happened to begin inside it.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn list_sessions(
     reader: State<HistoryReader>,
     page: i64,
     page_size: i64,
     search: Option<String>,
     category: Option<String>,
+    source: Option<String>,
     start: Option<String>,
     end: Option<String>,
 ) -> Result<SessionsPage, String> {
@@ -44,10 +35,7 @@ pub fn list_sessions(
     let filter = SessionFilter {
         search,
         category: parse_category_filter(category.as_deref())?,
-        // Normalized to UTC here rather than passed through verbatim: the
-        // stored `start_time`/`end_time` are UTC RFC 3339 and the SQL
-        // compares them as plain strings, so an offset timestamp from the
-        // frontend would otherwise compare wrong.
+        source: parse_category_source_filter(source.as_deref())?,
         start: start.map(|t| t.to_rfc3339()),
         end: end.map(|t| t.to_rfc3339()),
     };
@@ -58,10 +46,15 @@ pub fn list_sessions(
     Ok(SessionsPage { rows, total })
 }
 
-/// Aggregate activity totals between `start` and `end` (RFC 3339 UTC
-/// bounds, half-open) — a total, a per-category breakdown, a top-apps/sites
-/// breakdown, and a per-day breakdown in the machine's local time zone, for
-/// the Statistics page.
+fn parse_category_source_filter(source: Option<&str>) -> Result<CategorySourceFilter, String> {
+    match source {
+        None => Ok(CategorySourceFilter::All),
+        Some("manual") => Ok(CategorySourceFilter::Manual),
+        Some("ai") => Ok(CategorySourceFilter::Ai),
+        Some(value) => Err(format!("invalid category source filter: {value}")),
+    }
+}
+
 #[tauri::command]
 pub fn activity_stats(
     reader: State<HistoryReader>,
@@ -84,32 +77,11 @@ fn parse_category_filter(category: Option<&str>) -> Result<CategoryFilter, Strin
     }
 }
 
-/// All categories (built-in defaults plus any the user has added), for
-/// populating a "change category" picker in the UI.
 #[tauri::command]
 pub fn list_categories(categories: State<CategoryStore>) -> Result<Vec<Category>, String> {
     categories.list_categories().map_err(|e| e.to_string())
 }
 
-/// Manually assigns a category to a session — and to every other session
-/// sharing the same app/site, since that's what "always put GitHub under
-/// Development" actually expects. For categorizing just one activity, see
-/// `set_session_row_category`.
-#[tauri::command]
-pub fn set_session_category(
-    categories: State<CategoryStore>,
-    session_id: i64,
-    category_id: i64,
-) -> Result<(), String> {
-    categories
-        .set_override(session_id, category_id)
-        .map_err(|e| e.to_string())
-}
-
-/// Assigns a category to a single activity only, leaving every other
-/// session sharing its app/site key alone. `category_id: null` clears the
-/// pin, falling back to any key-wide override, then rules, then
-/// "Uncategorized".
 #[tauri::command]
 pub fn set_session_row_category(
     categories: State<CategoryStore>,
@@ -121,97 +93,121 @@ pub fn set_session_row_category(
         .map_err(|e| e.to_string())
 }
 
-/// How many sessions share `session_id`'s app/site key, i.e. how many rows
-/// `set_session_category` would actually recategorize — for the frontend to
-/// show a "this affects N other activities" confirmation before committing.
-#[tauri::command]
-pub fn preview_session_category(
-    categories: State<CategoryStore>,
-    session_id: i64,
-) -> Result<CategorizePreview, String> {
-    categories
-        .preview_category_change(session_id)
-        .map_err(|e| e.to_string())
-}
-
-/// Manually assigns a category to many sessions at once — for
-/// batch-categorizing a filtered set of history rows in one action. Pins
-/// exactly the given sessions, leaving every other session sharing their
-/// app/site keys alone, since a selection made under a search/time filter
-/// means those rows and not "this app, forever". `apply_to_all` opts into
-/// the wider behavior instead: every past and future session sharing a
-/// selected row's key gets the category too (see
-/// `CategoryStore::set_overrides`).
 #[tauri::command]
 pub fn set_sessions_category(
     categories: State<CategoryStore>,
     session_ids: Vec<i64>,
     category_id: i64,
-    apply_to_all: bool,
 ) -> Result<(), String> {
-    if apply_to_all {
-        categories.set_overrides(&session_ids, category_id)
-    } else {
-        categories.set_row_categories(&session_ids, Some(category_id))
-    }
-    .map_err(|e| e.to_string())
+    categories
+        .set_row_categories(&session_ids, Some(category_id))
+        .map_err(|e| e.to_string())
 }
 
-/// Re-categorizes all of history from scratch: erases every manual
-/// categorization in the database — per-session pins, key-wide overrides,
-/// and the rules those overrides minted — so the current rule set (or
-/// "Uncategorized") decides every activity again, already-categorized ones
-/// included. Returns what it erased, for the UI to report. Destructive and
-/// not undoable; the frontend confirms first.
 #[tauri::command]
 pub fn recategorize_all(categories: State<CategoryStore>) -> Result<RecategorizeOutcome, String> {
     categories.recategorize_all().map_err(|e| e.to_string())
 }
 
-/// Creates a new user-defined category.
 #[tauri::command]
 pub fn create_category(
     categories: State<CategoryStore>,
     name: String,
     color: String,
+    description: Option<String>,
+    parent_id: Option<i64>,
 ) -> Result<Category, String> {
     categories
-        .create_category(&name, &color)
+        .create_category_with_description(&name, &color, description.as_deref(), parent_id)
         .map_err(|e| e.to_string())
 }
 
-/// Renames a category or changes its color.
 #[tauri::command]
 pub fn update_category(
     categories: State<CategoryStore>,
     id: i64,
     name: String,
     color: String,
+    description: Option<String>,
+    parent_id: Option<i64>,
 ) -> Result<(), String> {
     categories
-        .update_category(id, &name, &color)
+        .update_category_with_description(id, &name, &color, description.as_deref(), parent_id)
         .map_err(|e| e.to_string())
 }
 
-/// Deletes a category along with any rules/overrides that reference it.
 #[tauri::command]
 pub fn delete_category(categories: State<CategoryStore>, id: i64) -> Result<(), String> {
     categories.delete_category(id).map_err(|e| e.to_string())
 }
 
-/// All built-in categorization rules (exe name / URL domain / URL path
-/// patterns), for the category management page. Conflicts between rules in
-/// different categories resolve purely by specificity — see
-/// `core::category::rule_join_sql` — so rules have no explicit ordering.
+#[tauri::command]
+pub fn list_category_suggestions(
+    categories: State<CategoryStore>,
+) -> Result<Vec<CategorySuggestion>, String> {
+    categories.list_suggestions().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_multi_purpose_keys(
+    categories: State<CategoryStore>,
+) -> Result<Vec<MultiPurposeKey>, String> {
+    categories
+        .list_multi_purpose_keys()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_multi_purpose_key(
+    categories: State<CategoryStore>,
+    key_kind: String,
+    key: String,
+    enabled: bool,
+) -> Result<(), String> {
+    categories
+        .set_multi_purpose_key(&key_kind, &key, enabled)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn accept_category_suggestions(
+    categories: State<CategoryStore>,
+    ids: Vec<i64>,
+    override_category: Option<i64>,
+) -> Result<(), String> {
+    categories
+        .accept_suggestions(&ids, override_category)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn dismiss_category_suggestions(
+    categories: State<CategoryStore>,
+    ids: Vec<i64>,
+) -> Result<(), String> {
+    categories
+        .dismiss_suggestions(&ids)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn apply_seed_taxonomy(categories: State<CategoryStore>) -> Result<(), String> {
+    categories
+        .apply_seed_taxonomy(include_str!("../resources/seed_taxonomy.json"))
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn get_seed_taxonomy_preview() -> Result<SeedTaxonomy, String> {
+    CategoryStore::seed_taxonomy_preview(include_str!("../resources/seed_taxonomy.json"))
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub fn list_category_rules(categories: State<CategoryStore>) -> Result<Vec<CategoryRule>, String> {
     categories.list_rules().map_err(|e| e.to_string())
 }
 
-/// Adds a new rule matching an exe file name, URL domain, or URL path to a
-/// category. `key_kind` is `"exe"`, `"domain"`, or `"url"`; `match_kind` is
-/// `"exact"`, `"prefix"`, `"substring"`, or `"regex"` — see
-/// `core::category::KeyKind`/`MatchKind`.
 #[tauri::command]
 pub fn create_category_rule(
     categories: State<CategoryStore>,
@@ -225,22 +221,44 @@ pub fn create_category_rule(
         .map_err(|e| e.to_string())
 }
 
-/// Removes a categorization rule.
 #[tauri::command]
 pub fn delete_category_rule(categories: State<CategoryStore>, id: i64) -> Result<(), String> {
     categories.delete_rule(id).map_err(|e| e.to_string())
 }
 
-/// All apps/sites excluded from tracking entirely, for the settings page.
+#[tauri::command]
+pub fn get_classifier_status(ai: State<AiCategorizationService>) -> ClassifierStatus {
+    ai.status()
+}
+
+#[tauri::command]
+pub fn run_ai_categorization(ai: State<AiCategorizationService>) -> Result<(), String> {
+    ai.run_now().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn set_ai_categorization_schedule(
+    ai: State<AiCategorizationService>,
+    schedule: String,
+) -> Result<(), String> {
+    let schedule = AiCategorizationSchedule::parse(&schedule).map_err(|error| error.to_string())?;
+    ai.set_schedule(schedule).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn set_ai_categorization_confidence_threshold(
+    ai: State<AiCategorizationService>,
+    threshold: f32,
+) -> Result<(), String> {
+    ai.set_confidence_threshold(threshold)
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub fn list_ignore_rules(ignore: State<Arc<IgnoreStore>>) -> Result<Vec<IgnoreRule>, String> {
     ignore.list_rules().map_err(|e| e.to_string())
 }
 
-/// Adds an app or site to the ignore list. `kind` is `"app"` (matched
-/// against the exe file name) or `"site"` (matched against the URL domain);
-/// `match_kind` is `"exact"`, `"substring"`, or `"regex"` — see
-/// `core::category::MatchKind`.
 #[tauri::command]
 pub fn create_ignore_rule(
     ignore: State<Arc<IgnoreStore>>,
@@ -253,42 +271,9 @@ pub fn create_ignore_rule(
         .map_err(|e| e.to_string())
 }
 
-/// Removes an app/site from the ignore list.
 #[tauri::command]
 pub fn delete_ignore_rule(ignore: State<Arc<IgnoreStore>>, id: i64) -> Result<(), String> {
     ignore.delete_rule(id).map_err(|e| e.to_string())
-}
-
-/// Per-domain query-string params kept on stored browser-tab URLs — every
-/// other param is stripped (see `ingest::normalize_url`). For the settings
-/// page.
-#[tauri::command]
-pub fn list_query_whitelist(
-    whitelist: State<Arc<QueryWhitelistStore>>,
-) -> Result<Vec<QueryWhitelistEntry>, String> {
-    whitelist.list_entries().map_err(|e| e.to_string())
-}
-
-/// Whitelists one query param for one domain, e.g. `youtube.com` + `v` so
-/// different videos become different sessions.
-#[tauri::command]
-pub fn create_query_whitelist_entry(
-    whitelist: State<Arc<QueryWhitelistStore>>,
-    domain: String,
-    param: String,
-) -> Result<QueryWhitelistEntry, String> {
-    whitelist
-        .create_entry(&domain, &param)
-        .map_err(|e| e.to_string())
-}
-
-/// Removes a domain/param entry from the whitelist.
-#[tauri::command]
-pub fn delete_query_whitelist_entry(
-    whitelist: State<Arc<QueryWhitelistStore>>,
-    id: i64,
-) -> Result<(), String> {
-    whitelist.delete_entry(id).map_err(|e| e.to_string())
 }
 
 fn parse_rfc3339(value: &str) -> Result<DateTime<Utc>, String> {
@@ -307,9 +292,6 @@ fn validate_work_session(name: &str, target_seconds: i64) -> Result<(), String> 
     Ok(())
 }
 
-/// Creates a planned focus block. `start_time` (RFC 3339) is optional —
-/// omitted means "start now". The end is derived as start + target; there is
-/// no timer anywhere, reaching that instant *is* the auto-end.
 #[tauri::command]
 pub fn create_work_session(
     work_sessions: State<WorkSessionStore>,
@@ -322,11 +304,16 @@ pub fn create_work_session(
     validate_work_session(&name, target_seconds)?;
     let start = start_time.as_deref().map(parse_rfc3339).transpose()?;
     work_sessions
-        .create(name.trim(), note.as_deref(), target_seconds, start, &category_ids)
+        .create(
+            name.trim(),
+            note.as_deref(),
+            target_seconds,
+            start,
+            &category_ids,
+        )
         .map_err(|e| e.to_string())
 }
 
-/// All work sessions, newest first.
 #[tauri::command]
 pub fn list_work_sessions(
     work_sessions: State<WorkSessionStore>,
@@ -334,10 +321,6 @@ pub fn list_work_sessions(
     work_sessions.list().map_err(|e| e.to_string())
 }
 
-/// One page of work sessions, newest first, optionally narrowed to those
-/// whose name or note contains `search`. Backs the history page's "filter by
-/// focus session" picker, which scrolls through them a page at a time rather
-/// than loading every session the user has ever run.
 #[tauri::command]
 pub fn search_work_sessions(
     work_sessions: State<WorkSessionStore>,
@@ -350,8 +333,6 @@ pub fn search_work_sessions(
         .map_err(|e| e.to_string())
 }
 
-/// One work session by id, or `null` if it has been deleted — for labeling a
-/// session-scoped history filter without fetching the whole list.
 #[tauri::command]
 pub fn get_work_session(
     work_sessions: State<WorkSessionStore>,
@@ -360,8 +341,6 @@ pub fn get_work_session(
     work_sessions.get(id).map_err(|e| e.to_string())
 }
 
-/// Rewrites every field of a work session, including its time window —
-/// editing is unrestricted by design, the user owns their own plan.
 #[tauri::command]
 pub fn update_work_session(
     work_sessions: State<WorkSessionStore>,
@@ -382,25 +361,16 @@ pub fn update_work_session(
     work_sessions.update(&update).map_err(|e| e.to_string())
 }
 
-/// Ends an in-progress work session now; a session whose window has already
-/// passed is left untouched.
 #[tauri::command]
 pub fn stop_work_session(work_sessions: State<WorkSessionStore>, id: i64) -> Result<(), String> {
     work_sessions.stop(id).map_err(|e| e.to_string())
 }
 
-/// Deletes a work session and its target-category links. Tracked history is
-/// untouched — a work session only ever reads it.
 #[tauri::command]
 pub fn delete_work_session(work_sessions: State<WorkSessionStore>, id: i64) -> Result<(), String> {
     work_sessions.delete(id).map_err(|e| e.to_string())
 }
 
-/// Evaluates the tracked history overlapping a work session's window against
-/// its target categories: on/off-task totals, focus percentage, switch
-/// count, per-app breakdown, and a timeline of focus/distraction/idle
-/// blocks. For an in-progress session the window is clamped to now, so this
-/// doubles as the live view.
 #[tauri::command]
 pub fn work_session_stats(
     work_sessions: State<WorkSessionStore>,

@@ -11,16 +11,16 @@ import {
   getWorkSession,
   listCategories,
   listSessions,
-  previewSessionCategory,
   recategorizeAll,
-  setSessionCategory,
   setSessionRowCategory,
   setSessionsCategory,
 } from "@/api";
+import { categoryPath } from "@/categories";
 import type { SessionRow } from "@/types";
 import { BulkActionsBar } from "./-components/BulkActionsBar";
 import {
   ALL_CATEGORIES,
+  ALL_SOURCES,
   PAGE_SIZE,
   SEARCH_DEBOUNCE_MS,
   UNCATEGORIZED,
@@ -45,11 +45,6 @@ const RANGE_KINDS: TimeRangeKind[] = [
   "session",
 ];
 
-/** The time filter lives in the URL (as a `TimeRange`'s own fields) so other
- * pages can link straight into a scoped history — the Focus page's "See all
- * activities" hands over a session id this way. Anything unrecognized
- * degrades to "all time" rather than erroring, since these values can be
- * hand-edited. */
 function validateSearch(search: Partial<TimeRange>): TimeRange {
   const kind = RANGE_KINDS.find((k) => k === search.kind);
   if (!kind || kind === "all") return ALL_TIME;
@@ -79,28 +74,21 @@ function HistoryPage() {
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState(ALL_CATEGORIES);
+  const [sourceFilter, setSourceFilter] = useState(ALL_SOURCES);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [bulkCategory, setBulkCategory] = useState("");
-  const [bulkApplyToAll, setBulkApplyToAll] = useState(false);
 
-  // Drops the selection *and* the bulk bar's settings, so a one-off "apply
-  // to all" tick never carries over into a later, unrelated selection.
   function clearSelection() {
     setSelectedIds(new Set());
     setBulkCategory("");
-    setBulkApplyToAll(false);
   }
 
-  // Debounce the search box so typing doesn't fire a query per keystroke. A
-  // change lands the user back on page 0 and clears the (now possibly
-  // stale) selection, same as changing the category filter does below.
   useEffect(() => {
     const handle = setTimeout(() => {
       setSearch(searchInput.trim());
       setPage(0);
       setSelectedIds(new Set());
       setBulkCategory("");
-      setBulkApplyToAll(false);
     }, SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(handle);
   }, [searchInput]);
@@ -111,14 +99,18 @@ function HistoryPage() {
     clearSelection();
   }
 
+  function handleSourceFilterChange(value: string) {
+    setSourceFilter(value);
+    setPage(0);
+    clearSelection();
+  }
+
   function handleRangeChange(next: TimeRange) {
     navigate({ search: next });
     setPage(0);
     clearSelection();
   }
 
-  // A session-scoped filter carries only the session's id, so its window has
-  // to be looked up before any rows can be fetched.
   const rangeSessionQuery = useQuery({
     queryKey: ["workSession", range.sessionId],
     queryFn: () => getWorkSession(range.sessionId as number),
@@ -141,6 +133,7 @@ function HistoryPage() {
       PAGE_SIZE,
       search,
       categoryFilter === ALL_CATEGORIES ? undefined : categoryFilter,
+      sourceFilter === ALL_SOURCES ? undefined : sourceFilter,
       start,
       end,
     ],
@@ -150,11 +143,12 @@ function HistoryPage() {
         PAGE_SIZE,
         search || undefined,
         categoryFilter === ALL_CATEGORIES ? undefined : categoryFilter,
+        sourceFilter === ALL_SOURCES
+          ? undefined
+          : (sourceFilter as "manual" | "ai"),
         start,
         end,
       ),
-    // Held until the session's window is known, so a session-scoped view
-    // never briefly renders as unscoped history.
     enabled: range.kind !== "session" || rangeSession !== null,
     placeholderData: keepPreviousData,
   });
@@ -175,112 +169,54 @@ function HistoryPage() {
 
   function invalidateSessions() {
     queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    // The statistics page buckets the same rows, so it goes stale on the same edits.
+    queryClient.invalidateQueries({ queryKey: ["activityStats"] });
   }
 
-  // Applies a category to every session sharing a key (from the toast
-  // action below, or the multi-select bulk bar) — a wider, deliberate
-  // choice, so it gets its own success toast rather than the row-level one.
-  const applyToAllMutation = useMutation({
-    mutationFn: ({
-      sessionId,
-      categoryId,
-    }: {
-      sessionId: number;
-      categoryId: number;
-      label: string;
-    }) => setSessionCategory(sessionId, categoryId),
-    onSuccess: (_, { label }) => {
-      invalidateSessions();
-      toast.success(`Applied to all ${label} activities`);
-    },
-    onError: (err) => toast.error(String(err)),
-  });
-
-  // Sets (or clears) the category on just this one activity — no other
-  // session sharing its app/site is touched. On success, a toast offers a
-  // one-click way to widen the choice to every activity sharing the same
-  // key instead (via `applyToAllMutation`) — replacing an earlier
-  // confirm-before-committing dialog, which had the problem that canceling
-  // it silently left the row uncategorized.
   const categoryChangeMutation = useMutation({
     mutationFn: async ({ row, value }: { row: SessionRow; value: string }) => {
       const categoryId = value === UNCATEGORIZED ? null : Number(value);
       await setSessionRowCategory(row.id, categoryId);
-      const preview =
-        categoryId === null ? null : await previewSessionCategory(row.id);
-      return { row, categoryId, preview };
+      return { row, categoryId };
     },
-    onSuccess: ({ row, categoryId, preview }) => {
+    onSuccess: ({ row, categoryId }) => {
       invalidateSessions();
       if (categoryId === null) {
         toast.success("Cleared this activity's category");
         return;
       }
-      const categoryName =
-        categories.find((c) => c.id === categoryId)?.name ?? "category";
+      const category = categories.find((c) => c.id === categoryId);
+      const categoryName = category
+        ? categoryPath(category, categories)
+        : "category";
       toast.success(`Set to ${categoryName}`, {
         description: row.window_title,
-        action:
-          preview && preview.affected_count > 1
-            ? {
-                label: `Apply to all ${preview.affected_count} ${preview.key} activities`,
-                onClick: () =>
-                  applyToAllMutation.mutate({
-                    sessionId: row.id,
-                    categoryId,
-                    label: preview.key,
-                  }),
-              }
-            : undefined,
       });
     },
     onError: (err) => toast.error(String(err)),
   });
 
-  // Categorizes the selected rows and only those, unless "apply to all" is
-  // ticked — a selection made under a search/time filter means "these
-  // activities" (the same site can be English study in one focus session and
-  // coding in the next), so widening it to the whole app/site, which also
-  // writes a rule covering future activity, has to be asked for.
   const bulkApplyMutation = useMutation({
     mutationFn: () =>
-      setSessionsCategory(
-        [...selectedIds],
-        Number(bulkCategory),
-        bulkApplyToAll,
-      ),
+      setSessionsCategory([...selectedIds], Number(bulkCategory)),
     onSuccess: () => {
       const count = selectedIds.size;
       clearSelection();
       invalidateSessions();
-      toast.success(
-        bulkApplyToAll
-          ? `Categorized ${count} activities and all others from the same apps/sites`
-          : `Categorized ${count} activities`,
-      );
+      toast.success(`Categorized ${count} activities`);
     },
     onError: (err) => toast.error(String(err)),
   });
 
-  // Wipes every manual categorization in the database in one transaction —
-  // per-activity pins, app/site-wide overrides, and the rules those
-  // overrides minted — so the read-time join in `list_sessions` re-derives
-  // every activity from the current rules (or "Uncategorized"), including
-  // the ones that already had a category. Deliberately not scoped to the
-  // page's filters: this is "start over", and skipping already-categorized
-  // rows would spare exactly the rows worth redoing.
   async function runRecategorize() {
     const toastId = toast.loading("Recategorizing all activities…");
     try {
-      const { pins_cleared, overrides_cleared } = await recategorizeAll();
+      const { manual_categories_preserved } = await recategorizeAll();
       invalidateSessions();
-      // The pass also deletes the rules those overrides minted, so the
-      // Categories page's rule list is stale now too.
-      queryClient.invalidateQueries({ queryKey: ["categoryRules"] });
       toast.success(
-        pins_cleared + overrides_cleared === 0
-          ? "Recategorized all activities — nothing manual to erase, so your rules already decided everything."
-          : `Recategorized all activities — erased ${pins_cleared} manual activity pin${pins_cleared === 1 ? "" : "s"} and ${overrides_cleared} app/site choice${overrides_cleared === 1 ? "" : "s"}.`,
+        manual_categories_preserved === 0
+          ? "Recategorized all activities."
+          : `Recategorized all activities and preserved ${manual_categories_preserved} manual categorization${manual_categories_preserved === 1 ? "" : "s"}.`,
         { id: toastId },
       );
     } catch (err) {
@@ -289,10 +225,13 @@ function HistoryPage() {
   }
 
   function handleRecategorizeClick() {
-    toast("Recategorize all history from scratch?", {
+    toast("Recategorize all history?", {
       description:
-        'Erases every manual categorization — per-activity and per-app/site alike — so only your current rules, and "Uncategorized" where none match, decide. This cannot be undone.',
-      action: { label: "Erase and recategorize", onClick: runRecategorize },
+        "Reapplies your rules to all activities. Categories you picked by hand are preserved and continue to take precedence.",
+      action: {
+        label: "Recategorize",
+        onClick: runRecategorize,
+      },
       duration: 10000,
     });
   }
@@ -319,6 +258,8 @@ function HistoryPage() {
         onSearchInputChange={setSearchInput}
         categoryFilter={categoryFilter}
         onCategoryFilterChange={handleCategoryFilterChange}
+        sourceFilter={sourceFilter}
+        onSourceFilterChange={handleSourceFilterChange}
         categories={categories}
         range={range}
         rangeSession={rangeSession}
@@ -347,8 +288,6 @@ function HistoryPage() {
           categories={categories}
           bulkCategory={bulkCategory}
           onBulkCategoryChange={setBulkCategory}
-          applyToAll={bulkApplyToAll}
-          onApplyToAllChange={setBulkApplyToAll}
           onApply={() => bulkApplyMutation.mutate()}
           applyPending={bulkApplyMutation.isPending}
           onClear={clearSelection}
@@ -361,6 +300,7 @@ function HistoryPage() {
         loading={loading}
         search={search}
         categoryFilter={categoryFilter}
+        sourceFilter={sourceFilter}
         selectedIds={selectedIds}
         onToggleRow={toggleRow}
         onToggleAllVisible={toggleAllVisible}

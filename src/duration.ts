@@ -10,9 +10,6 @@ export function formatDuration(
   return formatSeconds(totalSeconds);
 }
 
-/** Same `Xh Ym` / `Xm Ys` / `Xs` shape as `formatDuration`, but for an
- * already-aggregated duration (e.g. a summed total from `activityStats`)
- * rather than a start/end timestamp pair. */
 export function formatSeconds(totalSeconds: number): string {
   const seconds = Math.max(0, Math.floor(totalSeconds));
 

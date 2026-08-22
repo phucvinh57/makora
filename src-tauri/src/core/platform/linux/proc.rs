@@ -1,32 +1,10 @@
-//! Turning a [`WindowObservation`] into the [`AppInfo`] the tracker keys
-//! sessions on.
-//!
-//! `exe_path` is the session identity (see [`AppInfo`]'s docs), so this
-//! module's whole job is producing a path that is *stable across restarts
-//! and package updates* — otherwise history silently splits in two the day
-//! a snap refreshes. `app_name` is set explicitly rather than derived from
-//! the path by the caller, because the app-id fallback paths below are not
-//! filesystem paths and `Path::file_stem` mangles them.
-
 use std::path::Path;
 
 use crate::core::model::AppInfo;
 use crate::core::platform::linux::provider::WindowObservation;
 
-/// Scheme used for the `exe_path` of a window whose owning process is
-/// unknown — the `wlr-foreign-toplevel-management-v1` protocol carries an
-/// `app_id` but no pid, so there is nothing under `/proc` to read. Not a
-/// real path, and deliberately not shaped like one: anything comparing
-/// `exe_path`s (session identity, ignore rules, `exe`-kind category rules)
-/// treats it as an opaque string, and the scheme keeps it from ever
-/// colliding with a genuine executable.
 const APP_ID_SCHEME: &str = "wayland-app-id://";
 
-/// Resolves the app behind a focused window.
-///
-/// Never fails: a window with neither a readable `/proc` entry nor an app
-/// id still yields a usable (if coarse) identity, because dropping the
-/// event would silently stop tracking instead of tracking imprecisely.
 pub fn resolve_app_info(observation: &WindowObservation) -> AppInfo {
     if let Some(pid) = observation.pid {
         if let Some(raw) = read_exe_link(pid) {
@@ -54,9 +32,6 @@ fn read_exe_link(pid: u32) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Reads the flatpak application id out of a sandboxed process's
-/// `.flatpak-info`, which the runtime mounts at the root of every flatpak's
-/// namespace. Visible from outside via `/proc/<pid>/root`.
 fn flatpak_app_id(pid: u32) -> Option<String> {
     let info = std::fs::read_to_string(format!("/proc/{pid}/root/.flatpak-info")).ok()?;
     parse_flatpak_app_id(&info)
@@ -82,11 +57,6 @@ fn parse_flatpak_app_id(info: &str) -> Option<String> {
     None
 }
 
-/// Maps a raw `/proc/<pid>/exe` target to a stable `(exe_path, app_name)`.
-///
-/// `flatpak_id` is a closure rather than a value because resolving it means
-/// another filesystem read, and the overwhelming majority of windows are not
-/// flatpaks.
 fn normalize_exe_path(raw: &str, flatpak_id: impl FnOnce() -> Option<String>) -> (String, String) {
     let base = Path::new(raw)
         .file_name()
@@ -94,10 +64,6 @@ fn normalize_exe_path(raw: &str, flatpak_id: impl FnOnce() -> Option<String>) ->
         .unwrap_or(raw)
         .to_owned();
 
-    // A flatpak's `/proc/<pid>/exe` resolves inside its own mount namespace,
-    // so it's almost always `/app/bin/<something>` — identical across
-    // unrelated flatpaks, and meaningless on this side of the sandbox.
-    // The application id is the stable identity instead.
     if raw.starts_with("/app/") {
         if let Some(id) = flatpak_id() {
             return (format!("/flatpak/{id}/{base}"), base);
@@ -112,12 +78,6 @@ fn normalize_exe_path(raw: &str, flatpak_id: impl FnOnce() -> Option<String>) ->
     (normalize_snap_revision(raw), stem)
 }
 
-/// Replaces a snap's revision with `current`.
-///
-/// Snaps are installed at `/snap/<name>/<revision>/…` and the revision
-/// changes on *every* update, so without this a Firefox refresh would look
-/// like a brand-new application and split its history. `/snap/<name>/current`
-/// is a real symlink snapd maintains, so the rewritten path stays valid.
 fn normalize_snap_revision(raw: &str) -> String {
     let Some(rest) = raw.strip_prefix("/snap/") else {
         return raw.to_owned();
@@ -133,28 +93,17 @@ fn normalize_snap_revision(raw: &str) -> String {
     format!("/snap/{name}/current/{tail}")
 }
 
-/// Snap revisions are a bare number for store installs (`1234`) and `x`
-/// followed by a number for locally installed snaps (`x1`).
 fn is_snap_revision(segment: &str) -> bool {
     let digits = segment.strip_prefix('x').unwrap_or(segment);
     !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// Fallback identity for a window with no readable process: the app id.
-///
-/// Note `app_name` is taken as the last dot-separated segment rather than
-/// via `Path::file_stem`, which would turn `org.mozilla.firefox` into
-/// `org.mozilla` — and `app_name` is what
-/// [`BrowserKind::from_app_name`](crate::core::model::BrowserKind::from_app_name)
-/// matches on, so getting it wrong would quietly disable per-site tracking.
 fn synthesize_from_app_id(app_id: &str, wm_class: &str) -> (String, String) {
     let id = [app_id, wm_class]
         .into_iter()
         .map(str::trim)
         .find(|candidate| !candidate.is_empty())
         .unwrap_or("unknown");
-    // `Shell.WindowTracker` reports desktop-file ids; Wayland `app_id`s
-    // usually don't carry the suffix, so strip it when present.
     let id = id.strip_suffix(".desktop").unwrap_or(id);
     let app_name = id.rsplit('.').next().unwrap_or(id).to_ascii_lowercase();
     (format!("{APP_ID_SCHEME}{id}"), app_name)
@@ -172,15 +121,12 @@ mod tests {
     fn ordinary_exe_keeps_its_path_and_uses_the_file_stem() {
         let (exe_path, app_name) = normalize_exe_path("/opt/google/chrome/chrome", no_flatpak);
         assert_eq!(exe_path, "/opt/google/chrome/chrome");
-        // Already matches `BrowserKind::from_app_name`, so per-site
-        // tracking works on Linux without a Linux-specific alias.
         assert_eq!(app_name, "chrome");
     }
 
     #[test]
     fn snap_revision_is_replaced_so_updates_dont_split_history() {
-        let before =
-            normalize_snap_revision("/snap/firefox/6836/usr/lib/firefox/firefox");
+        let before = normalize_snap_revision("/snap/firefox/6836/usr/lib/firefox/firefox");
         let after = normalize_snap_revision("/snap/firefox/7001/usr/lib/firefox/firefox");
         assert_eq!(before, "/snap/firefox/current/usr/lib/firefox/firefox");
         assert_eq!(
@@ -199,16 +145,16 @@ mod tests {
 
     #[test]
     fn snap_paths_that_are_already_current_are_left_alone() {
-        // `current` is not a revision, so the path passes through
-        // unchanged rather than being rewritten to `/snap/firefox/current`
-        // with a segment eaten.
         let path = "/snap/firefox/current/usr/lib/firefox/firefox";
         assert_eq!(normalize_snap_revision(path), path);
     }
 
     #[test]
     fn non_snap_paths_starting_with_snap_are_left_alone() {
-        assert_eq!(normalize_snap_revision("/snapshot/bin/tool"), "/snapshot/bin/tool");
+        assert_eq!(
+            normalize_snap_revision("/snapshot/bin/tool"),
+            "/snapshot/bin/tool"
+        );
         assert_eq!(normalize_snap_revision("/snap/firefox"), "/snap/firefox");
     }
 
@@ -216,8 +162,6 @@ mod tests {
     fn flatpak_exe_is_replaced_by_the_application_id() {
         let (exe_path, app_name) =
             normalize_exe_path("/app/bin/firefox", || Some("org.mozilla.firefox".into()));
-        // `/app/bin/firefox` is identical inside every flatpak sandbox, so
-        // the id is what makes it unique.
         assert_eq!(exe_path, "/flatpak/org.mozilla.firefox/firefox");
         assert_eq!(app_name, "firefox");
     }
@@ -239,7 +183,10 @@ name=not-this-one
 name=org.gnome.Boxes
 runtime=runtime/org.gnome.Platform/x86_64/47
 ";
-        assert_eq!(parse_flatpak_app_id(info).as_deref(), Some("org.gnome.Boxes"));
+        assert_eq!(
+            parse_flatpak_app_id(info).as_deref(),
+            Some("org.gnome.Boxes")
+        );
     }
 
     #[test]
@@ -251,8 +198,6 @@ runtime=runtime/org.gnome.Platform/x86_64/47
     fn app_id_fallback_does_not_use_file_stem_semantics() {
         let (exe_path, app_name) = synthesize_from_app_id("org.mozilla.firefox", "");
         assert_eq!(exe_path, "wayland-app-id://org.mozilla.firefox");
-        // `Path::file_stem` would answer "org.mozilla" here, which would
-        // stop `BrowserKind::from_app_name` from ever matching.
         assert_eq!(app_name, "firefox");
     }
 
@@ -280,8 +225,6 @@ runtime=runtime/org.gnome.Platform/x86_64/47
 
     #[test]
     fn a_pid_that_no_longer_exists_falls_back_to_the_app_id() {
-        // pid 0 is never a real process, so the `/proc` read is guaranteed
-        // to fail and exercise the fallback.
         let info = resolve_app_info(&WindowObservation {
             pid: Some(0),
             app_id: "org.gnome.TextEditor.desktop".into(),

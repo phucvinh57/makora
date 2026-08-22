@@ -4,7 +4,6 @@ export type DialogName =
   | "add-category"
   | "add-rule"
   | "add-ignore-rule"
-  | "add-query-whitelist"
   | "start-work-session"
   | "edit-work-session";
 

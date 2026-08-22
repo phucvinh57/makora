@@ -21,9 +21,6 @@ import {
 } from "./timeRange";
 import { WorkSessionPicker } from "./WorkSessionPicker";
 
-/** The history page's time scope: relative presets, an explicit custom
- * window, or a focus session's own window. `session` is the work session
- * `range` points at once it has loaded, used for the button's label. */
 export function TimeRangeFilter({
   range,
   session,
@@ -125,9 +122,6 @@ export function TimeRangeFilter({
   );
 }
 
-/** The two bounds of a custom window. Held locally until "Apply" so a
- * half-picked window never fires a query; either bound may be left empty for
- * an open-ended window. */
 function CustomRangeFields({
   range,
   onApply,
@@ -138,8 +132,6 @@ function CustomRangeFields({
   const [from, setFrom] = useState(() => toLocalInputValue(range.from));
   const [to, setTo] = useState(() => toLocalInputValue(range.to));
 
-  // Re-seed when the popover is reopened against a different range (e.g.
-  // after picking a preset), so the fields show what is actually applied.
   useEffect(() => {
     setFrom(toLocalInputValue(range.from));
     setTo(toLocalInputValue(range.to));

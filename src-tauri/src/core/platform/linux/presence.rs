@@ -1,10 +1,3 @@
-//! Authoritative Linux user-presence watching through systemd-logind.
-//!
-//! Input inactivity is deliberately not used: a user can be attentively
-//! watching a video without touching the keyboard or mouse. The two states
-//! that unambiguously mean "away" are the graphical session being locked
-//! (`LockedHint`) and the machine being suspended (`PrepareForSleep`).
-
 use std::collections::HashMap;
 use std::sync::mpsc::Sender;
 use std::thread;
@@ -12,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
+use tracing::{info, warn};
 use zbus::blocking::{fdo::DBusProxy, Connection, MessageIterator, Proxy};
 use zbus::message::Type as MessageType;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
@@ -27,22 +21,21 @@ const USER_INTERFACE: &str = "org.freedesktop.login1.User";
 const PROPERTIES_INTERFACE: &str = "org.freedesktop.DBus.Properties";
 const RETRY_DELAY: Duration = Duration::from_secs(5);
 
-/// Starts the logind monitor. The initial presence state is queried and sent
-/// synchronously when possible, before the focus watcher can perform its own
-/// startup sync. A missing/restarting system bus is non-fatal: the background
-/// thread retains the last known state and keeps reconnecting.
 pub fn start_presence_watcher(tx: Sender<WatchEvent>) -> Result<()> {
     let mut state = PresenceState::default();
     let initial = match WatchConnection::connect() {
         Ok(watch) => {
-            eprintln!("makora: presence watcher using systemd-logind");
+            info!("presence watcher using systemd-logind");
             if !state.apply_snapshot(watch.locked, watch.sleeping, &tx) {
                 return Ok(());
             }
             Some(watch)
         }
         Err(err) => {
-            eprintln!("makora: systemd-logind presence watcher unavailable: {err:#}; retrying");
+            warn!(
+                error = format!("{err:#}"),
+                "systemd-logind presence watcher unavailable; retrying"
+            );
             None
         }
     };
@@ -60,14 +53,17 @@ fn run(tx: Sender<WatchEvent>, mut state: PresenceState, mut initial: Option<Wat
             Some(watch) => watch,
             None => match WatchConnection::connect() {
                 Ok(watch) => {
-                    eprintln!("makora: systemd-logind presence watcher reconnected");
+                    info!("systemd-logind presence watcher reconnected");
                     if !state.apply_snapshot(watch.locked, watch.sleeping, &tx) {
                         return;
                     }
                     watch
                 }
                 Err(err) => {
-                    eprintln!("makora: systemd-logind presence watcher: {err:#}");
+                    warn!(
+                        error = format!("{err:#}"),
+                        "systemd-logind presence watcher failed to connect; retrying"
+                    );
                     thread::sleep(RETRY_DELAY);
                     continue;
                 }
@@ -75,7 +71,10 @@ fn run(tx: Sender<WatchEvent>, mut state: PresenceState, mut initial: Option<Wat
         };
 
         if let Err(err) = watch_messages(&watch, &mut state, &tx) {
-            eprintln!("makora: systemd-logind presence watcher: {err:#}");
+            warn!(
+                error = format!("{err:#}"),
+                "systemd-logind presence watcher dropped; retrying"
+            );
         }
         thread::sleep(RETRY_DELAY);
     }
@@ -89,9 +88,6 @@ struct WatchConnection {
 }
 
 impl WatchConnection {
-    /// Subscribe first, then read the current properties. Signals arriving
-    /// during the reads remain queued on this connection, closing the usual
-    /// query-before-subscribe race at startup and after reconnects.
     fn connect() -> Result<Self> {
         let connection = Connection::system().context("connecting to the system bus")?;
         let manager = Proxy::new(&connection, LOGIN_SERVICE, MANAGER_PATH, MANAGER_INTERFACE)
@@ -129,11 +125,6 @@ impl WatchConnection {
     }
 }
 
-/// Resolve the graphical login session even when the app was launched by a
-/// systemd user service and therefore lives in `app.slice`, outside any
-/// `session-*.scope`. The direct PID lookup is preferred; logind's current
-/// user `Display` session is the authoritative fallback used by desktop
-/// autostart/background launches.
 fn resolve_graphical_session(
     connection: &Connection,
     manager: &Proxy<'_>,
@@ -341,7 +332,7 @@ mod tests {
     #[test]
     fn graphical_session_resolution_works_when_logind_has_a_display_session() {
         let Ok(connection) = Connection::system() else {
-            return; // Headless/non-systemd test host.
+            return;
         };
         let Ok(manager) = Proxy::new(&connection, LOGIN_SERVICE, MANAGER_PATH, MANAGER_INTERFACE)
         else {

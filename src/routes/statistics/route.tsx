@@ -3,7 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { RefreshCw } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { activityStats } from "@/api";
+import { activityStats, listCategories } from "@/api";
 import { CategoryBreakdown } from "./-components/CategoryBreakdown";
 import { RANGE_PRESETS } from "./-components/constants";
 import { DailyTrend } from "./-components/DailyTrend";
@@ -23,6 +23,11 @@ function StatisticsPage() {
   const statsQuery = useQuery({
     queryKey: ["activityStats", start, end],
     queryFn: () => activityStats(start, end),
+  });
+
+  const categoriesQuery = useQuery({
+    queryKey: ["categories"],
+    queryFn: listCategories,
   });
 
   const stats = statsQuery.data;
@@ -80,7 +85,10 @@ function StatisticsPage() {
         <>
           <SummaryTiles stats={stats} />
           <div className="grid gap-6 @4xl/main:grid-cols-2">
-            <CategoryBreakdown stats={stats} />
+            <CategoryBreakdown
+              stats={stats}
+              categories={categoriesQuery.data ?? []}
+            />
             <TopAppsBreakdown stats={stats} />
           </div>
           <DailyTrend stats={stats} />

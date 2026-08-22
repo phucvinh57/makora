@@ -11,7 +11,7 @@ minimizing the window hides it to the system tray instead of quitting —
 tracking keeps running in the background, and the tray icon brings the
 window back.
 
-A companion browser [extension](extension) can optionally report the active
+A companion browser [extension](browser-extension) can optionally report the active
 tab's URL, so browser time is broken down per site instead of showing up as
 one opaque `chrome`/`firefox` block.
 
@@ -28,6 +28,11 @@ video remains valid activity even when the user is not providing input.
 Lock detection uses systemd-logind's `LockedHint`; custom wlroots lock-screen
 setups must keep that standard property updated.
 
+On macOS, grant Makora access in **System Settings → Privacy & Security →
+Accessibility** so focused window titles can be read. Tracking continues without
+the permission, but titles remain empty. Unsigned development rebuilds may need
+the permission granted again because the app signature changes.
+
 ## Prerequisites
 
 - [Bun](https://bun.sh)
@@ -41,6 +46,7 @@ setups must keep that standard property updated.
   sudo apt install build-essential libwebkit2gtk-4.1-dev libgtk-3-dev \
       librsvg2-dev libayatana-appindicator3-dev libssl-dev patchelf
   ```
+- On macOS: Accessibility permission for Makora, as described above
 - See the [Tauri prerequisites guide](https://tauri.app/start/prerequisites/)
   for any platform-specific system dependencies
 
@@ -75,8 +81,8 @@ per-user app-data directory Tauri names after the bundle identifier
 
 ## Browser extension
 
-The [extension](extension) is required for web URL tracking and loaded separately as an unpacked
-WebExtension — see [extension/README.md](extension/README.md) for what it
+The [extension](browser-extension) is required for web URL tracking and loaded separately as an unpacked
+WebExtension — see [browser-extension/README.md](browser-extension/README.md) for what it
 does and how it talks to the app.
 
 ## GNOME Shell extension (Linux)
@@ -94,10 +100,16 @@ the app runs but records nothing.
 gnome-extensions enable makora@phucvinh57.dev
 ```
 
-The `.deb` and `.rpm` packages ship the extension already, so only the
+The `.deb` package ships the extension already, so only the
 `enable` step is needed there. Installing it later is fine — the app notices
 and starts tracking without a restart.
 
 On wlroots-based compositors (sway, Hyprland, river) no extension is needed:
 those advertise `wlr-foreign-toplevel-management-v1`, which reports focus
 directly, and the app uses it automatically.
+
+## Known limitations
+
+- Lock/sleep presence handling is Linux-only; Windows and macOS do not yet have presence watchers.
+- Windows UWP/Store apps currently appear as `ApplicationFrameHost.exe` instead of their underlying app identity.
+- macOS focus delivery and window-title access still need end-to-end testing on macOS hardware.

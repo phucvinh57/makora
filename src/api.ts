@@ -6,29 +6,30 @@ import {
 } from "@tauri-apps/plugin-autostart";
 import type {
   ActivityStats,
-  CategorizePreview,
+  AiCategorizationSchedule,
   Category,
+  CategorySuggestion,
+  ClassifierStatus,
   CategoryRule,
   IgnoreKind,
   IgnoreRule,
   KeyKind,
   MatchKind,
-  QueryWhitelistEntry,
+  MultiPurposeKey,
   RecategorizeOutcome,
   SessionsPage,
+  SeedTaxonomy,
   WorkSession,
   WorkSessionStats,
   WorkSessionUpdate,
 } from "./types";
 
-/** `start`/`end` are RFC 3339 timestamps bounding the activity shown. Rows
- * *overlapping* the window match, so an activity that began before the
- * window and ran into it is included. */
 export function listSessions(
   page: number,
   pageSize: number,
   search?: string,
   category?: string,
+  source?: "manual" | "ai",
   start?: string,
   end?: string,
 ): Promise<SessionsPage> {
@@ -37,13 +38,12 @@ export function listSessions(
     pageSize,
     search,
     category,
+    source,
     start,
     end,
   });
 }
 
-/** `start`/`end` are RFC 3339 UTC timestamps; the range is half-open
- * (`start_time >= start && start_time < end`). */
 export function activityStats(
   start: string,
   end: string,
@@ -55,13 +55,6 @@ export function listCategories(): Promise<Category[]> {
   return invoke("list_categories");
 }
 
-export function setSessionCategory(
-  sessionId: number,
-  categoryId: number,
-): Promise<void> {
-  return invoke("set_session_category", { sessionId, categoryId });
-}
-
 export function setSessionRowCategory(
   sessionId: number,
   categoryId: number | null,
@@ -69,49 +62,96 @@ export function setSessionRowCategory(
   return invoke("set_session_row_category", { sessionId, categoryId });
 }
 
-export function previewSessionCategory(
-  sessionId: number,
-): Promise<CategorizePreview> {
-  return invoke("preview_session_category", { sessionId });
-}
-
-/** Categorizes exactly `sessionIds` and nothing else, unless `applyToAll` —
- * which widens the choice to every past and future session sharing each
- * selected row's app/site, the same thing `setSessionCategory` does. */
 export function setSessionsCategory(
   sessionIds: number[],
   categoryId: number,
-  applyToAll: boolean,
 ): Promise<void> {
-  return invoke("set_sessions_category", {
-    sessionIds,
-    categoryId,
-    applyToAll,
-  });
+  return invoke("set_sessions_category", { sessionIds, categoryId });
 }
 
-/** Erases every manual categorization in the database — per-activity pins,
- * app/site-wide overrides, and the rules those overrides minted — so the
- * current rules decide all of history again, already-categorized activities
- * included. Destructive and not undoable; confirm before calling. */
 export function recategorizeAll(): Promise<RecategorizeOutcome> {
   return invoke("recategorize_all");
 }
 
-export function createCategory(name: string, color: string): Promise<Category> {
-  return invoke("create_category", { name, color });
+export function getClassifierStatus(): Promise<ClassifierStatus> {
+  return invoke("get_classifier_status");
+}
+
+export function runAiCategorization(): Promise<void> {
+  return invoke("run_ai_categorization");
+}
+
+export function setAiCategorizationSchedule(
+  schedule: AiCategorizationSchedule,
+): Promise<void> {
+  return invoke("set_ai_categorization_schedule", { schedule });
+}
+
+export function setAiCategorizationConfidenceThreshold(
+  threshold: number,
+): Promise<void> {
+  return invoke("set_ai_categorization_confidence_threshold", { threshold });
+}
+
+export function createCategory(
+  name: string,
+  color: string,
+  description: string | null,
+  parentId: number | null,
+): Promise<Category> {
+  return invoke("create_category", { name, color, description, parentId });
 }
 
 export function updateCategory(
   id: number,
   name: string,
   color: string,
+  description: string | null,
+  parentId: number | null,
 ): Promise<void> {
-  return invoke("update_category", { id, name, color });
+  return invoke("update_category", { id, name, color, description, parentId });
 }
 
 export function deleteCategory(id: number): Promise<void> {
   return invoke("delete_category", { id });
+}
+
+export function listCategorySuggestions(): Promise<CategorySuggestion[]> {
+  return invoke("list_category_suggestions");
+}
+
+export function listMultiPurposeKeys(): Promise<MultiPurposeKey[]> {
+  return invoke("list_multi_purpose_keys");
+}
+
+export function setMultiPurposeKey(
+  keyKind: "exe" | "domain",
+  key: string,
+  enabled: boolean,
+): Promise<void> {
+  return invoke("set_multi_purpose_key", { keyKind, key, enabled });
+}
+
+export function acceptCategorySuggestions(
+  ids: number[],
+  overrideCategory?: number,
+): Promise<void> {
+  return invoke("accept_category_suggestions", {
+    ids,
+    overrideCategory: overrideCategory ?? null,
+  });
+}
+
+export function dismissCategorySuggestions(ids: number[]): Promise<void> {
+  return invoke("dismiss_category_suggestions", { ids });
+}
+
+export function applySeedTaxonomy(): Promise<void> {
+  return invoke("apply_seed_taxonomy");
+}
+
+export function getSeedTaxonomyPreview(): Promise<SeedTaxonomy> {
+  return invoke("get_seed_taxonomy_preview");
 }
 
 export function listCategoryRules(): Promise<CategoryRule[]> {
@@ -152,23 +192,6 @@ export function deleteIgnoreRule(id: number): Promise<void> {
   return invoke("delete_ignore_rule", { id });
 }
 
-export function listQueryWhitelist(): Promise<QueryWhitelistEntry[]> {
-  return invoke("list_query_whitelist");
-}
-
-export function createQueryWhitelistEntry(
-  domain: string,
-  param: string,
-): Promise<QueryWhitelistEntry> {
-  return invoke("create_query_whitelist_entry", { domain, param });
-}
-
-export function deleteQueryWhitelistEntry(id: number): Promise<void> {
-  return invoke("delete_query_whitelist_entry", { id });
-}
-
-/** `startTime` (RFC 3339 UTC) omitted means "start now"; the end is derived
- * as start + target and reaching it is the auto-end. */
 export function createWorkSession(
   name: string,
   note: string | null,
@@ -189,8 +212,6 @@ export function listWorkSessions(): Promise<WorkSession[]> {
   return invoke("list_work_sessions");
 }
 
-/** One page of work sessions, newest first — what the history page's focus
- * session picker scrolls through. */
 export function searchWorkSessions(
   search: string | undefined,
   limit: number,
@@ -199,7 +220,6 @@ export function searchWorkSessions(
   return invoke("search_work_sessions", { search, limit, offset });
 }
 
-/** `null` when the session has since been deleted. */
 export function getWorkSession(id: number): Promise<WorkSession | null> {
   return invoke("get_work_session", { id });
 }
@@ -208,7 +228,6 @@ export function updateWorkSession(update: WorkSessionUpdate): Promise<void> {
   return invoke("update_work_session", { update });
 }
 
-/** Ends an in-progress work session now; past sessions are left untouched. */
 export function stopWorkSession(id: number): Promise<void> {
   return invoke("stop_work_session", { id });
 }

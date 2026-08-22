@@ -9,7 +9,9 @@ export interface SessionRow {
   category_id: number | null;
   category_name: string | null;
   category_color: string | null;
-  category_is_override: boolean;
+  category_is_pinned: boolean;
+  category_source: "manual" | "rule" | "ai" | null;
+  category_confidence: number | null;
 }
 
 export interface SessionsPage {
@@ -21,11 +23,64 @@ export interface Category {
   id: number;
   name: string;
   color: string;
+  parent_id: number | null;
+  description: string | null;
+}
+
+export interface CategorySuggestion {
+  id: number;
+  key_kind: "exe" | "domain" | "url";
+  key: string;
+  category_id: number;
+  category_name: string;
+  confidence: number;
+  seconds: number;
+  model_version: number;
+  created_at: string;
+}
+
+export interface SeedCategory {
+  name: string;
+  color: string;
+  description: string | null;
+  children: SeedCategory[];
+}
+
+export interface SeedRule {
+  key_kind: KeyKind;
+  match_kind: MatchKind;
+  pattern: string;
+  category: string;
+}
+
+export interface SeedTaxonomy {
+  categories: SeedCategory[];
+  rules: SeedRule[];
+  multi_purpose: SeedMultiPurposeKey[];
+}
+
+export interface SeedMultiPurposeKey {
+  key_kind: "exe" | "domain";
+  key: string;
+}
+
+export interface MultiPurposeKey {
+  key_kind: "exe" | "domain";
+  key: string;
+  source: "seed" | "auto" | "user";
+  enabled: boolean;
+  top_share: number | null;
+  detected_at: string | null;
 }
 
 export type KeyKind = "exe" | "domain" | "url";
 
-export type MatchKind = "exact" | "prefix" | "substring" | "regex";
+/**
+ * Change one, change the others: `MatchKind` in `src-tauri/src/core/category.rs`, the
+ * CHECK constraints in the migrations, and the label maps in `RulesTab.tsx` and
+ * `IgnoreListSection.tsx`. Nothing checks those four against each other.
+ */
+export type MatchKind = "exact" | "prefix" | "substring" | "glob";
 
 export interface CategoryRule {
   id: number;
@@ -33,19 +88,37 @@ export interface CategoryRule {
   pattern: string;
   match_kind: MatchKind;
   category_id: number;
+  inactive: boolean;
 }
 
-/** What a `recategorizeAll` pass erased — see the Rust `RecategorizeOutcome`. */
 export interface RecategorizeOutcome {
-  pins_cleared: number;
-  overrides_cleared: number;
-  rules_cleared: number;
+  manual_categories_preserved: number;
+  ai_predictions_cleared: number;
+  rows_resolved: number;
 }
 
-export interface CategorizePreview {
-  key_kind: KeyKind;
-  key: string;
-  affected_count: number;
+export type AiCategorizationSchedule = "manual" | "hourly" | "daily" | "weekly";
+
+export interface ClassifierStatus {
+  state:
+    | "idle"
+    | "queued"
+    | "running"
+    | "ready"
+    | "insufficient_data"
+    | "error";
+  generation: number;
+  update_kind: "cached" | "incremental" | "full_rebuild" | null;
+  training_example_count: number;
+  trained_category_count: number;
+  last_completed_at: string | null;
+  last_execution_duration_ms: number | null;
+  last_error: string | null;
+  schedule: AiCategorizationSchedule;
+  next_scheduled_at: string | null;
+  confidence_threshold: number;
+  holdout_accuracy: number | null;
+  holdout_sample_count: number;
 }
 
 export type IgnoreKind = "app" | "site";
@@ -86,17 +159,6 @@ export interface ActivityStats {
   daily: DailyStat[];
 }
 
-/** A query-string param kept on stored URLs for a given domain — every
- * other param is stripped before a browser-tab session is ever recorded. */
-export interface QueryWhitelistEntry {
-  id: number;
-  domain: string;
-  param: string;
-}
-
-/** A user-created focus block. `end_time` is always set — start + target at
- * creation (the session auto-ends by reaching it), rewritten by an early
- * stop or edit. `category_ids` are the categories that count as on-task. */
 export interface WorkSession {
   id: number;
   name: string;
@@ -110,11 +172,9 @@ export interface WorkSession {
 
 export type TimelineBlockKind = "on_task" | "off_task" | "idle";
 
-/** One contiguous stretch of a work session's analyzed window. */
 export interface TimelineBlock {
   start_time: string;
   end_time: string;
-  /** Empty for idle blocks. */
   label: string;
   kind: TimelineBlockKind;
   category_color: string | null;
@@ -128,9 +188,6 @@ export interface WorkSessionAppStat {
   total_seconds: number;
 }
 
-/** Tracked history evaluated against a work session's target categories.
- * For an in-progress session the window is clamped to now, so this doubles
- * as the live view. `on + off + idle` equals the window length. */
 export interface WorkSessionStats {
   window_start: string;
   window_end: string;
@@ -138,14 +195,12 @@ export interface WorkSessionStats {
   on_task_seconds: number;
   off_task_seconds: number;
   idle_seconds: number;
-  /** 0-100; 0 when nothing was tracked. */
   focus_percent: number;
   switch_count: number;
   apps: WorkSessionAppStat[];
   timeline: TimelineBlock[];
 }
 
-/** Full rewrite of a work session, as the edit dialog sends it. */
 export interface WorkSessionUpdate {
   id: number;
   name: string;

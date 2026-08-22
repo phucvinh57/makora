@@ -31,8 +31,6 @@ function isActive(session: WorkSession, now: Date) {
 function FocusPage() {
   const queryClient = useQueryClient();
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  // A coarse clock so a session flips between active and finished without a
-  // reload; the active card runs its own 1s countdown.
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 10_000);

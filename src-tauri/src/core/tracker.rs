@@ -11,16 +11,6 @@ use crate::core::ignore::NoopIgnorePolicy;
 use crate::core::model::{AppInfo, BrowserKind, FocusEvent, PresenceEvent, TabEvent};
 use crate::core::store::SessionStore;
 
-/// Executables whose focus events are dropped entirely: they neither end the
-/// current session nor start a new one, so briefly focusing one (e.g.
-/// clicking the desktop) doesn't fragment the session on either side of it.
-/// Matched case-insensitively against the exe's file name, not the full path.
-///
-/// One entry per desktop shell: `explorer.exe` is the Windows desktop and
-/// taskbar, `gnome-shell` owns the GNOME panel, notification popups and
-/// on-screen keyboard. (GNOME's Activities overview needs no entry — it
-/// reports *no* focused window rather than a shell-owned one, which the
-/// Linux watcher drops before the tracker ever sees it.)
 const IGNORED_APPS: &[&str] = &["explorer.exe", "gnome-shell"];
 
 fn is_ignored(exe_path: &str) -> bool {
@@ -30,51 +20,22 @@ fn is_ignored(exe_path: &str) -> bool {
         .any(|ignored| ignored.eq_ignore_ascii_case(file_name))
 }
 
-/// The currently open activity row — either a plain app focus (`url: None`)
-/// or a browser tab (`url: Some`).
 struct Current {
-    /// `None` when `browser.is_some()` and no tab event has arrived yet: a
-    /// browser is focused but no DB row has been opened, since browser rows
-    /// are only ever created from tab events, never from the focus hook.
     id: Option<i64>,
     app: AppInfo,
-    /// `Some` when this row's app is a known browser — gates whether tab
-    /// events are allowed to segment it.
     browser: Option<BrowserKind>,
     url: Option<String>,
-    /// Latest window/tab title. This snapshot is retained while away so a
-    /// fresh row can begin with current metadata after unlock or wake.
     window_title: String,
 }
 
-/// Turns a stream of raw focus events into activity rows: a row opens when
-/// an app first gains focus and closes the moment a *different* app gains
-/// focus. Two windows of the same executable are the same "app" and do not
-/// end the row — only switching to a different executable does.
-///
-/// When the focused app is a browser, `handle_tab_event` further segments
-/// that app's focus into one row per URL, closing the current row and
-/// opening a new one for the same app — exactly like switching apps does —
-/// so time in a browser can be broken down by site without a separate
-/// parent/child table.
-///
-/// This is the one place session semantics live, so every `FocusWatcher`
-/// implementation (Windows, macOS, and each of the Linux desktop providers)
-/// gets identical behavior for free.
 pub struct SessionTracker<S: SessionStore> {
     store: S,
     current: Option<Current>,
     ignore: Arc<dyn IgnorePolicy>,
-    /// False while the desktop session is locked or the system is asleep.
-    /// Focus and tab observations still refresh `current`, but cannot write
-    /// activity rows until a presence event marks the user present again.
     present: bool,
 }
 
 impl<S: SessionStore> SessionTracker<S> {
-    /// No ignore list configured — nothing beyond the hardcoded
-    /// `IGNORED_APPS` is excluded from tracking. See
-    /// [`Self::with_ignore_policy`] for the production path.
     #[cfg(test)]
     pub fn new(store: S) -> Result<Self> {
         Self::with_ignore_policy(store, Arc::new(NoopIgnorePolicy))
@@ -90,7 +51,6 @@ impl<S: SessionStore> SessionTracker<S> {
         })
     }
 
-    /// Feed one focus-change observation into the tracker.
     pub fn handle_event(&mut self, event: FocusEvent) -> Result<()> {
         if is_ignored(&event.app.exe_path) {
             return Ok(());
@@ -98,15 +58,11 @@ impl<S: SessionStore> SessionTracker<S> {
         if let Some(current) = &self.current {
             if current.app.exe_path == event.app.exe_path {
                 if !self.present {
-                    // Focus providers can re-sync while locked/unlocked.
-                    // Keep the newest metadata for the row that will open
-                    // on return without changing same-app semantics while
-                    // the user is present.
                     let current = self.current.as_mut().expect("checked above");
                     current.app = event.app;
                     current.window_title = event.window_title;
                 }
-                return Ok(()); // same app still focused (e.g. window title changed)
+                return Ok(());
             }
         }
         self.end_current_row(event.timestamp)?;
@@ -121,10 +77,6 @@ impl<S: SessionStore> SessionTracker<S> {
         self.open_current_row(event.timestamp)
     }
 
-    /// Feed one active-tab observation into the tracker. Ignored unless a
-    /// session for a *matching, currently-focused* browser is open — this
-    /// stops a backgrounded browser's extension from misattributing its tab
-    /// changes to whatever app the OS says is focused.
     pub fn handle_tab_event(&mut self, event: TabEvent) -> Result<()> {
         let Some(current) = &self.current else {
             return Ok(());
@@ -133,7 +85,7 @@ impl<S: SessionStore> SessionTracker<S> {
             return Ok(());
         }
         if current.url.as_deref() == Some(event.url.as_str()) {
-            return Ok(()); // same URL, e.g. only the title changed
+            return Ok(());
         }
         self.end_current_row(event.timestamp)?;
         let current = self.current.as_mut().expect("checked above");
@@ -142,10 +94,6 @@ impl<S: SessionStore> SessionTracker<S> {
         self.open_current_row(event.timestamp)
     }
 
-    /// Feed one authoritative user-presence observation into the tracker.
-    /// A transition away closes the database row but deliberately retains
-    /// the focused app/tab snapshot. Focus and tab events can update that
-    /// snapshot while away, and a transition back opens a fresh row from it.
     pub fn handle_presence_event(&mut self, event: PresenceEvent) -> Result<()> {
         if self.present == event.present {
             return Ok(());
@@ -158,14 +106,12 @@ impl<S: SessionStore> SessionTracker<S> {
         }
     }
 
-    /// Close whatever row is open, e.g. on shutdown. No-op if none is open.
     pub fn close_current(&mut self, at: DateTime<Utc>) -> Result<()> {
         self.end_current_row(at)?;
         self.current = None;
         Ok(())
     }
 
-    /// Close only the persisted row, retaining the focused app/tab snapshot.
     fn end_current_row(&mut self, at: DateTime<Utc>) -> Result<()> {
         let id = self.current.as_ref().and_then(|current| current.id);
         if let Some(id) = id {
@@ -175,9 +121,6 @@ impl<S: SessionStore> SessionTracker<S> {
         Ok(())
     }
 
-    /// Open a row from the retained snapshot when the user is present.
-    /// Browser focus without a tab observation, ignored apps, and ignored
-    /// sites intentionally retain a snapshot but write no row.
     fn open_current_row(&mut self, at: DateTime<Utc>) -> Result<()> {
         if !self.present
             || self
@@ -198,8 +141,6 @@ impl<S: SessionStore> SessionTracker<S> {
                 .as_deref()
                 .is_none_or(|url| self.ignore.is_site_ignored(url))
         {
-            // Browsers only produce URL-bearing rows, never a duplicate
-            // plain-app row before the extension reports its active tab.
             return Ok(());
         }
 
@@ -248,8 +189,6 @@ mod tests {
         }
     }
 
-    /// An [`IgnorePolicy`] that ignores exactly the exe/site substrings it's
-    /// constructed with, for testing `SessionTracker::with_ignore_policy`.
     struct FakeIgnorePolicy {
         apps: &'static [&'static str],
         sites: &'static [&'static str],
@@ -277,8 +216,6 @@ mod tests {
         }
     }
 
-    /// A focus event for a recognized browser exe (`app_name` must match
-    /// `BrowserKind::from_app_name`, unlike the generic `event` helper above).
     fn browser_event(exe: &str) -> FocusEvent {
         FocusEvent {
             app: AppInfo {
@@ -291,11 +228,6 @@ mod tests {
         }
     }
 
-    /// A focus event for a recognized browser exe reported under a specific
-    /// `app_name` — lets tests exercise `BrowserKind::from_app_name` across
-    /// the different exe stems platforms report (e.g. `chrome` on Windows vs.
-    /// `Google Chrome` on macOS), unlike `browser_event` which always uses
-    /// the Windows stem.
     fn browser_event_named(exe: &str, app_name: &str) -> FocusEvent {
         FocusEvent {
             app: AppInfo {
@@ -544,8 +476,6 @@ mod tests {
         tracker.handle_event(event("steam.exe", "Steam")).unwrap();
         tracker.handle_event(event("b.exe", "B")).unwrap();
 
-        // a.exe's session ends when steam.exe gains focus, but steam.exe
-        // itself never starts one — and b.exe starts cleanly afterward.
         assert_eq!(*log.0.borrow(), vec!["start:a.exe", "end:1", "start:b.exe"]);
     }
 
