@@ -45,6 +45,12 @@ impl FocusWatcher for MacFocusWatcher {
 
 fn run_watcher(tx: Sender<WatchEvent>) {
     unsafe {
+        if ax::AXIsProcessTrusted() == 0 {
+            tracing::warn!(
+                "macOS Accessibility permission is not granted; tracking will continue, but window titles will remain empty until Makora is allowed in System Settings → Privacy & Security → Accessibility"
+            );
+        }
+
         let workspace: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
         let center: *mut AnyObject = msg_send![workspace, notificationCenter];
 
@@ -210,6 +216,7 @@ mod ax {
 
     #[link(name = "ApplicationServices", kind = "framework")]
     extern "C" {
+        pub fn AXIsProcessTrusted() -> core_foundation_sys::base::Boolean;
         pub fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
         pub fn AXUIElementCopyAttributeValue(
             element: AXUIElementRef,

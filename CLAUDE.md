@@ -2,7 +2,7 @@
 
 ## What this is
 
-Makora is a local desktop time tracker: Tauri 2 + Rust backend, React/TypeScript frontend, SQLite storage. It records one row per activity block — an app gains focus, a row opens; a different app takes focus, it closes. Nothing leaves the machine. An optional browser extension (`extension/`) reports the active tab so browser time splits per site instead of one opaque `chrome` block.
+Makora is a local desktop time tracker: Tauri 2 + Rust backend, React/TypeScript frontend, SQLite storage. It records one row per activity block — an app gains focus, a row opens; a different app takes focus, it closes. Nothing leaves the machine. An optional browser extension (`browser-extension/`) reports the active tab so browser time splits per site instead of one opaque `chrome` block.
 
 ## Commands
 
@@ -17,7 +17,7 @@ From `src-tauri/` (single crate, no workspace): `cargo build`, `cargo test`, `ca
 
 No ESLint/Prettier. TypeScript strictness is enforced by `tsc` in `bun run build`.
 
-Build deps: Rust, Node, and a C/C++ toolchain (`rusqlite` builds SQLite from source). Linux also needs Tauri's WebKitGTK stack (`libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libssl-dev patchelf`).
+Build deps: Rust, Node, and a C/C++ toolchain (`rusqlite` builds SQLite from source). Linux also needs Tauri's WebKitGTK stack (`libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libssl-dev patchelf`). macOS requires Accessibility permission for window titles; unsigned development rebuilds may need to be granted again after the app signature changes.
 
 Database: `makora.sqlite` in Tauri's app-data dir (`~/.local/share/dev.phucvinh57.makora/` on Linux), resolved by `database_path` in `src-tauri/src/lib.rs`.
 
@@ -59,7 +59,7 @@ Wayland gives clients no way to ask what's focused, and GNOME blocks the usual w
 
 ### Per-site browser tracking
 
-The extension POSTs `{ browser, url, title }` to `127.0.0.1:47632` (`src-tauri/src/ingest.rs`) on tab change; `SessionTracker::handle_tab_event` closes and reopens a row for the same app. Tab events only apply while that browser is focused. **Port `47632` is hardcoded in both `extension/background.js` and `ingest.rs` — change both.** Auth is loopback binding + an `Origin` header check; enough to stop web pages, not a local process.
+The extension POSTs `{ browser, url, title }` to `127.0.0.1:47632` (`src-tauri/src/ingest.rs`) on tab change; `SessionTracker::handle_tab_event` closes and reopens a row for the same app. Tab events only apply while that browser is focused. **Port `47632` is hardcoded in both `browser-extension/background.js` and `ingest.rs` — change both.** Auth is loopback binding + an `Origin` header check; enough to stop web pages, not a local process.
 
 ### Data model
 
@@ -103,6 +103,8 @@ React + TypeScript, Vite, Tailwind v4, TanStack Router file routes in `src/route
 
 - Session identity is the exe path — switching between two windows of the same app doesn't end the session.
 - Lock/sleep only ends the row on Linux; Windows and macOS have no presence watcher yet.
+- macOS requires Accessibility permission for window titles. Without it, tracking continues but every `window_title` is empty; unsigned development rebuilds may need the permission granted again because the app signature changes.
+- Windows UWP/Store apps currently collapse under `ApplicationFrameHost.exe`; resolving their child windows is deferred until it can be tested on Windows hardware.
 - Non-`http(s)` tabs are never recorded. Query strings are stripped, so pages distinguished only by a param collapse (every YouTube video is `youtube.com/watch`).
 - macOS's focus watcher and the `wlr.rs` provider are implemented but not exercised end-to-end.
 - On GNOME the tray needs a StatusNotifierItem host (Ubuntu has one). Under libappindicator, left-clicking the tray icon does nothing — only menu items work.
