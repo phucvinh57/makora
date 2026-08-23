@@ -16,11 +16,11 @@ pub use classifier::{
 pub use model::{BrowserKind, TabEvent, WatchEvent};
 pub use platform::PlatformFocusWatcher;
 pub use store::{
-    open_connection, ActivityCluster, ActivityStats, Category, CategoryFilter, CategoryRule,
-    CategorySourceFilter, CategoryStore, CategorySuggestion, ClusterAssignment, HistoryReader,
-    IgnoreRule, IgnoreStore, MultiPurposeKey, RecategorizeOutcome, SeedTaxonomy, SessionFilter,
-    SessionRow, SessionStore, SqliteStore, WorkSession, WorkSessionStats, WorkSessionStore,
-    WorkSessionUpdate,
+    open_connection, ActivityCluster, ActivityStats, AiAccuracyReport, CategorizationResetOutcome,
+    Category, CategoryFilter, CategoryRule, CategorySourceFilter, CategoryStore,
+    CategorySuggestion, ClusterAssignment, HistoryReader, IgnoreRule, IgnoreStore, MultiPurposeKey,
+    RecategorizeOutcome, SeedTaxonomy, SessionFilter, SessionRow, SessionStore, SqliteStore,
+    WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
 };
 pub use tracker::SessionTracker;
 pub use watcher::FocusWatcher;

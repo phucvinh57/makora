@@ -2,9 +2,17 @@ const api = globalThis.browser ?? globalThis.chrome;
 
 const ENDPOINT = "http://127.0.0.1:47632/event";
 
-let cachedBrowser = null;
+type BrowserName = "brave" | "edge" | "firefox" | "chrome" | "other";
 
-async function detectBrowser() {
+type TabEvent = {
+  browser: BrowserName;
+  url: string;
+  title: string;
+};
+
+let cachedBrowser: BrowserName | null = null;
+
+async function detectBrowser(): Promise<BrowserName> {
   if (cachedBrowser) return cachedBrowser;
 
   if (navigator.brave && typeof navigator.brave.isBrave === "function") {
@@ -24,7 +32,7 @@ async function detectBrowser() {
   return cachedBrowser;
 }
 
-function normalizeUrl(rawUrl) {
+function normalizeUrl(rawUrl: string): string | null {
   try {
     const parsed = new URL(rawUrl);
     return `${parsed.origin}${parsed.pathname}${parsed.search}`;
@@ -33,7 +41,7 @@ function normalizeUrl(rawUrl) {
   }
 }
 
-async function reportActiveTab() {
+async function reportActiveTab(): Promise<void> {
   const [tab] = await api.tabs.query({ active: true, lastFocusedWindow: true });
   if (!tab?.url || !/^https?:\/\//.test(tab.url)) {
     return;
@@ -42,7 +50,7 @@ async function reportActiveTab() {
   const url = normalizeUrl(tab.url);
   if (!url) return;
 
-  const payload = {
+  const payload: TabEvent = {
     browser: await detectBrowser(),
     url,
     title: tab.title ?? "",

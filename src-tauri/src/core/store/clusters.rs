@@ -5,8 +5,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 
 use super::categories::{bump_classifier_input_revision, ensure_exists};
-use super::resolve;
 use super::sqlite::SharedConnection;
+use super::{evaluation, resolve};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ActivityCluster {
@@ -43,6 +43,16 @@ pub struct ClusterAssignment {
     pub rules_created: i64,
     pub sessions_pinned: i64,
 }
+
+type ClusterProposal = (
+    String,
+    Option<i64>,
+    Option<f32>,
+    i64,
+    String,
+    Option<String>,
+    Option<String>,
+);
 
 pub fn list_activity_clusters(conn: &SharedConnection) -> Result<Vec<ActivityCluster>> {
     let conn = conn.lock().unwrap();
@@ -121,11 +131,23 @@ pub fn assign_activity_cluster(
     let mut conn = conn.lock().unwrap();
     let tx = conn.transaction()?;
     ensure_exists(&tx, category_id)?;
-    let scope: String = tx
+    let (scope, predicted_category_id, confidence, model_version, label, parent_kind, parent_key):
+        ClusterProposal = tx
         .query_row(
-            "SELECT scope FROM activity_clusters WHERE id = ?1",
+            "SELECT scope, category_id, confidence, model_version, label, parent_kind, parent_key
+             FROM activity_clusters WHERE id = ?1",
             params![cluster_id],
-            |row| row.get(0),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
         )
         .optional()?
         .ok_or_else(|| anyhow::anyhow!("activity cluster {cluster_id} is no longer available"))?;
@@ -153,7 +175,7 @@ pub fn assign_activity_cluster(
         .collect::<Vec<_>>()
         .join(", ");
     let sql = format!(
-        "SELECT id, key_kind, key, url_key, window_title
+        "SELECT id, key_kind, key, url_key, window_title, seconds
          FROM activity_cluster_members
          WHERE cluster_id = ?1 AND id IN ({placeholders})
          ORDER BY id"
@@ -174,7 +196,7 @@ pub fn assign_activity_cluster(
                 key: row.get(2)?,
                 url_key: row.get(3)?,
                 window_title: row.get(4)?,
-                seconds: 0.0,
+                seconds: row.get(5)?,
                 session_count: 0,
             })
         })?
@@ -183,6 +205,41 @@ pub fn assign_activity_cluster(
         bail!("one or more activity cluster members are no longer available");
     }
     drop(statement);
+
+    // A cluster assignment is one human verdict about one proposal. The title-scope branch
+    // below updates many sessions inline; routing those updates through `pin_session` would
+    // double-count this single cluster judgment as one verdict per session.
+    if let Some(predicted_category_id) = predicted_category_id {
+        let chosen_category_name = evaluation::category_name(&tx, Some(category_id))?;
+        let outcome = if predicted_category_id == category_id {
+            evaluation::Outcome::Agree
+        } else {
+            evaluation::Outcome::Corrected
+        };
+        evaluation::record_verdict(
+            &tx,
+            &evaluation::PendingVerdict {
+                surface: "cluster",
+                bulk: false,
+                outcome,
+                key_kind: parent_kind,
+                key: parent_key.or(Some(label.clone())),
+                url_key: None,
+                window_title: Some(label),
+                session_id: None,
+                predicted_category_id: Some(predicted_category_id),
+                predicted_category_name: evaluation::category_name(
+                    &tx,
+                    Some(predicted_category_id),
+                )?,
+                chosen_category_id: Some(category_id),
+                chosen_category_name,
+                confidence,
+                model_version: Some(model_version),
+                seconds: members.iter().map(|member| member.seconds).sum(),
+            },
+        )?;
+    }
 
     let mut outcome = ClusterAssignment::default();
     match scope.as_str() {

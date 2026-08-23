@@ -159,7 +159,11 @@ In short:
   predictions become reviewable suggestions that the user can turn into rules.
 - Changing rules, categories, or multi-purpose settings replays the history.
   **Recategorize** preserves manual pins, clears AI predictions, and reruns the
-  rules. AI is not run automatically by those changes.
+  rules. **Reset categorization data** keeps the category taxonomy, tracking
+  history, explicit multi-purpose configuration, and AI preferences, but clears
+  rules, labels, AI artifacts, suggestions, and accuracy history. It switches
+  scheduling to manual and requires an explicit **Run now** for a fresh review;
+  nothing is seeded or run automatically.
 
 ## Known limitations
 

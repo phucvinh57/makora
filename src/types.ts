@@ -132,6 +132,17 @@ export interface RecategorizeOutcome {
   rows_resolved: number;
 }
 
+export interface CategorizationResetOutcome {
+  rules_deleted: number;
+  sessions_cleared: number;
+  suggestions_deleted: number;
+  embeddings_deleted: number;
+  clusters_deleted: number;
+  auto_multi_purpose_keys_deleted: number;
+  verdicts_deleted: number;
+  run_evaluations_deleted: number;
+}
+
 export type AiCategorizationSchedule = "manual" | "hourly" | "daily" | "weekly";
 
 export interface ClassifierStatus {
@@ -193,6 +204,77 @@ export interface ActivityStats {
   categories: CategoryStat[];
   apps: AppStat[];
   daily: DailyStat[];
+}
+
+export interface VerdictTotals {
+  total_count: number;
+  total_seconds: number;
+  agree_count: number;
+  agree_seconds: number;
+  corrected_count: number;
+  corrected_seconds: number;
+  rejected_count: number;
+  rejected_seconds: number;
+  no_prediction_count: number;
+  no_prediction_seconds: number;
+}
+
+export interface ConfidenceBucket {
+  lower: number;
+  upper: number;
+  count: number;
+  seconds: number;
+  precision: number | null;
+}
+
+export interface SurfaceStat {
+  surface: "session" | "suggestion" | "cluster";
+  totals: VerdictTotals;
+  precision: number | null;
+  time_weighted_precision: number | null;
+  coverage: number | null;
+}
+
+export interface DailyPrecision {
+  day: string;
+  reviewed_count: number;
+  agree_count: number;
+  precision: number | null;
+}
+
+export interface ConfusionPair {
+  predicted_category_name: string;
+  chosen_category_name: string;
+  count: number;
+  seconds: number;
+}
+
+export interface RunEvaluation {
+  recorded_at: string;
+  model_version: number;
+  update_kind: "cached" | "incremental" | "full_rebuild";
+  confidence_threshold: number;
+  holdout_accuracy: number | null;
+  holdout_sample_count: number;
+  manual_holdout_accuracy: number | null;
+  manual_holdout_sample_count: number;
+  predicted_session_count: number;
+  labeled_key_count: number;
+  category_count: number;
+}
+
+export interface AiAccuracyReport {
+  totals: VerdictTotals;
+  precision: number | null;
+  time_weighted_precision: number | null;
+  coverage: number | null;
+  by_confidence: ConfidenceBucket[];
+  by_surface: SurfaceStat[];
+  daily: DailyPrecision[];
+  confusions: ConfusionPair[];
+  runs: RunEvaluation[];
+  excluded_bulk_count: number;
+  current_confidence_threshold: number;
 }
 
 export interface WorkSession {

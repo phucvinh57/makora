@@ -362,6 +362,47 @@ fn migrations() -> Migrations<'static> {
                 VALUES ('ai_categorization_cluster_granularity', 'balanced');",
         )
         .foreign_key_check(),
+        M::up(
+            "CREATE TABLE ai_verdicts (
+                id                      INTEGER PRIMARY KEY,
+                recorded_at             TEXT NOT NULL,
+                surface                 TEXT NOT NULL CHECK(surface IN ('session','suggestion','cluster')),
+                bulk                    INTEGER NOT NULL DEFAULT 0 CHECK(bulk IN (0,1)),
+                outcome                 TEXT NOT NULL
+                                        CHECK(outcome IN ('agree','corrected','rejected','no_prediction')),
+                key_kind                TEXT,
+                key                     TEXT,
+                url_key                 TEXT,
+                window_title            TEXT,
+                session_id              INTEGER,
+                predicted_category_id   INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+                predicted_category_name TEXT,
+                chosen_category_id      INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+                chosen_category_name    TEXT,
+                confidence              REAL,
+                model_version           INTEGER,
+                seconds                 REAL NOT NULL DEFAULT 0.0
+            );
+            CREATE INDEX idx_ai_verdicts_recorded ON ai_verdicts(recorded_at);
+            CREATE INDEX idx_ai_verdicts_surface ON ai_verdicts(surface, outcome);
+
+            CREATE TABLE ai_run_evaluations (
+                id                          INTEGER PRIMARY KEY,
+                recorded_at                 TEXT NOT NULL,
+                model_version               INTEGER NOT NULL,
+                update_kind                 TEXT NOT NULL,
+                confidence_threshold        REAL NOT NULL,
+                holdout_accuracy            REAL,
+                holdout_sample_count        INTEGER NOT NULL,
+                manual_holdout_accuracy     REAL,
+                manual_holdout_sample_count INTEGER NOT NULL,
+                predicted_session_count     INTEGER NOT NULL,
+                labeled_key_count           INTEGER NOT NULL,
+                category_count              INTEGER NOT NULL
+            );
+            CREATE INDEX idx_ai_run_evaluations_recorded ON ai_run_evaluations(recorded_at);",
+        )
+        .foreign_key_check(),
     ])
 }
 
@@ -1154,6 +1195,56 @@ mod tests {
             .unwrap();
         assert_eq!(threshold, "0.75");
         assert_eq!(schedule, "daily");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn migration_24_creates_evaluation_tables_and_preserves_deleted_names() {
+        let path = temp_db_path();
+        let mut conn = Connection::open(&path).unwrap();
+        migrations().to_version(&mut conn, 23).unwrap();
+        migrations().to_version(&mut conn, 24).unwrap();
+
+        let table_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name IN ('ai_verdicts', 'ai_run_evaluations')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(table_count, 2);
+
+        conn.execute(
+            "INSERT INTO categories (name, color) VALUES ('Old label', '#123456')",
+            [],
+        )
+        .unwrap();
+        let category_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO ai_verdicts
+                (recorded_at, surface, outcome, predicted_category_id,
+                 predicted_category_name, chosen_category_id, chosen_category_name)
+             VALUES ('2025-01-01T00:00:00Z', 'session', 'corrected', ?1, 'Old label', ?1, 'Old label')",
+            params![category_id],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM categories WHERE id = ?1", params![category_id])
+            .unwrap();
+        let snapshot: (Option<i64>, Option<i64>, String, String) = conn
+            .query_row(
+                "SELECT predicted_category_id, chosen_category_id,
+                        predicted_category_name, chosen_category_name
+                 FROM ai_verdicts",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            snapshot,
+            (None, None, "Old label".into(), "Old label".into())
+        );
 
         let _ = std::fs::remove_file(&path);
     }

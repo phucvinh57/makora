@@ -6,6 +6,7 @@ use crate::core::model::AppInfo;
 
 pub mod categories;
 pub mod clusters;
+pub mod evaluation;
 pub mod ignore;
 pub mod queries;
 pub mod resolve;
@@ -13,10 +14,11 @@ pub mod sqlite;
 pub mod work_sessions;
 
 pub use categories::{
-    Category, CategoryRule, CategoryStore, CategorySuggestion, MultiPurposeKey,
-    RecategorizeOutcome, SeedTaxonomy,
+    CategorizationResetOutcome, Category, CategoryRule, CategoryStore, CategorySuggestion,
+    MultiPurposeKey, RecategorizeOutcome, SeedTaxonomy,
 };
 pub use clusters::{ActivityCluster, ClusterAssignment};
+pub use evaluation::AiAccuracyReport;
 pub use ignore::{IgnoreRule, IgnoreStore};
 pub use queries::{
     ActivityStats, CategoryFilter, CategorySourceFilter, HistoryReader, SessionFilter, SessionRow,

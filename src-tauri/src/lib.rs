@@ -37,6 +37,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_sessions,
             commands::activity_stats,
+            commands::ai_accuracy_report,
             commands::list_categories,
             commands::set_session_row_category,
             commands::set_sessions_category,
@@ -58,6 +59,7 @@ pub fn run() {
             commands::delete_category_rule,
             commands::get_classifier_status,
             commands::run_ai_categorization,
+            commands::reset_categorization,
             commands::set_ai_categorization_schedule,
             commands::set_ai_categorization_confidence_threshold,
             commands::set_ai_clustering_granularity,

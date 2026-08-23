@@ -7,11 +7,13 @@ import {
 import type {
   ActivityCluster,
   ActivityStats,
+  AiAccuracyReport,
   AiCategorizationSchedule,
   Category,
   CategorySuggestion,
   ClusterAssignment,
   ClassifierStatus,
+  CategorizationResetOutcome,
   ClusteringGranularity,
   CategoryRule,
   IgnoreKind,
@@ -54,6 +56,14 @@ export function activityStats(
   return invoke("activity_stats", { start, end });
 }
 
+export function aiAccuracyReport(
+  start: string,
+  end: string,
+  includeBulk: boolean,
+): Promise<AiAccuracyReport> {
+  return invoke("ai_accuracy_report", { start, end, includeBulk });
+}
+
 export function listCategories(): Promise<Category[]> {
   return invoke("list_categories");
 }
@@ -82,6 +92,10 @@ export function getClassifierStatus(): Promise<ClassifierStatus> {
 
 export function runAiCategorization(): Promise<void> {
   return invoke("run_ai_categorization");
+}
+
+export function resetCategorization(): Promise<CategorizationResetOutcome> {
+  return invoke("reset_categorization");
 }
 
 export function setAiCategorizationSchedule(
@@ -160,15 +174,20 @@ export function setMultiPurposeKey(
 export function acceptCategorySuggestions(
   ids: number[],
   overrideCategory?: number,
+  bulk = false,
 ): Promise<void> {
   return invoke("accept_category_suggestions", {
     ids,
     overrideCategory: overrideCategory ?? null,
+    bulk,
   });
 }
 
-export function dismissCategorySuggestions(ids: number[]): Promise<void> {
-  return invoke("dismiss_category_suggestions", { ids });
+export function dismissCategorySuggestions(
+  ids: number[],
+  bulk = false,
+): Promise<void> {
+  return invoke("dismiss_category_suggestions", { ids, bulk });
 }
 
 export function applySeedTaxonomy(): Promise<void> {

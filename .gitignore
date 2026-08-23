@@ -11,3 +11,5 @@
 
 .vscode
 .tanstack/tmp
+
+/browser-extension/dist

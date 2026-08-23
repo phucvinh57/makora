@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-export type LabelingTab = "ai" | "clusters";
+export type LabelingTab = "ai" | "clusters" | "accuracy";
 export type CategoryTab = "categories" | "rules";
 
 type RulesCategoryFilter = number | "all";
@@ -28,7 +28,7 @@ export const useLabelingStore = create<LabelingState>()(
     }),
     {
       name: "makora-labeling",
-      version: 2,
+      version: 3,
       migrate: (persisted, version) => {
         const state = persisted as Partial<LabelingState>;
         const oldTab = state.tab as string | undefined;
@@ -41,7 +41,10 @@ export const useLabelingStore = create<LabelingState>()(
 
         return {
           tab:
-            version < 2 && oldTab !== "ai" && oldTab !== "clusters"
+            version < 3 &&
+            oldTab !== "ai" &&
+            oldTab !== "clusters" &&
+            oldTab !== "accuracy"
               ? "ai"
               : (state.tab ?? "ai"),
           categoryTab,

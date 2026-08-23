@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
 use crate::core::{
-    ActivityCluster, ActivityStats, AiCategorizationSchedule, AiCategorizationService, Category,
-    CategoryFilter, CategoryRule, CategorySourceFilter, CategoryStore, CategorySuggestion,
-    ClassifierStatus, ClusterAssignment, ClusteringGranularity, HistoryReader, IgnoreRule,
-    IgnoreStore, MultiPurposeKey, RecategorizeOutcome, SeedTaxonomy, SessionFilter, SessionRow,
-    WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
+    ActivityCluster, ActivityStats, AiAccuracyReport, AiCategorizationSchedule,
+    AiCategorizationService, CategorizationResetOutcome, Category, CategoryFilter, CategoryRule,
+    CategorySourceFilter, CategoryStore, CategorySuggestion, ClassifierStatus, ClusterAssignment,
+    ClusteringGranularity, HistoryReader, IgnoreRule, IgnoreStore, MultiPurposeKey,
+    RecategorizeOutcome, SeedTaxonomy, SessionFilter, SessionRow, WorkSession, WorkSessionStats,
+    WorkSessionStore, WorkSessionUpdate,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -65,6 +66,21 @@ pub fn activity_stats(
     reader
         .activity_stats(&start, &end)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn ai_accuracy_report(
+    reader: State<HistoryReader>,
+    start: String,
+    end: String,
+    include_bulk: bool,
+) -> Result<AiAccuracyReport, String> {
+    let report = if include_bulk {
+        reader.accuracy_report_with_bulk(&start, &end, true)
+    } else {
+        reader.accuracy_report(&start, &end)
+    };
+    report.map_err(|e| e.to_string())
 }
 
 fn parse_category_filter(category: Option<&str>) -> Result<CategoryFilter, String> {
@@ -196,9 +212,10 @@ pub fn accept_category_suggestions(
     categories: State<CategoryStore>,
     ids: Vec<i64>,
     override_category: Option<i64>,
+    bulk: bool,
 ) -> Result<(), String> {
     categories
-        .accept_suggestions(&ids, override_category)
+        .accept_suggestions(&ids, override_category, bulk)
         .map_err(|e| e.to_string())
 }
 
@@ -206,9 +223,10 @@ pub fn accept_category_suggestions(
 pub fn dismiss_category_suggestions(
     categories: State<CategoryStore>,
     ids: Vec<i64>,
+    bulk: bool,
 ) -> Result<(), String> {
     categories
-        .dismiss_suggestions(&ids)
+        .dismiss_suggestions(&ids, bulk)
         .map_err(|e| e.to_string())
 }
 
@@ -256,6 +274,13 @@ pub fn get_classifier_status(ai: State<AiCategorizationService>) -> ClassifierSt
 #[tauri::command]
 pub fn run_ai_categorization(ai: State<AiCategorizationService>) -> Result<(), String> {
     ai.run_now().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn reset_categorization(
+    ai: State<AiCategorizationService>,
+) -> Result<CategorizationResetOutcome, String> {
+    ai.reset_categorization().map_err(|error| error.to_string())
 }
 
 #[tauri::command]

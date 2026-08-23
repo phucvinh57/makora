@@ -9,6 +9,9 @@
     "build": "NODE_ENV=production tsr generate && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "ext:build": "node browser-extension/build.mjs",
+    "ext:watch": "node browser-extension/build.mjs --watch",
+    "ext:check": "tsc -p browser-extension",
     "check": "biome check --write",
     "format": "biome format",
     "lint": "biome lint"
@@ -41,6 +44,7 @@
     "@tanstack/router-cli": "^1.167.30",
     "@tanstack/router-plugin": "^1.168.32",
     "@tauri-apps/cli": "^2.11.4",
+    "@types/chrome": "^0.2.7",
     "@types/node": "^26.2.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",

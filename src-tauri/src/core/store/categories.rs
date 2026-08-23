@@ -1,10 +1,10 @@
 use anyhow::{anyhow, bail, Context, Result};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 
 use super::sqlite::SharedConnection;
 use crate::core::category::{validate_pattern, CategoryTree, KeyKind, MatchKind};
-use crate::core::store::resolve;
+use crate::core::store::{evaluation, resolve};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Category {
@@ -69,6 +69,19 @@ pub struct CategoryRule {
     pub inactive: bool,
 }
 
+type SessionPinPrior = (
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
+    Option<f32>,
+    Option<i64>,
+    String,
+    String,
+    Option<String>,
+    String,
+    f64,
+);
+
 #[derive(Debug, Clone, Serialize)]
 pub struct MultiPurposeKey {
     pub key_kind: String,
@@ -84,6 +97,18 @@ pub struct RecategorizeOutcome {
     pub manual_categories_preserved: i64,
     pub ai_predictions_cleared: i64,
     pub rows_resolved: i64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct CategorizationResetOutcome {
+    pub rules_deleted: i64,
+    pub sessions_cleared: i64,
+    pub suggestions_deleted: i64,
+    pub embeddings_deleted: i64,
+    pub clusters_deleted: i64,
+    pub auto_multi_purpose_keys_deleted: i64,
+    pub verdicts_deleted: i64,
+    pub run_evaluations_deleted: i64,
 }
 
 pub struct CategoryStore {
@@ -383,27 +408,78 @@ impl CategoryStore {
         Ok(())
     }
 
-    pub fn accept_suggestions(&self, ids: &[i64], override_category: Option<i64>) -> Result<()> {
+    pub fn accept_suggestions(
+        &self,
+        ids: &[i64],
+        override_category: Option<i64>,
+        bulk: bool,
+    ) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
         }
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         for id in ids {
-            let suggestion: Option<(String, String, i64)> = tx
+            let suggestion: Option<(String, String, i64, f32, f64, i64, String)> = tx
                 .query_row(
-                    "SELECT key_kind, key, category_id
-                     FROM category_suggestions
-                     WHERE id = ?1 AND status = 'pending'",
+                    "SELECT s.key_kind, s.key, s.category_id, s.confidence, s.seconds,
+                            s.model_version, c.name
+                     FROM category_suggestions s
+                     JOIN categories c ON c.id = s.category_id
+                     WHERE s.id = ?1 AND s.status = 'pending'",
                     params![id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                        ))
+                    },
                 )
                 .optional()?;
-            let Some((key_kind, key, suggested_category)) = suggestion else {
+            let Some((
+                key_kind,
+                key,
+                suggested_category,
+                confidence,
+                seconds,
+                model_version,
+                predicted_name,
+            )) = suggestion
+            else {
                 bail!("category suggestion {id} is no longer pending");
             };
             let category_id = override_category.unwrap_or(suggested_category);
             ensure_exists(&tx, category_id)?;
+            let outcome = if category_id == suggested_category {
+                evaluation::Outcome::Agree
+            } else {
+                evaluation::Outcome::Corrected
+            };
+            evaluation::record_verdict(
+                &tx,
+                &evaluation::PendingVerdict {
+                    surface: "suggestion",
+                    bulk,
+                    outcome,
+                    key_kind: Some(key_kind.clone()),
+                    key: Some(key.clone()),
+                    url_key: (key_kind == "url").then(|| key.clone()),
+                    window_title: None,
+                    session_id: None,
+                    predicted_category_id: Some(suggested_category),
+                    predicted_category_name: Some(predicted_name),
+                    chosen_category_id: Some(category_id),
+                    chosen_category_name: evaluation::category_name(&tx, Some(category_id))?,
+                    confidence: Some(confidence),
+                    model_version: Some(model_version),
+                    seconds,
+                },
+            )?;
             // Accepting is idempotent: an exact rule for the same key is retargeted rather than
             // rejected, so a suggestion that reappears for an already-ruled key stays actionable.
             tx.execute(
@@ -425,10 +501,63 @@ impl CategoryStore {
         Ok(())
     }
 
-    pub fn dismiss_suggestions(&self, ids: &[i64]) -> Result<()> {
+    pub fn dismiss_suggestions(&self, ids: &[i64], bulk: bool) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         for id in ids {
+            let suggestion: Option<(String, String, i64, f32, f64, i64, String)> = tx
+                .query_row(
+                    "SELECT s.key_kind, s.key, s.category_id, s.confidence, s.seconds,
+                            s.model_version, c.name
+                     FROM category_suggestions s
+                     JOIN categories c ON c.id = s.category_id
+                     WHERE s.id = ?1 AND s.status = 'pending'",
+                    params![id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let Some((
+                key_kind,
+                key,
+                category_id,
+                confidence,
+                seconds,
+                model_version,
+                predicted_name,
+            )) = suggestion
+            else {
+                continue;
+            };
+            evaluation::record_verdict(
+                &tx,
+                &evaluation::PendingVerdict {
+                    surface: "suggestion",
+                    bulk,
+                    outcome: evaluation::Outcome::Rejected,
+                    key_kind: Some(key_kind.clone()),
+                    key: Some(key.clone()),
+                    url_key: (key_kind == "url").then(|| key.clone()),
+                    window_title: None,
+                    session_id: None,
+                    predicted_category_id: Some(category_id),
+                    predicted_category_name: Some(predicted_name),
+                    chosen_category_id: None,
+                    chosen_category_name: None,
+                    confidence: Some(confidence),
+                    model_version: Some(model_version),
+                    seconds,
+                },
+            )?;
             tx.execute(
                 "UPDATE category_suggestions SET status = 'dismissed'
                  WHERE id = ?1 AND status = 'pending'",
@@ -612,32 +741,22 @@ impl CategoryStore {
     }
 
     pub fn set_row_category(&self, session_id: i64, category_id: Option<i64>) -> Result<()> {
-        self.conn.lock().unwrap().execute(
-            "UPDATE sessions
-             SET category_id = ?1,
-                 ml_category_id = NULL,
-                 ml_confidence = NULL,
-                 ml_model_version = NULL
-             WHERE id = ?2",
-            params![category_id, session_id],
-        )?;
-        bump_classifier_input_revision(&self.conn.lock().unwrap())?;
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        pin_session(&tx, session_id, category_id, false)?;
+        bump_classifier_input_revision(&tx)?;
+        tx.commit()?;
         Ok(())
     }
 
     pub fn set_row_categories(&self, session_ids: &[i64], category_id: Option<i64>) -> Result<()> {
+        if session_ids.is_empty() {
+            return Ok(());
+        }
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         for session_id in session_ids {
-            tx.execute(
-                "UPDATE sessions
-                 SET category_id = ?1,
-                     ml_category_id = NULL,
-                     ml_confidence = NULL,
-                     ml_model_version = NULL
-                 WHERE id = ?2",
-                params![category_id, session_id],
-            )?;
+            pin_session(&tx, *session_id, category_id, true)?;
         }
         bump_classifier_input_revision(&tx)?;
         tx.commit()?;
@@ -668,6 +787,181 @@ impl CategoryStore {
             rows_resolved: rows_resolved as i64,
         })
     }
+}
+
+/// Clears all categorization evidence in one transaction while keeping the taxonomy, tracking
+/// history, explicit multi-purpose configuration, and classifier preferences intact.
+pub(crate) fn reset_categorization_data(
+    conn: &SharedConnection,
+) -> Result<CategorizationResetOutcome> {
+    let mut conn = conn.lock().unwrap();
+    let tx = conn.transaction()?;
+
+    let sessions_cleared: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM sessions
+         WHERE category_id IS NOT NULL
+            OR rule_category_id IS NOT NULL
+            OR ml_category_id IS NOT NULL
+            OR ml_confidence IS NOT NULL
+            OR ml_model_version IS NOT NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    tx.execute(
+        "UPDATE sessions
+         SET category_id = NULL,
+             rule_category_id = NULL,
+             ml_category_id = NULL,
+             ml_confidence = NULL,
+             ml_model_version = NULL",
+        [],
+    )?;
+
+    let rules_deleted = tx.execute("DELETE FROM category_rules", [])? as i64;
+    let suggestions_deleted = tx.execute("DELETE FROM category_suggestions", [])? as i64;
+    let embeddings_deleted = tx.execute("DELETE FROM key_embeddings", [])? as i64;
+    let clusters_deleted = tx.execute("DELETE FROM activity_clusters", [])? as i64;
+    let verdicts_deleted = tx.execute("DELETE FROM ai_verdicts", [])? as i64;
+    let run_evaluations_deleted = tx.execute("DELETE FROM ai_run_evaluations", [])? as i64;
+    let auto_multi_purpose_keys_deleted =
+        tx.execute("DELETE FROM multi_purpose_keys WHERE source = 'auto'", [])? as i64;
+    tx.execute(
+        "UPDATE multi_purpose_keys
+         SET top_share = NULL, detected_at = NULL
+         WHERE source IN ('seed', 'user')",
+        [],
+    )?;
+
+    tx.execute(
+        "DELETE FROM settings
+         WHERE key IN (
+             'ai_categorization_last_completed_at',
+             'ai_categorization_last_execution_duration_ms',
+             'ai_categorization_model_id',
+             'ai_categorization_category_signature',
+             'ai_categorization_holdout_accuracy',
+             'ai_categorization_holdout_sample_count'
+         )",
+        [],
+    )?;
+    tx.execute(
+        "INSERT INTO settings (key, value) VALUES
+            ('ai_categorization_schedule', 'manual'),
+            ('ai_categorization_model_version', '0')
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [],
+    )?;
+    bump_classifier_input_revision(&tx)?;
+
+    tx.commit()?;
+    Ok(CategorizationResetOutcome {
+        rules_deleted,
+        sessions_cleared,
+        suggestions_deleted,
+        embeddings_deleted,
+        clusters_deleted,
+        auto_multi_purpose_keys_deleted,
+        verdicts_deleted,
+        run_evaluations_deleted,
+    })
+}
+
+fn pin_session(
+    tx: &Transaction<'_>,
+    session_id: i64,
+    category_id: Option<i64>,
+    bulk: bool,
+) -> Result<()> {
+    let prior: Option<SessionPinPrior> = tx
+        .query_row(
+            "SELECT category_id, rule_category_id, ml_category_id, ml_confidence,
+                    ml_model_version, category_key_kind, category_key, url_key,
+                    window_title,
+                    COALESCE((julianday(end_time) - julianday(start_time)) * 86400.0, 0.0)
+             FROM sessions WHERE id = ?1",
+            params![session_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((
+        prior_category_id,
+        rule_category_id,
+        predicted_category_id,
+        confidence,
+        model_version,
+        key_kind,
+        key,
+        url_key,
+        window_title,
+        seconds,
+    )) = prior
+    else {
+        return Ok(());
+    };
+
+    // Unpins and changes to an existing manual pin are changes of the user's own label,
+    // not verdicts about the model. Rule labels also have no AI coverage to judge.
+    if category_id.is_none() || prior_category_id.is_some() || rule_category_id.is_some() {
+        tx.execute(
+            "UPDATE sessions
+             SET category_id = ?1,
+                 ml_category_id = NULL,
+                 ml_confidence = NULL,
+                 ml_model_version = NULL
+             WHERE id = ?2",
+            params![category_id, session_id],
+        )?;
+        return Ok(());
+    }
+
+    let outcome = match predicted_category_id {
+        Some(predicted) if Some(predicted) == category_id => evaluation::Outcome::Agree,
+        Some(_) => evaluation::Outcome::Corrected,
+        None => evaluation::Outcome::NoPrediction,
+    };
+    evaluation::record_verdict(
+        tx,
+        &evaluation::PendingVerdict {
+            surface: "session",
+            bulk,
+            outcome,
+            key_kind: Some(key_kind),
+            key: Some(key),
+            url_key,
+            window_title: Some(window_title),
+            session_id: Some(session_id),
+            predicted_category_id,
+            predicted_category_name: evaluation::category_name(tx, predicted_category_id)?,
+            chosen_category_id: category_id,
+            chosen_category_name: evaluation::category_name(tx, category_id)?,
+            confidence,
+            model_version,
+            seconds,
+        },
+    )?;
+    tx.execute(
+        "UPDATE sessions
+         SET category_id = ?1,
+             ml_category_id = NULL,
+             ml_confidence = NULL,
+             ml_model_version = NULL
+         WHERE id = ?2",
+        params![category_id, session_id],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -813,6 +1107,347 @@ mod tests {
         let id = conn.last_insert_rowid();
         resolve::resolve_session(&conn, id).unwrap();
         id
+    }
+
+    #[test]
+    fn session_pins_record_only_ai_verdicts_and_respect_rule_coverage() {
+        let (store, path) = temp_store();
+        let conn = store.conn.clone();
+        let work = store.create_category("Work", "#111111", None).unwrap();
+        let study = store.create_category("Study", "#222222", None).unwrap();
+        let ruled = store.create_category("Ruled", "#333333", None).unwrap();
+        store
+            .create_rule("exe", "ruled.exe", "exact", ruled.id)
+            .unwrap();
+
+        let agree = insert_session(&conn, "agree.exe", "2024-06-15T00:00:00Z");
+        conn.lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET ml_category_id = ?1, ml_confidence = 0.91,
+                 ml_model_version = 4 WHERE id = ?2",
+                params![work.id, agree],
+            )
+            .unwrap();
+        store.set_row_category(agree, Some(work.id)).unwrap();
+
+        let corrected = insert_session(&conn, "corrected.exe", "2024-06-15T01:00:00Z");
+        conn.lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET ml_category_id = ?1, ml_confidence = 0.82,
+                 ml_model_version = 4 WHERE id = ?2",
+                params![work.id, corrected],
+            )
+            .unwrap();
+        store.set_row_category(corrected, Some(study.id)).unwrap();
+        store.set_row_category(corrected, Some(work.id)).unwrap();
+        store.set_row_category(corrected, None).unwrap();
+
+        let rule_row = insert_session(&conn, "ruled.exe", "2024-06-15T02:00:00Z");
+        store.set_row_category(rule_row, Some(study.id)).unwrap();
+
+        let no_prediction = insert_session(&conn, "unknown.exe", "2024-06-15T03:00:00Z");
+        store
+            .set_row_category(no_prediction, Some(study.id))
+            .unwrap();
+
+        let verdicts: Vec<(String, i64, Option<i64>)> = conn
+            .lock()
+            .unwrap()
+            .prepare(
+                "SELECT outcome, bulk, session_id FROM ai_verdicts
+                 ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            verdicts,
+            vec![
+                ("agree".into(), 0, Some(agree)),
+                ("corrected".into(), 0, Some(corrected)),
+                ("no_prediction".into(), 0, Some(no_prediction)),
+            ]
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn reset_categorization_data_clears_evidence_but_keeps_taxonomy_and_configuration() {
+        let (store, path) = temp_store();
+        let conn = store.conn.clone();
+        let work = store.create_category("Work", "#111111", None).unwrap();
+        let personal = store.create_category("Personal", "#222222", None).unwrap();
+        store
+            .create_rule("exe", "editor.exe", "exact", work.id)
+            .unwrap();
+        let labeled = insert_session(&conn, "editor.exe", "2024-06-15T00:00:00Z");
+        let raw = insert_session(&conn, "notes.exe", "2024-06-15T01:00:00Z");
+
+        let input_revision_before: i64;
+        {
+            let conn = conn.lock().unwrap();
+            conn.execute(
+                "UPDATE sessions
+                 SET category_id = ?1, rule_category_id = ?2,
+                     ml_category_id = ?3, ml_confidence = 0.91, ml_model_version = 7
+                 WHERE id = ?4",
+                params![personal.id, work.id, work.id, labeled],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE sessions SET category_id = ?1 WHERE id = ?2",
+                params![personal.id, raw],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO category_suggestions
+                    (key_kind, key, category_id, confidence, seconds, model_version, created_at)
+                 VALUES ('domain', 'pending.example', ?1, 0.8, 10.0, 7, '2024-06-15T00:00:00Z'),
+                        ('domain', 'dismissed.example', ?1, 0.8, 10.0, 7, '2024-06-15T00:00:00Z')",
+                params![work.id],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE category_suggestions SET status = 'dismissed'
+                 WHERE key = 'dismissed.example'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO key_embeddings (key_kind, key, doc_hash, model_id, vector)
+                 VALUES ('exe', 'editor.exe', 'hash', 'model', X'00000000')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO multi_purpose_keys
+                    (key_kind, key, source, enabled, top_share, detected_at)
+                 VALUES ('domain', 'seed.example', 'seed', 1, 0.4, '2024-06-15T00:00:00Z'),
+                        ('domain', 'user.example', 'user', 0, 0.5, '2024-06-15T00:00:00Z'),
+                        ('domain', 'auto.example', 'auto', 1, 0.6, '2024-06-15T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO activity_clusters
+                    (scope, label, category_id, confidence, lead, cohesion, member_count,
+                     seconds, model_version, created_at)
+                 VALUES ('key', 'cluster', ?1, 0.8, 0.2, 0.9, 1, 30.0, 7,
+                         '2024-06-15T00:00:00Z')",
+                params![work.id],
+            )
+            .unwrap();
+            let cluster_id = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO activity_cluster_members
+                    (cluster_id, key_kind, key, seconds, session_count)
+                 VALUES (?1, 'exe', 'editor.exe', 30.0, 1)",
+                params![cluster_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO ai_verdicts
+                    (recorded_at, surface, outcome, seconds)
+                 VALUES ('2024-06-15T00:00:00Z', 'session', 'agree', 30.0)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO ai_run_evaluations
+                    (recorded_at, model_version, update_kind, confidence_threshold,
+                     holdout_accuracy, holdout_sample_count, manual_holdout_accuracy,
+                     manual_holdout_sample_count, predicted_session_count, labeled_key_count,
+                     category_count)
+                 VALUES ('2024-06-15T00:00:00Z', 7, 'full_rebuild', 0.8,
+                         0.9, 2, 0.8, 1, 2, 1, 2)",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE settings SET value = 'hourly'
+                 WHERE key = 'ai_categorization_schedule'",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE settings SET value = '42'
+                 WHERE key = 'ai_categorization_model_version'",
+                [],
+            )
+            .unwrap();
+            for (key, value) in [
+                (
+                    "ai_categorization_last_completed_at",
+                    "2024-06-15T00:00:00Z",
+                ),
+                ("ai_categorization_last_execution_duration_ms", "123"),
+                ("ai_categorization_model_id", "model"),
+                ("ai_categorization_category_signature", "signature"),
+                ("ai_categorization_holdout_accuracy", "0.9"),
+                ("ai_categorization_holdout_sample_count", "2"),
+            ] {
+                conn.execute(
+                    "INSERT INTO settings (key, value) VALUES (?1, ?2)
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    params![key, value],
+                )
+                .unwrap();
+            }
+            input_revision_before = conn
+                .query_row(
+                    "SELECT CAST(value AS INTEGER) FROM settings
+                     WHERE key = 'ai_categorization_input_revision'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+        }
+
+        let outcome = reset_categorization_data(&conn).unwrap();
+        assert_eq!(outcome.rules_deleted, 1);
+        assert_eq!(outcome.sessions_cleared, 2);
+        assert_eq!(outcome.suggestions_deleted, 2);
+        assert_eq!(outcome.embeddings_deleted, 1);
+        assert_eq!(outcome.clusters_deleted, 1);
+        assert_eq!(outcome.auto_multi_purpose_keys_deleted, 1);
+        assert_eq!(outcome.verdicts_deleted, 1);
+        assert_eq!(outcome.run_evaluations_deleted, 1);
+
+        let conn = conn.lock().unwrap();
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM categories", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM sessions", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM category_rules", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM category_suggestions", [], |row| row
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM key_embeddings", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM activity_clusters", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM activity_cluster_members", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM ai_verdicts", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM ai_run_evaluations", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM sessions WHERE category_id IS NOT NULL OR rule_category_id IS NOT NULL OR ml_category_id IS NOT NULL OR ml_confidence IS NOT NULL OR ml_model_version IS NOT NULL", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM multi_purpose_keys WHERE source = 'auto'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM multi_purpose_keys WHERE source IN ('seed', 'user')",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            2
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT enabled FROM multi_purpose_keys WHERE source = 'user'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM multi_purpose_keys WHERE top_share IS NOT NULL OR detected_at IS NOT NULL", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(
+            conn.query_row(
+                "SELECT value FROM settings WHERE key = 'ai_categorization_schedule'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "manual"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT value FROM settings WHERE key = 'ai_categorization_model_version'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "0"
+        );
+        assert!(conn.query_row("SELECT CAST(value AS INTEGER) FROM settings WHERE key = 'ai_categorization_input_revision'", [], |row| row.get::<_, i64>(0)).unwrap() > input_revision_before);
+        for key in [
+            "ai_categorization_last_completed_at",
+            "ai_categorization_last_execution_duration_ms",
+            "ai_categorization_model_id",
+            "ai_categorization_category_signature",
+            "ai_categorization_holdout_accuracy",
+            "ai_categorization_holdout_sample_count",
+        ] {
+            assert_eq!(
+                conn.query_row(
+                    "SELECT COUNT(*) FROM settings WHERE key = ?1",
+                    params![key],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0,
+                "{key} should be cleared"
+            );
+        }
+        drop(conn);
+
+        let second = reset_categorization_data(&store.conn).unwrap();
+        assert_eq!(second, CategorizationResetOutcome::default());
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -1621,7 +2256,7 @@ mod tests {
             )
             .unwrap();
 
-        store.accept_suggestions(&[1], None).unwrap();
+        store.accept_suggestions(&[1], None, false).unwrap();
         assert!(store.list_suggestions().unwrap().is_empty());
         let rule = store
             .list_rules()
@@ -1668,7 +2303,7 @@ mod tests {
             )
             .unwrap();
 
-        store.accept_suggestions(&[1], None).unwrap();
+        store.accept_suggestions(&[1], None, false).unwrap();
         let rules = store
             .list_rules()
             .unwrap()
@@ -1703,7 +2338,7 @@ mod tests {
                 VALUES (1, 'exe', 'unknown.exe', 1, 0.8, 10.0, 1, '2024-06-15T00:00:00Z')",
             )
             .unwrap();
-        store.dismiss_suggestions(&[1]).unwrap();
+        store.dismiss_suggestions(&[1], false).unwrap();
         assert!(store.list_suggestions().unwrap().is_empty());
         let seed = r##"{
             "categories": [{"name":"Seed","color":"#222222","description":"A seed"}],

@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use super::categories::load_category_tree;
+use super::evaluation::{accuracy_report, accuracy_report_with_bulk, AiAccuracyReport};
 use super::sqlite::SharedConnection;
 
 #[derive(Debug, Clone, Serialize)]
@@ -221,6 +222,21 @@ impl HistoryReader {
             apps,
             daily,
         })
+    }
+
+    pub fn accuracy_report(&self, start: &str, end: &str) -> Result<AiAccuracyReport> {
+        let conn = self.conn.lock().unwrap();
+        accuracy_report(&conn, start, end)
+    }
+
+    pub fn accuracy_report_with_bulk(
+        &self,
+        start: &str,
+        end: &str,
+        include_bulk: bool,
+    ) -> Result<AiAccuracyReport> {
+        let conn = self.conn.lock().unwrap();
+        accuracy_report_with_bulk(&conn, start, end, include_bulk)
     }
 }
 

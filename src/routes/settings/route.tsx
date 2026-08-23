@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { AiCategorizationSettingsSection } from "./-components/AiCategorizationSettingsSection";
+import { CategorizationDataSection } from "./-components/CategorizationDataSection";
 import { FeatureFlagsSection } from "./-components/FeatureFlagsSection";
 import { GeneralSection } from "./-components/GeneralSection";
 import { IgnoreListSection } from "./-components/IgnoreListSection";
@@ -10,7 +11,7 @@ export const Route = createFileRoute("/settings")({
 
 function SettingsPage() {
   return (
-    <div className="flex h-full flex-col gap-6 overflow-y-auto subtle-scrollbar box-border">
+    <div className="flex w-full max-w-3xl flex-col gap-6 box-border">
       <header>
         <h1 className="m-0 text-lg font-semibold">Settings</h1>
         <p className="m-0 text-sm text-muted-foreground">
@@ -20,6 +21,7 @@ function SettingsPage() {
       <GeneralSection />
       <FeatureFlagsSection />
       <AiCategorizationSettingsSection />
+      <CategorizationDataSection />
       <IgnoreListSection />
     </div>
   );

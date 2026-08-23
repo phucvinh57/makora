@@ -149,17 +149,17 @@ export function AiTab() {
 
   const accept = useMutation({
     mutationFn: ({ id, categoryId }: { id: number; categoryId: number }) =>
-      acceptCategorySuggestions([id], categoryId),
+      acceptCategorySuggestions([id], categoryId, false),
     onSuccess: invalidateAccepted,
   });
   const acceptAll = useMutation({
-    mutationFn: (ids: number[]) => acceptCategorySuggestions(ids),
+    mutationFn: (ids: number[]) =>
+      acceptCategorySuggestions(ids, undefined, true),
     onSuccess: invalidateAccepted,
   });
   const dismiss = useMutation({
-    mutationFn: (id: number) => dismissCategorySuggestions([id]),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["categorySuggestions"] }),
+    mutationFn: (id: number) => dismissCategorySuggestions([id], false),
+    onSuccess: invalidateAccepted,
   });
   const status = statusQuery.data;
   const categories = categoriesQuery.data ?? [];

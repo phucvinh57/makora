@@ -10,6 +10,7 @@ const LABELING_QUERY_KEYS = [
   "multiPurposeKeys",
   "classifierStatus",
   "activityClusters",
+  "aiAccuracyReport",
 ] as const;
 
 export function invalidateLabelingQueries(queryClient: QueryClient) {

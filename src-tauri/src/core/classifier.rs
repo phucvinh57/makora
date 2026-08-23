@@ -18,6 +18,7 @@ use tracing::{error, info};
 use super::category::{resolve_category, CompiledRule, KeyKind, SessionCategoryInput};
 use super::cluster::{cluster, label_cluster, ClusterInput, ClusterParams};
 use super::embed::{Embedder, Model2Vec};
+use super::store::categories::{reset_categorization_data, CategorizationResetOutcome};
 use super::store::sqlite::SharedConnection;
 
 type CompletionCallback = Arc<dyn Fn() + Send + Sync>;
@@ -205,10 +206,11 @@ impl ClassifierStatus {
 }
 
 enum ServiceMessage {
-    Run,
+    Run(u64),
     SetSchedule(AiCategorizationSchedule),
     SetConfidenceThreshold(f32),
     SetClusteringGranularity(ClusteringGranularity),
+    Reset(mpsc::Sender<std::result::Result<CategorizationResetOutcome, String>>),
 }
 
 #[derive(Clone)]
@@ -219,6 +221,7 @@ pub struct AiCategorizationService {
     status: Arc<Mutex<ClassifierStatus>>,
     intervals: ScheduleIntervals,
     commit_gate: Arc<Mutex<()>>,
+    reset_pending: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl AiCategorizationService {
@@ -249,6 +252,7 @@ impl AiCategorizationService {
         let (tx, rx) = mpsc::channel();
         let generation = Arc::new(AtomicU64::new(0));
         let commit_gate = Arc::new(Mutex::new(()));
+        let reset_pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let status = Arc::new(Mutex::new(ClassifierStatus::initial(
             schedule,
             last_completed_at,
@@ -266,6 +270,7 @@ impl AiCategorizationService {
             status: status.clone(),
             intervals,
             commit_gate: commit_gate.clone(),
+            reset_pending: reset_pending.clone(),
         };
         std::thread::Builder::new()
             .name("makora-classifier".into())
@@ -291,21 +296,59 @@ impl AiCategorizationService {
     }
 
     pub fn run_now(&self) -> Result<()> {
-        let _gate = self.commit_gate.lock().unwrap();
-        self.generation.fetch_add(1, Ordering::SeqCst);
+        let target = {
+            let _gate = self.commit_gate.lock().unwrap();
+            if self.reset_pending.load(Ordering::Acquire) {
+                bail!("AI categorization reset is in progress");
+            }
+            let target = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+            {
+                let mut status = self.status.lock().unwrap();
+                status.state = "queued".into();
+                status.generation = target;
+                status.last_error = None;
+                status.next_scheduled_at = schedule_from_status(&status)
+                    .and_then(|schedule| schedule_deadline(schedule, &self.intervals))
+                    .map(|deadline| deadline.scheduled_at);
+            }
+            target
+        };
+        self.tx
+            .send(ServiceMessage::Run(target))
+            .context("AI categorization worker is unavailable")
+    }
+
+    pub fn reset_categorization(&self) -> Result<CategorizationResetOutcome> {
+        if self
+            .reset_pending
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
         {
+            bail!("AI categorization reset is already in progress");
+        }
+
+        let target = {
+            let _gate = self.commit_gate.lock().unwrap();
+            let target = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
             let mut status = self.status.lock().unwrap();
             status.state = "queued".into();
-            status.generation = self.generation.load(Ordering::SeqCst);
+            status.generation = target;
             status.last_error = None;
-            status.next_scheduled_at = schedule_from_status(&status)
-                .and_then(|schedule| schedule_deadline(schedule, &self.intervals))
-                .map(|deadline| deadline.scheduled_at);
+            status.next_scheduled_at = None;
+            target
+        };
+        let (reply_tx, reply_rx) = mpsc::channel();
+        if let Err(error) = self.tx.send(ServiceMessage::Reset(reply_tx)) {
+            self.reset_pending.store(false, Ordering::Release);
+            bail!("AI categorization worker is unavailable: {error}");
         }
-        drop(_gate);
-        self.tx
-            .send(ServiceMessage::Run)
-            .context("AI categorization worker is unavailable")
+        let result = reply_rx.recv().map_err(|error| {
+            anyhow::anyhow!("AI categorization reset worker did not respond: {error}")
+        });
+        self.reset_pending.store(false, Ordering::Release);
+        result?.map_err(anyhow::Error::msg).inspect(|_| {
+            let mut status = self.status.lock().unwrap();
+            status.generation = target.max(status.generation);
+        })
     }
 
     pub fn status(&self) -> ClassifierStatus {
@@ -313,6 +356,10 @@ impl AiCategorizationService {
     }
 
     pub fn set_schedule(&self, schedule: AiCategorizationSchedule) -> Result<()> {
+        let _gate = self.commit_gate.lock().unwrap();
+        if self.reset_pending.load(Ordering::Acquire) {
+            bail!("AI categorization reset is in progress");
+        }
         write_setting(&self.conn, SCHEDULE_SETTING_KEY, schedule.as_str())?;
         let next_scheduled_at =
             schedule_deadline(schedule, &self.intervals).map(|deadline| deadline.scheduled_at);
@@ -321,6 +368,7 @@ impl AiCategorizationService {
             status.schedule = schedule.as_str().into();
             status.next_scheduled_at = next_scheduled_at;
         }
+        drop(_gate);
         self.tx
             .send(ServiceMessage::SetSchedule(schedule))
             .context("AI categorization worker is unavailable")
@@ -328,24 +376,34 @@ impl AiCategorizationService {
 
     pub fn set_confidence_threshold(&self, threshold: f32) -> Result<()> {
         validate_confidence_threshold(threshold)?;
+        let _gate = self.commit_gate.lock().unwrap();
+        if self.reset_pending.load(Ordering::Acquire) {
+            bail!("AI categorization reset is in progress");
+        }
         write_setting(
             &self.conn,
             CONFIDENCE_THRESHOLD_SETTING_KEY,
             &threshold.to_string(),
         )?;
         self.status.lock().unwrap().confidence_threshold = threshold;
+        drop(_gate);
         self.tx
             .send(ServiceMessage::SetConfidenceThreshold(threshold))
             .context("AI categorization worker is unavailable")
     }
 
     pub fn set_clustering_granularity(&self, granularity: ClusteringGranularity) -> Result<()> {
+        let _gate = self.commit_gate.lock().unwrap();
+        if self.reset_pending.load(Ordering::Acquire) {
+            bail!("AI categorization reset is in progress");
+        }
         write_setting(
             &self.conn,
             CLUSTER_GRANULARITY_SETTING_KEY,
             granularity.as_str(),
         )?;
         self.status.lock().unwrap().cluster_granularity = granularity.as_str().into();
+        drop(_gate);
         self.tx
             .send(ServiceMessage::SetClusteringGranularity(granularity))
             .context("AI categorization worker is unavailable")
@@ -386,12 +444,12 @@ fn run_service(runtime: ServiceRuntime, rx: mpsc::Receiver<ServiceMessage>) {
                     Ok(message) => Some(message),
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         let _gate = commit_gate.lock().unwrap();
-                        generation.fetch_add(1, Ordering::SeqCst);
+                        let target = generation.fetch_add(1, Ordering::SeqCst) + 1;
                         let mut s = status.lock().unwrap();
                         s.state = "queued".into();
-                        s.generation = generation.load(Ordering::SeqCst);
+                        s.generation = target;
                         s.last_error = None;
-                        Some(ServiceMessage::Run)
+                        Some(ServiceMessage::Run(target))
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
@@ -414,21 +472,77 @@ fn run_service(runtime: ServiceRuntime, rx: mpsc::Receiver<ServiceMessage>) {
             ServiceMessage::SetClusteringGranularity(next) => {
                 cluster_granularity = next;
             }
-            ServiceMessage::Run => {
-                while let Ok(message) = rx.try_recv() {
-                    if let ServiceMessage::SetSchedule(next) = message {
-                        schedule = next;
-                    } else if let ServiceMessage::SetConfidenceThreshold(next) = message {
-                        confidence_threshold = next;
-                    } else if let ServiceMessage::SetClusteringGranularity(next) = message {
-                        cluster_granularity = next;
+            ServiceMessage::Reset(reply) => {
+                let result = reset_categorization_data(&conn);
+                match result {
+                    Ok(outcome) => {
+                        schedule = AiCategorizationSchedule::Manual;
+                        deadline = None;
+                        reset_status(
+                            &status,
+                            &generation,
+                            confidence_threshold,
+                            cluster_granularity,
+                        );
+                        let _ = reply.send(Ok(outcome));
                     }
+                    Err(error) => {
+                        let message = error.to_string();
+                        let mut status = status.lock().unwrap();
+                        status.state = "error".into();
+                        status.last_error = Some(message.clone());
+                        let _ = reply.send(Err(message));
+                    }
+                }
+            }
+            ServiceMessage::Run(mut target) => {
+                let mut reset_seen = false;
+                while let Ok(message) = rx.try_recv() {
+                    match message {
+                        ServiceMessage::SetSchedule(next) => schedule = next,
+                        ServiceMessage::SetConfidenceThreshold(next) => {
+                            confidence_threshold = next;
+                        }
+                        ServiceMessage::SetClusteringGranularity(next) => {
+                            cluster_granularity = next;
+                        }
+                        ServiceMessage::Run(next) => target = next,
+                        ServiceMessage::Reset(reply) => {
+                            let result = reset_categorization_data(&conn);
+                            match result {
+                                Ok(outcome) => {
+                                    schedule = AiCategorizationSchedule::Manual;
+                                    deadline = None;
+                                    reset_status(
+                                        &status,
+                                        &generation,
+                                        confidence_threshold,
+                                        cluster_granularity,
+                                    );
+                                    let _ = reply.send(Ok(outcome));
+                                }
+                                Err(error) => {
+                                    let message = error.to_string();
+                                    let mut status = status.lock().unwrap();
+                                    status.state = "error".into();
+                                    status.last_error = Some(message.clone());
+                                    let _ = reply.send(Err(message));
+                                }
+                            }
+                            reset_seen = true;
+                            break;
+                        }
+                    }
+                }
+                if reset_seen {
+                    continue;
                 }
                 deadline = schedule_deadline(schedule, &intervals);
                 update_schedule_status(&status, schedule, deadline.as_ref());
                 execute_job(
                     &conn,
                     embedder.as_ref(),
+                    target,
                     &generation,
                     &status,
                     &commit_gate,
@@ -443,10 +557,34 @@ fn run_service(runtime: ServiceRuntime, rx: mpsc::Receiver<ServiceMessage>) {
     }
 }
 
+fn reset_status(
+    status: &Mutex<ClassifierStatus>,
+    generation: &AtomicU64,
+    confidence_threshold: f32,
+    cluster_granularity: ClusteringGranularity,
+) {
+    let mut status = status.lock().unwrap();
+    status.state = "idle".into();
+    status.generation = generation.load(Ordering::SeqCst);
+    status.update_kind = None;
+    status.training_example_count = 0;
+    status.trained_category_count = 0;
+    status.last_completed_at = None;
+    status.last_execution_duration_ms = None;
+    status.last_error = None;
+    status.schedule = AiCategorizationSchedule::Manual.as_str().into();
+    status.next_scheduled_at = None;
+    status.confidence_threshold = confidence_threshold;
+    status.holdout_accuracy = None;
+    status.holdout_sample_count = 0;
+    status.cluster_granularity = cluster_granularity.as_str().into();
+}
+
 #[allow(clippy::too_many_arguments)]
 fn execute_job(
     conn: &SharedConnection,
     embedder: &dyn Embedder,
+    target: u64,
     generation: &AtomicU64,
     status: &Mutex<ClassifierStatus>,
     commit_gate: &Mutex<()>,
@@ -454,7 +592,9 @@ fn execute_job(
     confidence_threshold: f32,
     cluster_granularity: ClusteringGranularity,
 ) {
-    let target = generation.load(Ordering::SeqCst);
+    if generation.load(Ordering::SeqCst) != target {
+        return;
+    }
     info!(generation = target, "AI categorization job started");
     {
         let mut s = status.lock().unwrap();
@@ -752,6 +892,13 @@ struct CategoryInfo {
 struct LabeledKey {
     category_id: i64,
     weight: f32,
+    origin: LabelOrigin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LabelOrigin {
+    Manual,
+    Rule,
 }
 
 #[derive(Debug, Clone)]
@@ -1177,8 +1324,7 @@ fn update(
         &description_vectors,
         None,
     );
-    let (holdout_accuracy, holdout_sample_count) =
-        evaluate_holdout(&categories, &embeddings, &labels, &description_vectors);
+    let holdout = evaluate_holdout(&categories, &embeddings, &labels, &description_vectors);
     let stored_multi_purpose = load_multi_purpose_keys(conn)?;
     let mut candidate_multi_purpose = stored_multi_purpose.clone();
     let predictions = activities
@@ -1404,6 +1550,11 @@ fn update(
             )?;
         }
     }
+    let predicted_session_count: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE ml_model_version = ?1",
+        params![model_version],
+        |row| row.get(0),
+    )?;
     let current_title_keys = activities
         .iter()
         .map(|activity| activity.cache_key())
@@ -1485,17 +1636,38 @@ fn update(
     write_setting_tx(
         &tx,
         HOLDOUT_SAMPLE_COUNT_SETTING_KEY,
-        &holdout_sample_count.to_string(),
+        &holdout.sample_count.to_string(),
     )?;
-    if let Some(accuracy) = holdout_accuracy {
+    if let Some(accuracy) = holdout.accuracy {
         write_setting_tx(&tx, HOLDOUT_ACCURACY_SETTING_KEY, &accuracy.to_string())?;
     }
+    tx.execute(
+        "INSERT INTO ai_run_evaluations (
+             recorded_at, model_version, update_kind, confidence_threshold,
+             holdout_accuracy, holdout_sample_count, manual_holdout_accuracy,
+             manual_holdout_sample_count, predicted_session_count,
+             labeled_key_count, category_count
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![
+            Utc::now().to_rfc3339(),
+            model_version,
+            kind.as_str(),
+            confidence_threshold,
+            holdout.accuracy,
+            holdout.sample_count as i64,
+            holdout.manual_accuracy,
+            holdout.manual_sample_count as i64,
+            predicted_session_count,
+            labels.len() as i64,
+            label_vectors.len() as i64,
+        ],
+    )?;
     tx.commit()?;
     Ok(UpdateResult::Completed {
         examples: labels.len(),
         categories: label_vectors.len(),
-        holdout_accuracy,
-        holdout_sample_count,
+        holdout_accuracy: holdout.accuracy,
+        holdout_sample_count: holdout.sample_count,
         kind,
     })
 }
@@ -1659,6 +1831,7 @@ fn load_labeled_keys(conn: &SharedConnection) -> Result<HashMap<Key, LabeledKey>
                     LabeledKey {
                         category_id,
                         weight: 3.0,
+                        origin: LabelOrigin::Manual,
                     },
                 ))
             } else {
@@ -1668,6 +1841,7 @@ fn load_labeled_keys(conn: &SharedConnection) -> Result<HashMap<Key, LabeledKey>
                         LabeledKey {
                             category_id,
                             weight: 1.0,
+                            origin: LabelOrigin::Rule,
                         },
                     )
                 })
@@ -1962,7 +2136,7 @@ fn evaluate_holdout(
     embeddings: &HashMap<Key, Vec<f32>>,
     labels: &HashMap<Key, LabeledKey>,
     description_vectors: &HashMap<i64, Vec<f32>>,
-) -> (Option<f32>, usize) {
+) -> HoldoutEvaluation {
     let dimension = description_vectors
         .values()
         .next()
@@ -1979,16 +2153,13 @@ fn evaluate_holdout(
     );
     let mut correct = 0usize;
     let mut sample_count = 0usize;
+    let mut manual_correct = 0usize;
+    let mut manual_sample_count = 0usize;
     for (key, label) in labels {
         let Some(embedding) = embeddings.get(key) else {
             continue;
         };
-        let Some(excluded) = labels
-            .get(key)
-            .map(|label| (label.category_id, embedding.as_slice(), label.weight))
-        else {
-            continue;
-        };
+        let excluded = (label.category_id, embedding.as_slice(), label.weight);
         let Some(predicted) = best_category_excluding(
             embedding,
             &base_vectors,
@@ -2004,15 +2175,28 @@ fn evaluate_holdout(
         if predicted == label.category_id {
             correct += 1;
         }
+        if label.origin == LabelOrigin::Manual {
+            manual_sample_count += 1;
+            if predicted == label.category_id {
+                manual_correct += 1;
+            }
+        }
     }
-    (
-        if sample_count > 0 {
-            Some(correct as f32 / sample_count as f32)
-        } else {
-            None
-        },
+    HoldoutEvaluation {
+        accuracy: (sample_count > 0).then(|| correct as f32 / sample_count as f32),
         sample_count,
-    )
+        manual_accuracy: (manual_sample_count > 0)
+            .then(|| manual_correct as f32 / manual_sample_count as f32),
+        manual_sample_count,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HoldoutEvaluation {
+    accuracy: Option<f32>,
+    sample_count: usize,
+    manual_accuracy: Option<f32>,
+    manual_sample_count: usize,
 }
 
 fn best_category_excluding(
@@ -2593,6 +2777,45 @@ mod tests {
             )
             .unwrap();
         assert_eq!(pending, 0);
+
+        service.run_now().unwrap();
+        let reset = service.reset_categorization().unwrap();
+        assert_eq!(reset.suggestions_deleted, 1);
+        let status = service.status();
+        assert_eq!(status.state, "idle");
+        assert_eq!(status.schedule, "manual");
+        assert_eq!(status.next_scheduled_at, None);
+        assert_eq!(status.last_completed_at, None);
+        assert_eq!(status.last_execution_duration_ms, None);
+        let db = conn.lock().unwrap();
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM category_suggestions", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM key_embeddings", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        drop(db);
+
+        service.run_now().unwrap();
+        let third_deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let status = service.status();
+            if status.last_completed_at.is_some() {
+                break;
+            }
+            assert!(
+                Instant::now() < third_deadline,
+                "classifier did not run after reset"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
         drop(service);
         let _ = std::fs::remove_file(path);
     }
