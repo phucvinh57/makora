@@ -1,5 +1,7 @@
 export interface SessionRow {
   id: number;
+  activity_id: number | null;
+  activity_session_count: number;
   app_name: string;
   exe_path: string;
   window_title: string;
@@ -12,6 +14,12 @@ export interface SessionRow {
   category_is_pinned: boolean;
   category_source: "manual" | "rule" | "ai" | null;
   category_confidence: number | null;
+}
+
+export interface UrlQueryParam {
+  id: number;
+  domain: string;
+  param: string;
 }
 
 export interface SessionsPage {
@@ -41,6 +49,7 @@ export interface CategorySuggestion {
 
 export interface ActivityClusterMember {
   id: number;
+  activity_id: number | null;
   key_kind: "exe" | "domain";
   key: string;
   url_key: string | null;

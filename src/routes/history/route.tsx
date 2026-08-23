@@ -174,6 +174,7 @@ function HistoryPage() {
     // The statistics page buckets the same rows, so it goes stale on the same edits.
     queryClient.invalidateQueries({ queryKey: ["activityStats"] });
     queryClient.invalidateQueries({ queryKey: ["aiAccuracyReport"] });
+    queryClient.invalidateQueries({ queryKey: ["activityClusters"] });
   }
 
   const categoryChangeMutation = useMutation({

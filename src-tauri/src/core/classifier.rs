@@ -980,6 +980,7 @@ struct CachedEmbedding {
 
 #[derive(Debug, Clone)]
 struct PendingClusterMember {
+    activity_id: Option<i64>,
     key_kind: String,
     key: String,
     url_key: Option<String>,
@@ -1086,6 +1087,7 @@ fn build_clusters(
                 let key = (document.key_kind.clone(), document.key.clone());
                 clustered_keys.insert(key);
                 PendingClusterMember {
+                    activity_id: None,
                     key_kind: document.key_kind.clone(),
                     key: document.key.clone(),
                     url_key: None,
@@ -1178,6 +1180,7 @@ fn build_clusters(
                 .map(|position| {
                     let activity = title_activities[*position];
                     PendingClusterMember {
+                        activity_id: activity.activity_id,
                         key_kind: activity.key_kind.clone(),
                         key: activity.key.clone(),
                         url_key: activity.url_key.clone(),
@@ -1520,7 +1523,7 @@ fn update(
     let effective_multi_purpose = load_multi_purpose_keys_from_conn(&tx)?;
     super::store::resolve::resolve_all(&tx)?;
     tx.execute(
-        "UPDATE sessions
+        "UPDATE activities
          SET ml_category_id = NULL, ml_confidence = NULL, ml_model_version = NULL
          WHERE category_id IS NULL AND rule_category_id IS NULL",
         [],
@@ -1533,25 +1536,21 @@ fn update(
         if !effective_multi_purpose.contains(&key) || prediction.confidence < confidence_threshold {
             continue;
         }
-        for session_id in &activity.session_ids {
-            tx.execute(
-                "UPDATE sessions
-                 SET ml_category_id = ?1, ml_confidence = ?2, ml_model_version = ?3
-                 WHERE id = ?4 AND category_id IS NULL AND rule_category_id IS NULL
-                   AND category_key_kind = ?5 AND category_key = ?6",
-                params![
-                    prediction.category_id,
-                    prediction.confidence,
-                    model_version,
-                    session_id,
-                    key.0,
-                    key.1
-                ],
-            )?;
-        }
+        tx.execute(
+            "UPDATE activities
+             SET ml_category_id = ?1, ml_confidence = ?2, ml_model_version = ?3
+             WHERE id = ?4 AND category_id IS NULL AND rule_category_id IS NULL",
+            params![
+                prediction.category_id,
+                prediction.confidence,
+                model_version,
+                activity.activity_id
+            ],
+        )?;
     }
     let predicted_session_count: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM sessions WHERE ml_model_version = ?1",
+        "SELECT COUNT(*) FROM sessions s JOIN activities a ON a.id = s.activity_id
+         WHERE a.ml_model_version = ?1",
         params![model_version],
         |row| row.get(0),
     )?;
@@ -1730,10 +1729,11 @@ fn persist_clusters(
         for member in &cluster.members {
             tx.execute(
                 "INSERT INTO activity_cluster_members
-                    (cluster_id, key_kind, key, url_key, window_title, seconds, session_count)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    (cluster_id, activity_id, key_kind, key, url_key, window_title, seconds, session_count)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     cluster_id,
+                    member.activity_id,
                     member.key_kind,
                     member.key,
                     member.url_key,
@@ -1780,10 +1780,15 @@ fn load_labeled_keys(conn: &SharedConnection) -> Result<HashMap<Key, LabeledKey>
     let conn = conn.lock().unwrap();
     let multi_purpose = load_multi_purpose_keys_from_conn(&conn)?;
     let mut stmt = conn.prepare(
-        "SELECT category_key_kind, category_key, url_key, window_title,
+        "SELECT key_kind, key, url_key, title, category_id, rule_category_id
+         FROM activities
+         WHERE category_id IS NOT NULL OR rule_category_id IS NOT NULL
+         UNION ALL
+         SELECT category_key_kind, category_key, url_key, window_title,
                 category_id, rule_category_id
          FROM sessions
-         WHERE category_id IS NOT NULL OR rule_category_id IS NOT NULL",
+         WHERE activity_id IS NULL
+           AND (category_id IS NOT NULL OR rule_category_id IS NOT NULL)",
     )?;
     let mut evidence: HashMap<Key, LabelVotes> = HashMap::new();
     for row in stmt.query_map([], |row| {
@@ -2617,8 +2622,8 @@ mod tests {
         assert_eq!(url_suggestion, Some(("youtube.com/@channel".into(), 1)));
         let distinct_ml: i64 = db
             .query_row(
-                "SELECT COUNT(DISTINCT ml_category_id) FROM sessions
-                 WHERE category_key = 'youtube.com' AND ml_category_id IS NOT NULL",
+                "SELECT COUNT(DISTINCT a.ml_category_id) FROM activities a
+                 WHERE a.key = 'youtube.com' AND a.ml_category_id IS NOT NULL",
                 [],
                 |row| row.get(0),
             )

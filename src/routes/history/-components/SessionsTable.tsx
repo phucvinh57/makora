@@ -1,4 +1,5 @@
 import { Card } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -272,44 +273,55 @@ export function SessionsTable({
                     </Tooltip>
                   </TableCell>
                   <TableCell style={{ width: columnWidths.category }}>
-                    <Select
-                      value={String(row.category_id ?? UNCATEGORIZED)}
-                      onValueChange={(value) =>
-                        onRowCategoryChange(row, value ?? UNCATEGORIZED)
-                      }
-                    >
-                      <SelectTrigger
-                        size="sm"
-                        className="h-6 w-full min-w-0 px-1.5 text-xs"
-                        title={
-                          row.category_is_pinned
-                            ? `${path} — pinned to this activity`
-                            : path
+                    <div className="flex min-w-0 items-center gap-1">
+                      <Select
+                        value={String(row.category_id ?? UNCATEGORIZED)}
+                        onValueChange={(value) =>
+                          onRowCategoryChange(row, value ?? UNCATEGORIZED)
                         }
                       >
-                        <SelectValue>
-                          <span className="flex min-w-0 items-center gap-1.5">
-                            <span
-                              className="size-2 shrink-0 rounded-full"
-                              style={{
-                                backgroundColor:
-                                  row.category_color ??
-                                  "var(--muted-foreground)",
-                              }}
-                            />
-                            <span className="truncate">
-                              {row.category_name ?? "Uncategorized"}
+                        <SelectTrigger
+                          size="sm"
+                          className="h-6 min-w-0 flex-1 px-1.5 text-xs"
+                          title={
+                            row.category_is_pinned
+                              ? `${path} — pinned to this activity`
+                              : path
+                          }
+                        >
+                          <SelectValue>
+                            <span className="flex min-w-0 items-center gap-1.5">
+                              <span
+                                className="size-2 shrink-0 rounded-full"
+                                style={{
+                                  backgroundColor:
+                                    row.category_color ??
+                                    "var(--muted-foreground)",
+                                }}
+                              />
+                              <span className="truncate">
+                                {row.category_name ?? "Uncategorized"}
+                              </span>
                             </span>
-                          </span>
-                        </SelectValue>
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value={UNCATEGORIZED}>
-                          Uncategorized
-                        </SelectItem>
-                        {categoryOptions(categories)}
-                      </SelectContent>
-                    </Select>
+                          </SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={UNCATEGORIZED}>
+                            Uncategorized
+                          </SelectItem>
+                          {categoryOptions(categories)}
+                        </SelectContent>
+                      </Select>
+                      {row.activity_session_count > 1 && (
+                        <Badge
+                          variant="outline"
+                          className="shrink-0 px-1 text-[10px]"
+                          title={`This category applies to all ${row.activity_session_count} occurrences in this range`}
+                        >
+                          ×{row.activity_session_count}
+                        </Badge>
+                      )}
+                    </div>
                   </TableCell>
                   <TableCell
                     className="hidden truncate font-mono text-xs @4xl:table-cell"

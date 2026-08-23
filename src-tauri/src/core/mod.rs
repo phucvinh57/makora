@@ -7,6 +7,7 @@ pub mod keydoc;
 pub mod model;
 pub mod platform;
 pub mod store;
+pub mod title;
 pub mod tracker;
 pub mod watcher;
 
@@ -20,7 +21,8 @@ pub use store::{
     Category, CategoryFilter, CategoryRule, CategorySourceFilter, CategoryStore,
     CategorySuggestion, ClusterAssignment, HistoryReader, IgnoreRule, IgnoreStore, MultiPurposeKey,
     RecategorizeOutcome, SeedTaxonomy, SessionFilter, SessionRow, SessionStore, SqliteStore,
-    WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
+    UrlQueryParam, UrlQueryStore, WorkSession, WorkSessionStats, WorkSessionStore,
+    WorkSessionUpdate,
 };
 pub use tracker::SessionTracker;
 pub use watcher::FocusWatcher;

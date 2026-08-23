@@ -68,7 +68,10 @@ async function reportActiveTab(): Promise<void> {
 api.tabs.onActivated.addListener(reportActiveTab);
 
 api.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
-  if (tab.active && (changeInfo.url || changeInfo.status === "complete")) {
+  if (
+    tab.active &&
+    (changeInfo.url || changeInfo.title || changeInfo.status === "complete")
+  ) {
     reportActiveTab();
   }
 });

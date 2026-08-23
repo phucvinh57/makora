@@ -27,6 +27,7 @@ import type {
   WorkSession,
   WorkSessionStats,
   WorkSessionUpdate,
+  UrlQueryParam,
 } from "./types";
 
 export function listSessions(
@@ -234,6 +235,21 @@ export function createIgnoreRule(
 
 export function deleteIgnoreRule(id: number): Promise<void> {
   return invoke("delete_ignore_rule", { id });
+}
+
+export function listUrlQueryParams(): Promise<UrlQueryParam[]> {
+  return invoke("list_url_query_params");
+}
+
+export function createUrlQueryParam(
+  domain: string,
+  param: string,
+): Promise<UrlQueryParam> {
+  return invoke("create_url_query_param", { domain, param });
+}
+
+export function deleteUrlQueryParam(id: number): Promise<void> {
+  return invoke("delete_url_query_param", { id });
 }
 
 export function createWorkSession(

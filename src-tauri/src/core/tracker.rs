@@ -85,6 +85,11 @@ impl<S: SessionStore> SessionTracker<S> {
             return Ok(());
         }
         if current.url.as_deref() == Some(event.url.as_str()) {
+            let id = current.id;
+            if let Some(id) = id {
+                self.store.refine_title(id, &event.title)?;
+            }
+            self.current.as_mut().expect("checked above").window_title = event.title;
             return Ok(());
         }
         self.end_current_row(event.timestamp)?;

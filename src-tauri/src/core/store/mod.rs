@@ -11,6 +11,7 @@ pub mod ignore;
 pub mod queries;
 pub mod resolve;
 pub mod sqlite;
+pub mod url_params;
 pub mod work_sessions;
 
 pub use categories::{
@@ -24,6 +25,7 @@ pub use queries::{
     ActivityStats, CategoryFilter, CategorySourceFilter, HistoryReader, SessionFilter, SessionRow,
 };
 pub use sqlite::{open_connection, SqliteStore};
+pub use url_params::{UrlQueryParam, UrlQueryStore};
 pub use work_sessions::{WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate};
 
 pub trait SessionStore {
@@ -36,6 +38,10 @@ pub trait SessionStore {
     ) -> Result<i64>;
 
     fn end_session(&mut self, id: i64, at: DateTime<Utc>) -> Result<()>;
+
+    fn refine_title(&mut self, _id: i64, _window_title: &str) -> Result<()> {
+        Ok(())
+    }
 
     fn close_dangling_sessions(&mut self) -> Result<()>;
 }

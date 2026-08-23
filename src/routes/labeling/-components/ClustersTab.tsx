@@ -1,4 +1,6 @@
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ExternalLink } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -32,13 +34,38 @@ import {
 } from "@/components/ui/select";
 import { formatSeconds } from "@/duration";
 import { invalidateLabelingQueries } from "@/queries";
-import type { ActivityCluster, ClusteringGranularity } from "@/types";
+import type {
+  ActivityCluster,
+  ActivityClusterMember,
+  ClusteringGranularity,
+} from "@/types";
 
 const granularityLabels: Record<ClusteringGranularity, string> = {
   broad: "Broad",
   balanced: "Balanced",
   fine: "Fine",
 };
+
+// A member row has to say what the activity *was*, not repeat the cluster's own domain.
+// `url_key` is `domain[/path][?query]`, so the tail after the domain is the only part that
+// distinguishes two members of the same site; a bare domain has no tail and falls back to the
+// key, which is what names the executable in app clusters.
+function memberDetail(member: ActivityClusterMember) {
+  const urlKey = member.url_key?.trim() || "";
+  const tail = urlKey.startsWith(member.key)
+    ? urlKey.slice(member.key.length)
+    : urlKey;
+  return {
+    detail: tail || member.key,
+    url: urlKey ? `https://${urlKey}` : null,
+  };
+}
+
+function openSite(url: string) {
+  void openUrl(url).catch((error) => {
+    toast.error("Could not open site", { description: String(error) });
+  });
+}
 
 function clusterStateKey(cluster: ActivityCluster) {
   // The classifier rebuilds clusters by deleting and reinserting them, so an
@@ -126,7 +153,8 @@ function ClusterCard({
         {expanded ? (
           <div className="flex max-h-72 flex-col gap-1 overflow-y-auto rounded-lg border p-2">
             {cluster.members.map((member) => {
-              const title = member.window_title?.trim() || member.key;
+              const { detail, url } = memberDetail(member);
+              const title = member.window_title?.trim() || detail;
               return (
                 <label
                   key={member.id}
@@ -141,12 +169,34 @@ function ClusterCard({
                     }
                   />
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate">{title}</span>
-                    <span className="block truncate text-xs text-muted-foreground">
-                      {member.window_title ? member.key : member.key_kind} ·{" "}
-                      {formatSeconds(member.seconds)}
+                    <span className="block truncate" title={title}>
+                      {title}
+                    </span>
+                    <span
+                      className="block truncate text-xs text-muted-foreground"
+                      title={url ?? detail}
+                    >
+                      {detail} · {formatSeconds(member.seconds)}
+                      {member.session_count > 1
+                        ? ` · ×${member.session_count}`
+                        : ""}
                     </span>
                   </span>
+                  {url ? (
+                    <button
+                      type="button"
+                      className="shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                      title={`Open ${url}`}
+                      aria-label={`Open ${url}`}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        openSite(url);
+                      }}
+                    >
+                      <ExternalLink className="size-3.5" />
+                    </button>
+                  ) : null}
                 </label>
               );
             })}

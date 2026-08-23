@@ -6,9 +6,10 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use rusqlite_migration::{Migrations, M};
 
-use crate::core::category::{category_key, url_key};
+use crate::core::category::{category_key, url_key, KeyKind};
 use crate::core::model::AppInfo;
 use crate::core::store::{resolve, SessionStore};
+use crate::core::title::{canonical_title, title_quality};
 
 pub type SharedConnection = Arc<Mutex<Connection>>;
 
@@ -403,6 +404,55 @@ fn migrations() -> Migrations<'static> {
             CREATE INDEX idx_ai_run_evaluations_recorded ON ai_run_evaluations(recorded_at);",
         )
         .foreign_key_check(),
+        // Query parameters were removed by migration 12, but URL identity needs a small,
+        // explicit allowlist again so sites such as YouTube can distinguish resources.
+        M::up(
+            "CREATE TABLE IF NOT EXISTS url_query_whitelist (
+                id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain TEXT NOT NULL,
+                param  TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_url_query_whitelist
+                ON url_query_whitelist(domain, param);
+            INSERT OR IGNORE INTO url_query_whitelist (domain, param)
+                VALUES ('youtube.com', 'v');",
+        ),
+        M::up(
+            "CREATE TABLE activities (
+                id               INTEGER PRIMARY KEY,
+                key_kind         TEXT NOT NULL CHECK(key_kind IN ('exe','domain')),
+                key              TEXT NOT NULL,
+                url_key          TEXT,
+                title            TEXT NOT NULL DEFAULT '',
+                display_title    TEXT NOT NULL DEFAULT '',
+                app_name         TEXT NOT NULL DEFAULT '',
+                url              TEXT,
+                first_seen       TEXT NOT NULL,
+                last_seen        TEXT NOT NULL,
+                category_id      INTEGER REFERENCES categories(id),
+                rule_category_id INTEGER REFERENCES categories(id),
+                ml_category_id   INTEGER REFERENCES categories(id),
+                ml_confidence    REAL,
+                ml_model_version INTEGER
+            );
+            CREATE UNIQUE INDEX idx_activities_identity
+                ON activities(key_kind, key, COALESCE(url_key, ''), title);
+            CREATE INDEX idx_activities_key ON activities(key_kind, key);
+            CREATE INDEX idx_activities_category ON activities(category_id);
+            CREATE INDEX idx_activities_ml ON activities(ml_category_id);
+            ALTER TABLE sessions ADD COLUMN activity_id INTEGER REFERENCES activities(id);
+            CREATE INDEX idx_sessions_activity ON sessions(activity_id);
+            ALTER TABLE ai_verdicts ADD COLUMN activity_id INTEGER REFERENCES activities(id) ON DELETE SET NULL;
+            CREATE INDEX idx_ai_verdicts_activity ON ai_verdicts(activity_id);
+            ALTER TABLE activity_cluster_members ADD COLUMN activity_id INTEGER REFERENCES activities(id) ON DELETE CASCADE;
+            CREATE INDEX idx_activity_cluster_members_activity_lookup ON activity_cluster_members(activity_id);
+            CREATE UNIQUE INDEX idx_activity_cluster_members_activity
+                ON activity_cluster_members(cluster_id, activity_id)
+                WHERE activity_id IS NOT NULL;
+            INSERT OR IGNORE INTO settings (key, value)
+                VALUES ('activity_identity_version', '0');",
+        )
+        .foreign_key_check(),
     ])
 }
 
@@ -411,6 +461,7 @@ fn migrations() -> Migrations<'static> {
 /// past on the way somewhere else. Rows that short are deleted instead of closed, so no query
 /// downstream has to filter by duration.
 const MIN_SESSION_SECONDS: i64 = 1;
+const MERGE_GAP_SECONDS: i64 = 2;
 
 pub fn open_connection(path: &Path) -> Result<SharedConnection> {
     if let Some(parent) = path.parent() {
@@ -434,6 +485,21 @@ fn migrate(conn: &mut Connection) -> Result<()> {
     result?;
 
     let tx = conn.transaction()?;
+    let activity_version: Option<String> = tx
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'activity_identity_version'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if activity_version.as_deref() != Some("1") {
+        backfill_activities(&tx)?;
+        tx.execute(
+            "INSERT INTO settings (key, value) VALUES ('activity_identity_version', '1')
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [],
+        )?;
+    }
     let resolver_version: Option<String> = tx
         .query_row(
             "SELECT value FROM settings WHERE key = 'category_resolver_version'",
@@ -450,6 +516,270 @@ fn migrate(conn: &mut Connection) -> Result<()> {
         )?;
     }
     tx.commit()?;
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct BackfillSession {
+    id: i64,
+    activity_id: i64,
+    app_name: String,
+    url: Option<String>,
+    window_title: String,
+    start_time: String,
+    end_time: Option<String>,
+}
+
+fn parse_time(value: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value)
+        .ok()
+        .map(|time| time.with_timezone(&Utc))
+}
+
+fn upsert_activity(
+    tx: &rusqlite::Transaction<'_>,
+    key_kind: KeyKind,
+    key: &str,
+    url_key_value: Option<&str>,
+    title: &str,
+    display_title: &str,
+    app_name: &str,
+    url: Option<&str>,
+    seen: &str,
+) -> Result<i64> {
+    tx.execute(
+        "INSERT INTO activities
+            (key_kind, key, url_key, title, display_title, app_name, url, first_seen, last_seen)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+         ON CONFLICT DO NOTHING",
+        params![
+            key_kind.as_str(),
+            key,
+            url_key_value,
+            title,
+            display_title,
+            app_name,
+            url,
+            seen
+        ],
+    )?;
+    let id: i64 = tx.query_row(
+        "SELECT id FROM activities WHERE key_kind = ?1 AND key = ?2
+         AND COALESCE(url_key, '') = COALESCE(?3, '') AND title = ?4",
+        params![key_kind.as_str(), key, url_key_value, title],
+        |row| row.get(0),
+    )?;
+    tx.execute(
+        "UPDATE activities SET first_seen = MIN(first_seen, ?1), last_seen = MAX(last_seen, ?1),
+                display_title = CASE WHEN length(?2) > length(display_title) THEN ?2 ELSE display_title END,
+                app_name = CASE WHEN app_name = '' THEN ?3 ELSE app_name END,
+                url = COALESCE(url, ?4)
+         WHERE id = ?5",
+        params![seen, display_title, app_name, url, id],
+    )?;
+    Ok(id)
+}
+
+fn backfill_activities(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+    let rows = {
+        let mut stmt = tx.prepare(
+            "SELECT id, app_name, window_title, url, category_key_kind, category_key,
+                    url_key, start_time, end_time
+             FROM sessions ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                let app_name: String = row.get(1)?;
+                let window_title: String = row.get(2)?;
+                let url: Option<String> = row.get(3)?;
+                let key_kind = KeyKind::parse(&row.get::<_, String>(4)?).unwrap_or(KeyKind::Exe);
+                let key: String = row.get(5)?;
+                let url_key_value: Option<String> = row.get(6)?;
+                let title = canonical_title(&window_title, &app_name, url.as_deref());
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    app_name,
+                    window_title,
+                    url,
+                    key_kind,
+                    key,
+                    url_key_value,
+                    title,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+
+    for (id, app_name, window_title, url, key_kind, key, url_key_value, title, start_time, _) in
+        rows
+    {
+        let activity_id = upsert_activity(
+            tx,
+            key_kind,
+            &key,
+            url_key_value.as_deref(),
+            &title,
+            &window_title,
+            &app_name,
+            url.as_deref(),
+            &start_time,
+        )?;
+        tx.execute(
+            "UPDATE sessions SET activity_id = ?1 WHERE id = ?2",
+            params![activity_id, id],
+        )?;
+    }
+
+    // Promote a placeholder only inside an exact resource partition with one real title.
+    let placeholders: Vec<(i64, String, String, Option<String>)> = {
+        let mut stmt =
+            tx.prepare("SELECT id, key_kind, key, url_key FROM activities WHERE title = ''")?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    for (old_id, key_kind, key, url_key_value) in placeholders {
+        let target_id: Option<i64> = tx
+            .query_row(
+                "SELECT MIN(id) FROM activities
+                 WHERE key_kind = ?1 AND key = ?2 AND COALESCE(url_key, '') = COALESCE(?3, '')
+                   AND title <> ''
+                 HAVING COUNT(DISTINCT title) = 1",
+                params![key_kind, key, url_key_value],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(target_id) = target_id else {
+            continue;
+        };
+        let display_title: String = tx.query_row(
+            "SELECT display_title FROM activities WHERE id = ?1",
+            params![target_id],
+            |row| row.get(0),
+        )?;
+        let old_pin: Option<i64> = tx.query_row(
+            "SELECT category_id FROM activities WHERE id = ?1",
+            params![old_id],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            "UPDATE sessions SET activity_id = ?1, window_title = ?2 WHERE activity_id = ?3",
+            params![target_id, display_title, old_id],
+        )?;
+        if let Some(old_pin) = old_pin {
+            tx.execute(
+                "UPDATE activities SET category_id = COALESCE(category_id, ?1) WHERE id = ?2",
+                params![old_pin, target_id],
+            )?;
+        }
+        tx.execute("DELETE FROM activities WHERE id = ?1", params![old_id])?;
+    }
+
+    let activity_ids: Vec<i64> = tx
+        .prepare("SELECT id FROM activities")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    for activity_id in activity_ids {
+        let manual: Option<i64> = tx
+            .query_row(
+                "SELECT category_id FROM sessions WHERE activity_id = ?1 AND category_id IS NOT NULL
+                 GROUP BY category_id ORDER BY COUNT(*) DESC, category_id LIMIT 1",
+                params![activity_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let ml: Option<(i64, Option<f64>, Option<i64>)> = tx
+            .query_row(
+                "SELECT ml_category_id, AVG(ml_confidence), MAX(ml_model_version)
+                 FROM sessions WHERE activity_id = ?1 AND ml_category_id IS NOT NULL
+                 GROUP BY ml_category_id ORDER BY COUNT(*) DESC, ml_category_id LIMIT 1",
+                params![activity_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        tx.execute(
+            "UPDATE activities SET category_id = ?1, ml_category_id = ?2,
+                    ml_confidence = ?3, ml_model_version = ?4 WHERE id = ?5",
+            params![
+                manual,
+                ml.as_ref().map(|v| v.0),
+                ml.as_ref().and_then(|v| v.1),
+                ml.as_ref().and_then(|v| v.2),
+                activity_id
+            ],
+        )?;
+    }
+
+    let sessions = {
+        let mut stmt = tx.prepare(
+            "SELECT id, activity_id, app_name, url, window_title, start_time, end_time
+             FROM sessions WHERE activity_id IS NOT NULL ORDER BY id",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(BackfillSession {
+                    id: row.get(0)?,
+                    activity_id: row.get(1)?,
+                    app_name: row.get(2)?,
+                    url: row.get(3)?,
+                    window_title: row.get(4)?,
+                    start_time: row.get(5)?,
+                    end_time: row.get(6)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let mut previous: Option<BackfillSession> = None;
+    for current in sessions {
+        let merge = previous.as_ref().is_some_and(|prev| {
+            prev.activity_id == current.activity_id
+                && prev.end_time.is_some()
+                && current.end_time.is_some()
+                && parse_time(&current.start_time)
+                    .zip(parse_time(prev.end_time.as_deref().unwrap_or_default()))
+                    .is_some_and(|(start, end)| {
+                        let gap = (start - end).num_seconds();
+                        (0..=MERGE_GAP_SECONDS).contains(&gap)
+                    })
+        });
+        if merge {
+            let prev = previous.as_mut().unwrap();
+            let better = title_quality(
+                &current.window_title,
+                &current.app_name,
+                current.url.as_deref(),
+            ) > title_quality(&prev.window_title, &prev.app_name, prev.url.as_deref());
+            tx.execute(
+                "UPDATE sessions SET end_time = ?1,
+                    window_title = CASE WHEN ?2 THEN ?3 ELSE window_title END WHERE id = ?4",
+                params![current.end_time, better, current.window_title, prev.id],
+            )?;
+            tx.execute(
+                "UPDATE ai_verdicts SET activity_id = ?1 WHERE session_id = ?2",
+                params![prev.activity_id, current.id],
+            )?;
+            tx.execute("DELETE FROM sessions WHERE id = ?1", params![current.id])?;
+            prev.end_time = current.end_time;
+            if better {
+                prev.window_title = current.window_title;
+            }
+        } else {
+            previous = Some(current);
+        }
+    }
+    tx.execute(
+        "UPDATE ai_verdicts SET activity_id = (
+            SELECT activity_id FROM sessions WHERE sessions.id = ai_verdicts.session_id
+         ) WHERE activity_id IS NULL AND session_id IS NOT NULL",
+        [],
+    )?;
     Ok(())
 }
 
@@ -495,15 +825,126 @@ impl SessionStore for SqliteStore {
         let url_key_value = url.and_then(url_key);
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
+        let canonical = canonical_title(window_title, &app.app_name, url);
+        let activity_id = upsert_activity(
+            &tx,
+            key_kind,
+            &key,
+            url_key_value.as_deref(),
+            &canonical,
+            window_title,
+            &app.app_name,
+            url,
+            &at.to_rfc3339(),
+        )?;
+        let previous: Option<(i64, Option<i64>, Option<String>)> = tx
+            .query_row(
+                "SELECT id, activity_id, end_time FROM sessions ORDER BY id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        if let Some((id, Some(previous_activity), Some(end_time))) = previous {
+            let within_gap = parse_time(&end_time)
+                .map(|end| at.signed_duration_since(end).num_milliseconds())
+                .is_some_and(|gap| (0..=MERGE_GAP_SECONDS * 1000).contains(&gap));
+            if previous_activity == activity_id && within_gap {
+                tx.execute(
+                    "UPDATE sessions SET end_time = NULL WHERE id = ?1",
+                    params![id],
+                )?;
+                tx.commit()?;
+                return Ok(id);
+            }
+        }
         tx.execute(
-            "INSERT INTO sessions (app_name, exe_path, window_title, url, category_key, category_key_kind, url_key, start_time)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![app.app_name, app.exe_path, window_title, url, key, key_kind.as_str(), url_key_value, at.to_rfc3339()],
+            "INSERT INTO sessions (app_name, exe_path, window_title, url, category_key, category_key_kind, url_key, start_time, activity_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![app.app_name, app.exe_path, window_title, url, key, key_kind.as_str(), url_key_value, at.to_rfc3339(), activity_id],
         )?;
         let id = tx.last_insert_rowid();
-        resolve::resolve_session(&tx, id)?;
+        resolve::resolve_activity(&tx, activity_id)?;
         tx.commit()?;
         Ok(id)
+    }
+
+    fn refine_title(&mut self, id: i64, window_title: &str) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let current: Option<(String, String, String, Option<String>, i64)> = tx
+            .query_row(
+                "SELECT s.window_title, s.app_name, s.exe_path, s.url, s.activity_id
+                 FROM sessions s WHERE s.id = ?1",
+                params![id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((current_title, app_name, exe_path, url, old_activity_id)) = current else {
+            tx.commit()?;
+            return Ok(());
+        };
+        if title_quality(window_title, &app_name, url.as_deref())
+            <= title_quality(&current_title, &app_name, url.as_deref())
+        {
+            tx.commit()?;
+            return Ok(());
+        }
+        let (key_kind, key) = category_key(&exe_path, url.as_deref());
+        let canonical = canonical_title(window_title, &app_name, url.as_deref());
+        let target_id = upsert_activity(
+            &tx,
+            key_kind,
+            &key,
+            url.as_deref().and_then(url_key).as_deref(),
+            &canonical,
+            window_title,
+            &app_name,
+            url.as_deref(),
+            &Utc::now().to_rfc3339(),
+        )?;
+        if target_id != old_activity_id {
+            let old_pin: Option<i64> = tx.query_row(
+                "SELECT category_id FROM activities WHERE id = ?1",
+                params![old_activity_id],
+                |row| row.get(0),
+            )?;
+            let target_pin: Option<i64> = tx.query_row(
+                "SELECT category_id FROM activities WHERE id = ?1",
+                params![target_id],
+                |row| row.get(0),
+            )?;
+            if old_pin.is_some() && target_pin.is_some() && old_pin != target_pin {
+                tx.commit()?;
+                return Ok(());
+            }
+            if let Some(old_pin) = old_pin {
+                tx.execute(
+                    "UPDATE activities SET category_id = COALESCE(category_id, ?1) WHERE id = ?2",
+                    params![old_pin, target_id],
+                )?;
+            }
+            tx.execute(
+                "UPDATE sessions SET window_title = ?1, activity_id = ?2 WHERE id = ?3",
+                params![window_title, target_id, id],
+            )?;
+            prune_orphan_activity(&tx, old_activity_id)?;
+            resolve::resolve_activity(&tx, target_id)?;
+        } else {
+            tx.execute(
+                "UPDATE sessions SET window_title = ?1 WHERE id = ?2",
+                params![window_title, id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// Closes the row and derives its category in Rust in one transaction, unless the block
@@ -513,26 +954,51 @@ impl SessionStore for SqliteStore {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         if is_too_short(&tx, id, at)? {
+            let old_activity: Option<i64> = tx
+                .query_row(
+                    "SELECT activity_id FROM sessions WHERE id = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .optional()?;
             tx.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+            if let Some(old_activity) = old_activity {
+                prune_orphan_activity(&tx, old_activity)?;
+            }
             tx.commit()?;
             return Ok(());
         }
-        let category_id = resolve::resolve_session_category(&tx, id)?;
         tx.execute(
-            "UPDATE sessions SET end_time = ?1, rule_category_id = ?2 WHERE id = ?3",
-            params![end_time, category_id, id],
+            "UPDATE sessions SET end_time = ?1 WHERE id = ?2",
+            params![end_time, id],
         )?;
         tx.commit()?;
         Ok(())
     }
 
     fn close_dangling_sessions(&mut self) -> Result<()> {
-        self.conn
-            .lock()
-            .unwrap()
-            .execute("DELETE FROM sessions WHERE end_time IS NULL", [])?;
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let ids: Vec<i64> = tx
+            .prepare("SELECT DISTINCT activity_id FROM sessions WHERE end_time IS NULL AND activity_id IS NOT NULL")?
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        tx.execute("DELETE FROM sessions WHERE end_time IS NULL", [])?;
+        for id in ids {
+            prune_orphan_activity(&tx, id)?;
+        }
+        tx.commit()?;
         Ok(())
     }
+}
+
+fn prune_orphan_activity(tx: &rusqlite::Transaction<'_>, id: i64) -> Result<()> {
+    tx.execute(
+        "DELETE FROM activities WHERE id = ?1 AND category_id IS NULL
+         AND NOT EXISTS (SELECT 1 FROM sessions WHERE activity_id = ?1)",
+        params![id],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1247,5 +1713,220 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn identical_activity_resumes_inside_the_merge_gap() {
+        let path = temp_db_path();
+        let conn = open_connection(&path).unwrap();
+        let mut store = SqliteStore::new(conn.clone());
+        let app = AppInfo {
+            process_id: 1,
+            exe_path: "chrome.exe".into(),
+            app_name: "Google Chrome".into(),
+        };
+        let first = store
+            .start_session(
+                &app,
+                "Example",
+                Some("https://example.com/page"),
+                parse_time("2025-01-01T00:00:00Z").unwrap(),
+            )
+            .unwrap();
+        store
+            .end_session(first, parse_time("2025-01-01T00:00:10Z").unwrap())
+            .unwrap();
+        let resumed = store
+            .start_session(
+                &app,
+                "Example",
+                Some("https://example.com/page"),
+                parse_time("2025-01-01T00:00:11Z").unwrap(),
+            )
+            .unwrap();
+        assert_eq!(resumed, first);
+        let count: i64 = conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        store
+            .end_session(resumed, parse_time("2025-01-01T00:00:20Z").unwrap())
+            .unwrap();
+        let separate = store
+            .start_session(
+                &app,
+                "Example",
+                Some("https://example.com/page"),
+                parse_time("2025-01-01T00:00:50Z").unwrap(),
+            )
+            .unwrap();
+        assert_ne!(separate, first);
+        let count: i64 = conn
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn refinement_repoints_a_placeholder_and_prunes_the_old_activity() {
+        let path = temp_db_path();
+        let conn = open_connection(&path).unwrap();
+        let mut store = SqliteStore::new(conn.clone());
+        let app = AppInfo {
+            process_id: 1,
+            exe_path: "chrome.exe".into(),
+            app_name: "Google Chrome".into(),
+        };
+        let id = store
+            .start_session(
+                &app,
+                "YouTube",
+                Some("https://www.youtube.com/shorts/abc"),
+                parse_time("2025-01-01T00:00:00Z").unwrap(),
+            )
+            .unwrap();
+        let old_activity: i64 = conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT activity_id FROM sessions WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        store.refine_title(id, "A real short title").unwrap();
+        let row: (String, i64) = conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT window_title, activity_id FROM sessions WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "A real short title");
+        assert_ne!(row.1, old_activity);
+        assert_eq!(
+            conn.lock()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM activities", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn migration_keeps_placeholder_activities_without_a_unique_real_title() {
+        let path = temp_db_path();
+        let mut conn = Connection::open(&path).unwrap();
+        migrations().to_version(&mut conn, 24).unwrap();
+        conn.execute_batch(
+            "INSERT INTO sessions
+                (app_name, exe_path, window_title, url, category_key, category_key_kind, url_key,
+                 start_time, end_time)
+             VALUES
+                ('Google Chrome', 'chrome.exe', 'YouTube', 'https://www.youtube.com/shorts/only-placeholder', 'youtube.com', 'domain', 'youtube.com/shorts/only-placeholder', '2025-01-01T00:00:00Z', '2025-01-01T00:00:10Z'),
+                ('Google Chrome', 'chrome.exe', 'YouTube', 'https://www.youtube.com/shorts/ambiguous', 'youtube.com', 'domain', 'youtube.com/shorts/ambiguous', '2025-01-01T01:00:00Z', '2025-01-01T01:00:10Z'),
+                ('Google Chrome', 'chrome.exe', 'First real title', 'https://www.youtube.com/shorts/ambiguous', 'youtube.com', 'domain', 'youtube.com/shorts/ambiguous', '2025-01-01T02:00:00Z', '2025-01-01T02:00:10Z'),
+                ('Google Chrome', 'chrome.exe', 'Second real title', 'https://www.youtube.com/shorts/ambiguous', 'youtube.com', 'domain', 'youtube.com/shorts/ambiguous', '2025-01-01T03:00:00Z', '2025-01-01T03:00:10Z');",
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+
+        let activity_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM activities", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(activity_count, 4);
+        let unlinked_sessions: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE activity_id IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(unlinked_sessions, 0);
+        let placeholder_only: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM activities
+                 WHERE url_key = 'youtube.com/shorts/only-placeholder' AND title = ''",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(placeholder_only, 1);
+        let ambiguous_placeholders: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM activities
+                 WHERE url_key = 'youtube.com/shorts/ambiguous' AND title = ''",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(ambiguous_placeholders, 1);
+        let activity_version: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'activity_identity_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(activity_version, "1");
+        let foreign_key_violations: Vec<String> = conn
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(foreign_key_violations.is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn migration_compacts_the_three_title_variants_into_one_pinned_activity() {
+        let path = temp_db_path();
+        let mut conn = Connection::open(&path).unwrap();
+        migrations().to_version(&mut conn, 24).unwrap();
+        conn.execute(
+            "INSERT INTO categories (name, color) VALUES ('Pinned', '#111111')",
+            [],
+        )
+        .unwrap();
+        let category_id = conn.last_insert_rowid();
+        conn.execute_batch(&format!(
+            "INSERT INTO sessions
+                (app_name, exe_path, window_title, url, category_key, category_key_kind, url_key,
+                 start_time, end_time, category_id)
+             VALUES
+                ('Google Chrome', 'chrome.exe', 'YouTube', 'https://www.youtube.com/shorts/abc', 'youtube.com', 'domain', 'youtube.com/shorts/abc', '2025-01-01T00:00:00Z', '2025-01-01T00:00:10Z', {category_id}),
+                ('Google Chrome', 'chrome.exe', 'A real title', 'https://www.youtube.com/shorts/abc', 'youtube.com', 'domain', 'youtube.com/shorts/abc', '2025-01-01T01:00:00Z', '2025-01-01T01:00:10Z', NULL),
+                ('Google Chrome', 'chrome.exe', 'youtube.com/shorts/abc', 'https://www.youtube.com/shorts/abc', 'youtube.com', 'domain', 'youtube.com/shorts/abc', '2025-01-01T02:00:00Z', '2025-01-01T02:00:10Z', NULL);"
+        )).unwrap();
+        migrate(&mut conn).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM activities", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        let pinned: Option<i64> = conn
+            .query_row("SELECT category_id FROM activities", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(pinned, Some(category_id));
+        let linked: i64 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT activity_id) FROM sessions",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(linked, 1);
+        let _ = std::fs::remove_file(path);
     }
 }

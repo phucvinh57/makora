@@ -30,6 +30,7 @@ pub struct ActivityCluster {
 #[derive(Debug, Clone, Serialize)]
 pub struct ActivityClusterMember {
     pub id: i64,
+    pub activity_id: Option<i64>,
     pub key_kind: String,
     pub key: String,
     pub url_key: Option<String>,
@@ -95,7 +96,7 @@ fn list_activity_clusters_from_conn(conn: &Connection) -> Result<Vec<ActivityClu
         .map(|(index, cluster)| (cluster.id, index))
         .collect::<HashMap<_, _>>();
     let mut members = conn.prepare(
-        "SELECT id, cluster_id, key_kind, key, url_key, window_title, seconds, session_count
+        "SELECT id, cluster_id, activity_id, key_kind, key, url_key, window_title, seconds, session_count
          FROM activity_cluster_members
          ORDER BY cluster_id, seconds DESC, id",
     )?;
@@ -105,12 +106,13 @@ fn list_activity_clusters_from_conn(conn: &Connection) -> Result<Vec<ActivityClu
             row.get::<_, i64>(1)?,
             ActivityClusterMember {
                 id: row.get(0)?,
-                key_kind: row.get(2)?,
-                key: row.get(3)?,
-                url_key: row.get(4)?,
-                window_title: row.get(5)?,
-                seconds: row.get(6)?,
-                session_count: row.get(7)?,
+                activity_id: row.get(2)?,
+                key_kind: row.get(3)?,
+                key: row.get(4)?,
+                url_key: row.get(5)?,
+                window_title: row.get(6)?,
+                seconds: row.get(7)?,
+                session_count: row.get(8)?,
             },
         ))
     })? {
@@ -175,7 +177,7 @@ pub fn assign_activity_cluster(
         .collect::<Vec<_>>()
         .join(", ");
     let sql = format!(
-        "SELECT id, key_kind, key, url_key, window_title, seconds
+        "SELECT id, activity_id, key_kind, key, url_key, window_title, seconds
          FROM activity_cluster_members
          WHERE cluster_id = ?1 AND id IN ({placeholders})
          ORDER BY id"
@@ -192,11 +194,12 @@ pub fn assign_activity_cluster(
         .query_map(rusqlite::params_from_iter(values), |row| {
             Ok(ActivityClusterMember {
                 id: row.get(0)?,
-                key_kind: row.get(1)?,
-                key: row.get(2)?,
-                url_key: row.get(3)?,
-                window_title: row.get(4)?,
-                seconds: row.get(5)?,
+                activity_id: row.get(1)?,
+                key_kind: row.get(2)?,
+                key: row.get(3)?,
+                url_key: row.get(4)?,
+                window_title: row.get(5)?,
+                seconds: row.get(6)?,
                 session_count: 0,
             })
         })?
@@ -227,6 +230,7 @@ pub fn assign_activity_cluster(
                 url_key: None,
                 window_title: Some(label),
                 session_id: None,
+                activity_id: None,
                 predicted_category_id: Some(predicted_category_id),
                 predicted_category_name: evaluation::category_name(
                     &tx,
@@ -262,15 +266,15 @@ pub fn assign_activity_cluster(
         }
         "title" => {
             for member in &members {
-                let changed = tx.execute(
-                    "UPDATE sessions
+                let mut changed = tx.execute(
+                    "UPDATE activities
                      SET category_id = ?1,
                          ml_category_id = NULL,
                          ml_confidence = NULL,
                          ml_model_version = NULL
-                     WHERE category_key_kind = ?2 AND category_key = ?3
-                       AND url_key IS ?4
-                       AND window_title IS ?5",
+                     WHERE key_kind = ?2 AND key = ?3
+                       AND COALESCE(url_key, '') = COALESCE(?4, '')
+                       AND (title = ?5 OR display_title = ?5)",
                     params![
                         category_id,
                         member.key_kind,
@@ -279,6 +283,22 @@ pub fn assign_activity_cluster(
                         member.window_title,
                     ],
                 )?;
+                if changed == 0 {
+                    changed = tx.execute(
+                        "UPDATE sessions SET category_id = ?1, ml_category_id = NULL,
+                                ml_confidence = NULL, ml_model_version = NULL
+                         WHERE category_key_kind = ?2 AND category_key = ?3
+                           AND COALESCE(url_key, '') = COALESCE(?4, '')
+                           AND window_title = ?5",
+                        params![
+                            category_id,
+                            member.key_kind,
+                            member.key,
+                            member.url_key,
+                            member.window_title
+                        ],
+                    )?;
+                }
                 outcome.sessions_pinned += changed as i64;
             }
         }

@@ -14,7 +14,8 @@ use tracing::{error, info};
 
 use crate::core::{
     open_connection, AiCategorizationService, CategoryStore, FocusWatcher, HistoryReader,
-    IgnoreStore, PlatformFocusWatcher, SessionTracker, SqliteStore, WatchEvent, WorkSessionStore,
+    IgnoreStore, PlatformFocusWatcher, SessionTracker, SqliteStore, UrlQueryStore, WatchEvent,
+    WorkSessionStore,
 };
 
 type SharedTracker = Arc<Mutex<SessionTracker<SqliteStore>>>;
@@ -66,6 +67,9 @@ pub fn run() {
             commands::list_ignore_rules,
             commands::create_ignore_rule,
             commands::delete_ignore_rule,
+            commands::list_url_query_params,
+            commands::create_url_query_param,
+            commands::delete_url_query_param,
             commands::create_work_session,
             commands::list_work_sessions,
             commands::search_work_sessions,
@@ -86,8 +90,11 @@ pub fn run() {
             let db_path = data_dir.join("makora.sqlite");
             info!(path = %db_path.display(), "writing sessions");
 
-            let conn = open_connection(&db_path).context("opening database")?;
+            let conn = open_connection(&db_path).map_err(|err| {
+                anyhow::anyhow!("opening database at {}: {err:#}", db_path.display())
+            })?;
             let ignore = Arc::new(IgnoreStore::new(conn.clone()));
+            let url_params = Arc::new(UrlQueryStore::new(conn.clone()));
             let event_app = app.handle().clone();
             let ai = AiCategorizationService::new_with_completion(
                 conn.clone(),
@@ -108,6 +115,7 @@ pub fn run() {
             app.manage(ai);
             app.manage(tracker.clone());
             app.manage(ignore);
+            app.manage(url_params.clone());
             let (tx, rx) = mpsc::channel::<WatchEvent>();
 
             #[cfg(target_os = "linux")]
@@ -137,7 +145,7 @@ pub fn run() {
                 })
                 .context("spawning activity-tracker thread")?;
 
-            ingest::spawn(tracker).context("starting tab-ingest server")?;
+            ingest::spawn(tracker, url_params).context("starting tab-ingest server")?;
             info!(port = ingest::PORT, "listening for tab events");
 
             tray::build(app.handle())?;

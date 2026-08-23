@@ -4,6 +4,7 @@ import { CategorizationDataSection } from "./-components/CategorizationDataSecti
 import { FeatureFlagsSection } from "./-components/FeatureFlagsSection";
 import { GeneralSection } from "./-components/GeneralSection";
 import { IgnoreListSection } from "./-components/IgnoreListSection";
+import { UrlQueryWhitelistSection } from "./-components/UrlQueryWhitelistSection";
 
 export const Route = createFileRoute("/settings")({
   component: SettingsPage,
@@ -23,6 +24,7 @@ function SettingsPage() {
       <AiCategorizationSettingsSection />
       <CategorizationDataSection />
       <IgnoreListSection />
+      <UrlQueryWhitelistSection />
     </div>
   );
 }

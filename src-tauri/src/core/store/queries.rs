@@ -8,6 +8,8 @@ use super::sqlite::SharedConnection;
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionRow {
     pub id: i64,
+    pub activity_id: Option<i64>,
+    pub activity_session_count: i64,
     pub app_name: String,
     pub exe_path: String,
     pub window_title: String,
@@ -72,8 +74,10 @@ impl HistoryReader {
         let sql = format!(
             "SELECT COUNT(*)
              FROM sessions s
+             LEFT JOIN activities a ON a.id = s.activity_id
              LEFT JOIN categories cat
-                    ON cat.id = COALESCE(s.category_id, s.rule_category_id, s.ml_category_id)
+                    ON cat.id = COALESCE(a.category_id, s.category_id, a.rule_category_id,
+                                         s.rule_category_id, a.ml_category_id, s.ml_category_id)
              WHERE {where_sql}"
         );
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
@@ -91,23 +95,39 @@ impl HistoryReader {
         let category_ids = expanded_category_ids(&conn, filter)?;
         let (where_sql, mut binds) = filter.to_sql(category_ids.as_deref());
         let sql = format!(
-            "SELECT s.id, s.app_name, s.exe_path, s.window_title, s.url, s.start_time, s.end_time,
-                    cat.id, cat.name, cat.color, (s.category_id IS NOT NULL),
+            "SELECT s.id, s.activity_id, COALESCE(occurrence_counts.n, 0), s.app_name, s.exe_path,
+                    COALESCE(NULLIF(a.display_title, ''), s.window_title), s.url, s.start_time, s.end_time,
+                    cat.id, cat.name, cat.color, (a.category_id IS NOT NULL OR s.category_id IS NOT NULL),
                     CASE
-                      WHEN s.category_id IS NOT NULL THEN 'manual'
-                      WHEN s.rule_category_id IS NOT NULL THEN 'rule'
-                      WHEN s.ml_category_id IS NOT NULL THEN 'ai'
+                      WHEN a.category_id IS NOT NULL OR s.category_id IS NOT NULL THEN 'manual'
+                      WHEN a.rule_category_id IS NOT NULL OR s.rule_category_id IS NOT NULL THEN 'rule'
+                      WHEN a.ml_category_id IS NOT NULL OR s.ml_category_id IS NOT NULL THEN 'ai'
                       ELSE NULL
                     END,
-                    CASE WHEN s.category_id IS NULL AND s.rule_category_id IS NULL
-                         THEN s.ml_confidence ELSE NULL END
+                    CASE WHEN a.category_id IS NULL AND a.rule_category_id IS NULL
+                              AND s.category_id IS NULL AND s.rule_category_id IS NULL
+                         THEN COALESCE(a.ml_confidence, s.ml_confidence) ELSE NULL END
              FROM sessions s
+             LEFT JOIN activities a ON a.id = s.activity_id
+             LEFT JOIN (
+                 SELECT activity_id, COUNT(*) AS n FROM sessions
+                 WHERE (? IS NULL OR start_time < ?)
+                   AND (? IS NULL OR end_time IS NULL OR end_time > ?)
+                 GROUP BY activity_id
+             ) occurrence_counts ON occurrence_counts.activity_id = s.activity_id
              LEFT JOIN categories cat
-                    ON cat.id = COALESCE(s.category_id, s.rule_category_id, s.ml_category_id)
+                    ON cat.id = COALESCE(a.category_id, s.category_id, a.rule_category_id,
+                                         s.rule_category_id, a.ml_category_id, s.ml_category_id)
              WHERE {where_sql}
              ORDER BY s.start_time DESC
              LIMIT ? OFFSET ?"
         );
+        let range_start = filter.start.clone();
+        let range_end = filter.end.clone();
+        binds.insert(0, Box::new(range_end.clone()));
+        binds.insert(1, Box::new(range_end));
+        binds.insert(2, Box::new(range_start.clone()));
+        binds.insert(3, Box::new(range_start));
         binds.push(Box::new(limit));
         binds.push(Box::new(offset));
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
@@ -118,18 +138,20 @@ impl HistoryReader {
             .query_map(param_refs.as_slice(), |row| {
                 Ok(SessionRow {
                     id: row.get(0)?,
-                    app_name: row.get(1)?,
-                    exe_path: row.get(2)?,
-                    window_title: row.get(3)?,
-                    url: row.get(4)?,
-                    start_time: row.get(5)?,
-                    end_time: row.get(6)?,
-                    category_id: row.get(7)?,
-                    category_name: row.get(8)?,
-                    category_color: row.get(9)?,
-                    category_is_pinned: row.get(10)?,
-                    category_source: row.get(11)?,
-                    category_confidence: row.get(12)?,
+                    activity_id: row.get(1)?,
+                    activity_session_count: row.get(2)?,
+                    app_name: row.get(3)?,
+                    exe_path: row.get(4)?,
+                    window_title: row.get(5)?,
+                    url: row.get(6)?,
+                    start_time: row.get(7)?,
+                    end_time: row.get(8)?,
+                    category_id: row.get(9)?,
+                    category_name: row.get(10)?,
+                    category_color: row.get(11)?,
+                    category_is_pinned: row.get(12)?,
+                    category_source: row.get(13)?,
+                    category_confidence: row.get(14)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -150,8 +172,10 @@ impl HistoryReader {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
 
-        let category_join = "             LEFT JOIN categories cat
-                    ON cat.id = COALESCE(s.category_id, s.rule_category_id, s.ml_category_id)";
+        let category_join = "             LEFT JOIN activities a ON a.id = s.activity_id
+             LEFT JOIN categories cat
+                    ON cat.id = COALESCE(a.category_id, s.category_id, a.rule_category_id,
+                                         s.rule_category_id, a.ml_category_id, s.ml_category_id)";
 
         let mut stmt = conn.prepare(&format!(
             "SELECT cat.id, cat.name, cat.color, COALESCE(SUM({DURATION}), 0.0), COUNT(*)
@@ -316,11 +340,13 @@ impl SessionFilter {
         match self.source {
             CategorySourceFilter::All => {}
             CategorySourceFilter::Manual => {
-                clauses.push("s.category_id IS NOT NULL".to_string());
+                clauses.push("COALESCE(a.category_id, s.category_id) IS NOT NULL".to_string());
             }
             CategorySourceFilter::Ai => {
                 clauses.push(
-                    "s.category_id IS NULL AND s.rule_category_id IS NULL AND s.ml_category_id IS NOT NULL"
+                    "COALESCE(a.category_id, s.category_id) IS NULL
+                     AND COALESCE(a.rule_category_id, s.rule_category_id) IS NULL
+                     AND COALESCE(a.ml_category_id, s.ml_category_id) IS NOT NULL"
                         .to_string(),
                 );
             }

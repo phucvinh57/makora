@@ -69,19 +69,6 @@ pub struct CategoryRule {
     pub inactive: bool,
 }
 
-type SessionPinPrior = (
-    Option<i64>,
-    Option<i64>,
-    Option<i64>,
-    Option<f32>,
-    Option<i64>,
-    String,
-    String,
-    Option<String>,
-    String,
-    f64,
-);
-
 #[derive(Debug, Clone, Serialize)]
 pub struct MultiPurposeKey {
     pub key_kind: String,
@@ -390,9 +377,15 @@ impl CategoryStore {
             params![key_kind.as_str(), key, enabled as i64],
         )?;
         tx.execute(
-            "UPDATE sessions
+            "UPDATE activities
              SET ml_category_id = NULL, ml_confidence = NULL, ml_model_version = NULL
-             WHERE category_key_kind = ?1 AND category_key = ?2",
+             WHERE key_kind = ?1 AND key = ?2",
+            params![key_kind.as_str(), key],
+        )?;
+        tx.execute(
+            "UPDATE sessions SET ml_category_id = NULL, ml_confidence = NULL, ml_model_version = NULL
+             WHERE activity_id IN (SELECT id FROM activities WHERE key_kind = ?1 AND key = ?2)
+                OR (activity_id IS NULL AND category_key_kind = ?1 AND category_key = ?2)",
             params![key_kind.as_str(), key],
         )?;
         if enabled {
@@ -471,6 +464,7 @@ impl CategoryStore {
                     url_key: (key_kind == "url").then(|| key.clone()),
                     window_title: None,
                     session_id: None,
+                    activity_id: None,
                     predicted_category_id: Some(suggested_category),
                     predicted_category_name: Some(predicted_name),
                     chosen_category_id: Some(category_id),
@@ -549,6 +543,7 @@ impl CategoryStore {
                     url_key: (key_kind == "url").then(|| key.clone()),
                     window_title: None,
                     session_id: None,
+                    activity_id: None,
                     predicted_category_id: Some(category_id),
                     predicted_category_name: Some(predicted_name),
                     chosen_category_id: None,
@@ -640,17 +635,24 @@ impl CategoryStore {
                 params![category_id],
             )?;
             tx.execute(
-                "UPDATE sessions SET category_id = NULL WHERE category_id = ?1",
+                "UPDATE activities SET category_id = NULL WHERE category_id = ?1",
                 params![category_id],
             )?;
             // Resolved labels reference categories just as hard as pins do — the delete
             // fails outright on the foreign key without this.
             tx.execute(
-                "UPDATE sessions SET rule_category_id = NULL WHERE rule_category_id = ?1",
+                "UPDATE activities SET rule_category_id = NULL WHERE rule_category_id = ?1",
                 params![category_id],
             )?;
             tx.execute(
-                "UPDATE sessions SET ml_category_id = NULL, ml_confidence = NULL, ml_model_version = NULL WHERE ml_category_id = ?1",
+                "UPDATE activities SET ml_category_id = NULL, ml_confidence = NULL, ml_model_version = NULL WHERE ml_category_id = ?1",
+                params![category_id],
+            )?;
+            tx.execute(
+                "UPDATE sessions
+                 SET category_id = NULL, rule_category_id = NULL,
+                     ml_category_id = NULL, ml_confidence = NULL, ml_model_version = NULL
+                 WHERE category_id = ?1 OR rule_category_id = ?1 OR ml_category_id = ?1",
                 params![category_id],
             )?;
             tx.execute(
@@ -755,8 +757,19 @@ impl CategoryStore {
         }
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
+        let mut activities = std::collections::HashSet::new();
         for session_id in session_ids {
-            pin_session(&tx, *session_id, category_id, true)?;
+            let activity_id: Option<i64> = tx
+                .query_row(
+                    "SELECT activity_id FROM sessions WHERE id = ?1",
+                    params![session_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .flatten();
+            if activity_id.is_none_or(|id| activities.insert(id)) {
+                pin_session(&tx, *session_id, category_id, true)?;
+            }
         }
         bump_classifier_input_revision(&tx)?;
         tx.commit()?;
@@ -770,12 +783,23 @@ impl CategoryStore {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let manual_categories_preserved: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM sessions WHERE category_id IS NOT NULL",
+            "SELECT COUNT(*) FROM sessions s LEFT JOIN activities a ON a.id = s.activity_id
+             WHERE COALESCE(a.category_id, s.category_id) IS NOT NULL",
             [],
             |row| row.get(0),
         )?;
-        let ai_predictions_cleared = tx.execute(
-            "UPDATE sessions SET ml_category_id = NULL, ml_confidence = NULL, ml_model_version = NULL WHERE ml_category_id IS NOT NULL",
+        let ai_predictions_cleared: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM sessions s LEFT JOIN activities a ON a.id = s.activity_id
+             WHERE COALESCE(a.ml_category_id, s.ml_category_id) IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            "UPDATE activities SET ml_category_id = NULL, ml_confidence = NULL, ml_model_version = NULL WHERE ml_category_id IS NOT NULL",
+            [],
+        )?;
+        tx.execute(
+            "UPDATE sessions SET ml_category_id = NULL, ml_confidence = NULL, ml_model_version = NULL",
             [],
         )?;
         bump_classifier_input_revision(&tx)?;
@@ -783,7 +807,7 @@ impl CategoryStore {
         tx.commit()?;
         Ok(RecategorizeOutcome {
             manual_categories_preserved,
-            ai_predictions_cleared: ai_predictions_cleared as i64,
+            ai_predictions_cleared,
             rows_resolved: rows_resolved as i64,
         })
     }
@@ -798,22 +822,27 @@ pub(crate) fn reset_categorization_data(
     let tx = conn.transaction()?;
 
     let sessions_cleared: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM sessions
-         WHERE category_id IS NOT NULL
-            OR rule_category_id IS NOT NULL
-            OR ml_category_id IS NOT NULL
-            OR ml_confidence IS NOT NULL
-            OR ml_model_version IS NOT NULL",
+        "SELECT COUNT(*) FROM sessions s LEFT JOIN activities a ON a.id = s.activity_id
+         WHERE COALESCE(a.category_id, s.category_id) IS NOT NULL
+            OR COALESCE(a.rule_category_id, s.rule_category_id) IS NOT NULL
+            OR COALESCE(a.ml_category_id, s.ml_category_id) IS NOT NULL
+            OR COALESCE(a.ml_confidence, s.ml_confidence) IS NOT NULL
+            OR COALESCE(a.ml_model_version, s.ml_model_version) IS NOT NULL",
         [],
         |row| row.get(0),
     )?;
     tx.execute(
-        "UPDATE sessions
+        "UPDATE activities
          SET category_id = NULL,
              rule_category_id = NULL,
              ml_category_id = NULL,
              ml_confidence = NULL,
              ml_model_version = NULL",
+        [],
+    )?;
+    tx.execute(
+        "UPDATE sessions SET category_id = NULL, rule_category_id = NULL,
+                ml_category_id = NULL, ml_confidence = NULL, ml_model_version = NULL",
         [],
     )?;
 
@@ -872,13 +901,28 @@ fn pin_session(
     category_id: Option<i64>,
     bulk: bool,
 ) -> Result<()> {
-    let prior: Option<SessionPinPrior> = tx
+    let prior: Option<(
+        i64,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+        Option<f32>,
+        Option<i64>,
+        String,
+        String,
+        Option<String>,
+        String,
+        f64,
+    )> = tx
         .query_row(
-            "SELECT category_id, rule_category_id, ml_category_id, ml_confidence,
-                    ml_model_version, category_key_kind, category_key, url_key,
-                    window_title,
-                    COALESCE((julianday(end_time) - julianday(start_time)) * 86400.0, 0.0)
-             FROM sessions WHERE id = ?1",
+            "SELECT s.activity_id, COALESCE(a.category_id, s.category_id),
+                    COALESCE(a.rule_category_id, s.rule_category_id),
+                    COALESCE(a.ml_category_id, s.ml_category_id),
+                    COALESCE(a.ml_model_version, s.ml_model_version),
+                    COALESCE(a.ml_confidence, s.ml_confidence), a.key_kind, a.key, a.url_key,
+                    COALESCE(NULLIF(a.display_title, ''), s.window_title),
+                    COALESCE((julianday(s.end_time) - julianday(s.start_time)) * 86400.0, 0.0)
+             FROM sessions s JOIN activities a ON a.id = s.activity_id WHERE s.id = ?1",
             params![session_id],
             |row| {
                 Ok((
@@ -886,17 +930,19 @@ fn pin_session(
                     row.get(1)?,
                     row.get(2)?,
                     row.get(3)?,
-                    row.get(4)?,
                     row.get(5)?,
+                    row.get(4)?,
                     row.get(6)?,
                     row.get(7)?,
                     row.get(8)?,
                     row.get(9)?,
+                    row.get(10)?,
                 ))
             },
         )
         .optional()?;
     let Some((
+        activity_id,
         prior_category_id,
         rule_category_id,
         predicted_category_id,
@@ -916,13 +962,18 @@ fn pin_session(
     // not verdicts about the model. Rule labels also have no AI coverage to judge.
     if category_id.is_none() || prior_category_id.is_some() || rule_category_id.is_some() {
         tx.execute(
-            "UPDATE sessions
+            "UPDATE activities
              SET category_id = ?1,
                  ml_category_id = NULL,
                  ml_confidence = NULL,
                  ml_model_version = NULL
              WHERE id = ?2",
-            params![category_id, session_id],
+            params![category_id, activity_id],
+        )?;
+        tx.execute(
+            "UPDATE sessions SET category_id = ?1, ml_category_id = NULL,
+                    ml_confidence = NULL, ml_model_version = NULL WHERE activity_id = ?2",
+            params![category_id, activity_id],
         )?;
         return Ok(());
     }
@@ -943,6 +994,7 @@ fn pin_session(
             url_key,
             window_title: Some(window_title),
             session_id: Some(session_id),
+            activity_id: Some(activity_id),
             predicted_category_id,
             predicted_category_name: evaluation::category_name(tx, predicted_category_id)?,
             chosen_category_id: category_id,
@@ -953,13 +1005,18 @@ fn pin_session(
         },
     )?;
     tx.execute(
-        "UPDATE sessions
+        "UPDATE activities
          SET category_id = ?1,
              ml_category_id = NULL,
              ml_confidence = NULL,
              ml_model_version = NULL
          WHERE id = ?2",
-        params![category_id, session_id],
+        params![category_id, activity_id],
+    )?;
+    tx.execute(
+        "UPDATE sessions SET category_id = ?1, ml_category_id = NULL,
+                ml_confidence = NULL, ml_model_version = NULL WHERE activity_id = ?2",
+        params![category_id, activity_id],
     )?;
     Ok(())
 }
@@ -1476,12 +1533,16 @@ mod tests {
             .unwrap();
 
         let outcome = store.recategorize_all().unwrap();
-        assert_eq!(outcome.manual_categories_preserved, 2);
-        assert_eq!(outcome.rows_resolved, 3);
+        assert_eq!(outcome.manual_categories_preserved, 3);
+        assert_eq!(outcome.rows_resolved, 2);
 
         let rows = reader.list_sessions(10, 0, &filter).unwrap();
         let category_of = |id: i64| rows.iter().find(|r| r.id == id).unwrap().category_id;
-        assert_eq!(category_of(by_rule), Some(ruled.id));
+        assert_eq!(
+            category_of(by_rule),
+            Some(manual.id),
+            "an activity pin applies to every occurrence of that activity"
+        );
         assert_eq!(category_of(by_pin), Some(manual.id));
         assert_eq!(
             category_of(pinned_over_rule),
@@ -1510,7 +1571,7 @@ mod tests {
                 .recategorize_all()
                 .unwrap()
                 .manual_categories_preserved,
-            2
+            3
         );
 
         let _ = std::fs::remove_file(&path);
@@ -1542,11 +1603,12 @@ mod tests {
 
         store.set_row_category(b, Some(pin_cat.id)).unwrap();
         let rows = reader.list_sessions(10, 0, &filter).unwrap();
-        assert_eq!(category_of(&rows, a), Some(rule_cat.id));
+        assert_eq!(category_of(&rows, a), Some(pin_cat.id));
         assert_eq!(category_of(&rows, b), Some(pin_cat.id));
 
         store.set_row_category(b, None).unwrap();
         let rows = reader.list_sessions(10, 0, &filter).unwrap();
+        assert_eq!(category_of(&rows, a), Some(rule_cat.id));
         assert_eq!(category_of(&rows, b), Some(rule_cat.id));
 
         let _ = std::fs::remove_file(&path);

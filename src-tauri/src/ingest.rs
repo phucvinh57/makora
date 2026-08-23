@@ -6,8 +6,8 @@ use chrono::Utc;
 use serde::Deserialize;
 use tiny_http::{Method, Response, Server};
 
-use crate::core::category::filter_query_params;
-use crate::core::{BrowserKind, SessionStore, SessionTracker, TabEvent};
+use crate::core::category::{filter_query_params, normalized_domain};
+use crate::core::{BrowserKind, SessionStore, SessionTracker, TabEvent, UrlQueryStore};
 
 pub const PORT: u16 = 47632;
 
@@ -20,19 +20,24 @@ struct TabEventDto {
 
 pub fn spawn<S: SessionStore + Send + 'static>(
     tracker: Arc<Mutex<SessionTracker<S>>>,
+    url_params: Arc<UrlQueryStore>,
 ) -> Result<thread::JoinHandle<()>> {
     let server = Server::http(("127.0.0.1", PORT))
         .map_err(|e| anyhow!("binding tab-ingest server to 127.0.0.1:{PORT}: {e}"))?;
 
     thread::Builder::new()
         .name("makora-tab-ingest".into())
-        .spawn(move || run(server, tracker))
+        .spawn(move || run(server, tracker, url_params))
         .map_err(|e| anyhow!("spawning tab-ingest server thread: {e}"))
 }
 
-fn run<S: SessionStore>(server: Server, tracker: Arc<Mutex<SessionTracker<S>>>) {
+fn run<S: SessionStore>(
+    server: Server,
+    tracker: Arc<Mutex<SessionTracker<S>>>,
+    url_params: Arc<UrlQueryStore>,
+) {
     for mut request in server.incoming_requests() {
-        let status = handle_request(&mut request, &tracker);
+        let status = handle_request(&mut request, &tracker, &url_params);
         let _ = request.respond(Response::empty(status));
     }
 }
@@ -40,6 +45,7 @@ fn run<S: SessionStore>(server: Server, tracker: Arc<Mutex<SessionTracker<S>>>) 
 fn handle_request<S: SessionStore>(
     request: &mut tiny_http::Request,
     tracker: &Arc<Mutex<SessionTracker<S>>>,
+    url_params: &UrlQueryStore,
 ) -> u16 {
     if *request.method() != Method::Post || request.url() != "/event" {
         return 404;
@@ -60,7 +66,7 @@ fn handle_request<S: SessionStore>(
 
     let event = TabEvent {
         browser: BrowserKind::from_wire(&dto.browser),
-        url: normalize_url(&dto.url),
+        url: normalize_url(&dto.url, url_params),
         title: dto.title,
         timestamp: Utc::now(),
     };
@@ -72,8 +78,11 @@ fn handle_request<S: SessionStore>(
     204
 }
 
-fn normalize_url(url: &str) -> String {
-    filter_query_params(url, &[])
+fn normalize_url(url: &str, url_params: &UrlQueryStore) -> String {
+    let allowed = normalized_domain(url)
+        .and_then(|domain| url_params.params_for(&domain).ok())
+        .unwrap_or_default();
+    filter_query_params(url, &allowed)
 }
 
 fn has_allowed_extension_origin(request: &tiny_http::Request) -> bool {
@@ -92,18 +101,30 @@ fn has_allowed_extension_origin(request: &tiny_http::Request) -> bool {
 mod tests {
     use super::*;
 
+    fn temp_store() -> UrlQueryStore {
+        let path = std::env::temp_dir().join(format!(
+            "makora-ingest-test-{}-{}.sqlite",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        UrlQueryStore::new(crate::core::open_connection(&path).unwrap())
+    }
+
     #[test]
-    fn normalize_url_strips_the_query_string_and_fragment_but_keeps_the_path() {
+    fn normalize_url_keeps_the_whitelisted_query_and_drops_the_rest() {
         assert_eq!(
-            normalize_url("https://www.youtube.com/watch?v=XYZ&list=abc#t=30"),
-            "https://www.youtube.com/watch"
+            normalize_url(
+                "https://www.youtube.com/watch?v=XYZ&list=abc#t=30",
+                &temp_store()
+            ),
+            "https://www.youtube.com/watch?v=XYZ"
         );
     }
 
     #[test]
     fn normalize_url_strips_a_query_string_carrying_a_secret() {
         assert_eq!(
-            normalize_url("https://example.com/page?token=secret"),
+            normalize_url("https://example.com/page?token=secret", &temp_store()),
             "https://example.com/page"
         );
     }

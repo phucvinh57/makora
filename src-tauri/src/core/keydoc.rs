@@ -16,6 +16,7 @@ pub struct KeyDocument {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ActivityDocument {
+    pub activity_id: Option<i64>,
     pub key_kind: String,
     pub key: String,
     pub url_key: Option<String>,
@@ -39,6 +40,7 @@ struct KeyParts {
 
 #[derive(Default)]
 struct ActivityParts {
+    activity_id: Option<i64>,
     apps: BTreeSet<String>,
     session_ids: Vec<i64>,
     days: BTreeSet<String>,
@@ -52,11 +54,16 @@ struct ActivityParts {
 /// Rust so the query remains compatible with the SQLite versions bundled by Tauri.
 pub fn build(conn: &Connection) -> Result<Vec<KeyDocument>> {
     let mut stmt = conn.prepare(
-        "SELECT category_key_kind, category_key, app_name, window_title, url_key,
-                SUM((julianday(end_time) - julianday(start_time)) * 86400.0)
-         FROM sessions
-         WHERE end_time IS NOT NULL
-         GROUP BY category_key_kind, category_key, app_name, window_title, url_key",
+        "SELECT COALESCE(a.key_kind, s.category_key_kind), COALESCE(a.key, s.category_key),
+                COALESCE(NULLIF(a.app_name, ''), s.app_name),
+                COALESCE(NULLIF(a.display_title, ''), s.window_title),
+                COALESCE(a.url_key, s.url_key),
+                SUM((julianday(s.end_time) - julianday(s.start_time)) * 86400.0)
+         FROM sessions s LEFT JOIN activities a ON a.id = s.activity_id
+         WHERE s.end_time IS NOT NULL
+         GROUP BY COALESCE(a.id, s.id), COALESCE(a.key_kind, s.category_key_kind),
+                  COALESCE(a.key, s.category_key), COALESCE(NULLIF(a.app_name, ''), s.app_name),
+                  COALESCE(NULLIF(a.display_title, ''), s.window_title), COALESCE(a.url_key, s.url_key)",
     )?;
     let mut grouped: BTreeMap<(String, String), KeyParts> = BTreeMap::new();
     let rows = stmt.query_map([], |row| {
@@ -116,37 +123,57 @@ pub fn build(conn: &Connection) -> Result<Vec<KeyDocument>> {
 /// zero until the tracker closes it, but its title is still useful evidence for the next AI run.
 pub fn build_activities(conn: &Connection) -> Result<Vec<ActivityDocument>> {
     let mut stmt = conn.prepare(
-        "SELECT id, category_key_kind, category_key, app_name, window_title, url_key,
+        "SELECT COALESCE(a.id, s.id), a.id, s.id, COALESCE(a.key_kind, s.category_key_kind),
+                COALESCE(a.key, s.category_key), COALESCE(NULLIF(a.app_name, ''), s.app_name),
+                COALESCE(NULLIF(a.display_title, ''), s.window_title), COALESCE(a.url_key, s.url_key),
                 start_time, CASE WHEN end_time IS NULL THEN 0.0
                                  ELSE MAX(0.0, (julianday(end_time) - julianday(start_time)) * 86400.0)
                             END,
-                (category_id IS NOT NULL OR rule_category_id IS NOT NULL)
-         FROM sessions",
+                (COALESCE(a.category_id, s.category_id) IS NOT NULL OR
+                 COALESCE(a.rule_category_id, s.rule_category_id) IS NOT NULL)
+         FROM sessions s LEFT JOIN activities a ON a.id = s.activity_id",
     )?;
-    let mut grouped: BTreeMap<(String, String, Option<String>, String), ActivityParts> =
+    let mut grouped: BTreeMap<(i64, String, String, Option<String>, String), ActivityParts> =
         BTreeMap::new();
     let rows = stmt.query_map([], |row| {
         Ok((
             row.get::<_, i64>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
+            row.get::<_, Option<i64>>(1)?,
+            row.get::<_, i64>(2)?,
             row.get::<_, String>(3)?,
             row.get::<_, String>(4)?,
-            row.get::<_, Option<String>>(5)?,
+            row.get::<_, String>(5)?,
             row.get::<_, String>(6)?,
-            row.get::<_, f64>(7)?.max(0.0),
-            row.get::<_, bool>(8)?,
+            row.get::<_, Option<String>>(7)?,
+            row.get::<_, String>(8)?,
+            row.get::<_, f64>(9)?.max(0.0),
+            row.get::<_, bool>(10)?,
         ))
     })?;
     for row in rows {
-        let (id, kind, key, app, title, url_key, start_time, seconds, labeled) = row?;
-        let group_key = (kind, key, url_key, title);
-        let parts = grouped.entry(group_key).or_default();
+        let (
+            group_id,
+            activity_id,
+            session_id,
+            kind,
+            key,
+            app,
+            title,
+            url_key,
+            start_time,
+            seconds,
+            labeled,
+        ) = row?;
+        let group_key = (group_id, kind, key, url_key, title);
+        let parts = grouped.entry(group_key).or_insert_with(|| ActivityParts {
+            activity_id,
+            ..Default::default()
+        });
         parts.seconds += seconds;
         if labeled {
             parts.labeled_session_count += 1;
         }
-        parts.session_ids.push(id);
+        parts.session_ids.push(session_id);
         if !app.trim().is_empty() {
             parts.apps.insert(app);
         }
@@ -159,36 +186,39 @@ pub fn build_activities(conn: &Connection) -> Result<Vec<ActivityDocument>> {
 
     Ok(grouped
         .into_iter()
-        .map(|((key_kind, key, url_key, window_title), mut parts)| {
-            parts.session_ids.sort_unstable();
-            let mut document = humanize_key(&key);
-            if !parts.apps.is_empty() {
-                document.push_str(" app ");
-                document.push_str(&parts.apps.into_iter().collect::<Vec<_>>().join(" "));
-            }
-            if let Some(path) = url_key.as_deref().filter(|path| !path.trim().is_empty()) {
-                document.push_str(" path ");
-                document.push_str(path);
-            }
-            if !window_title.trim().is_empty() {
-                document.push_str(" title ");
-                document.extend(window_title.chars().take(160));
-            }
-            let doc_hash = hash_document(&document);
-            ActivityDocument {
-                key_kind,
-                key,
-                url_key,
-                window_title,
-                document,
-                seconds: parts.seconds,
-                session_ids: parts.session_ids,
-                observation_days: parts.days.iter().cloned().collect(),
-                distinct_days: parts.days.len(),
-                labeled_session_count: parts.labeled_session_count,
-                doc_hash,
-            }
-        })
+        .map(
+            |((_group_id, key_kind, key, url_key, window_title), mut parts)| {
+                parts.session_ids.sort_unstable();
+                let mut document = humanize_key(&key);
+                if !parts.apps.is_empty() {
+                    document.push_str(" app ");
+                    document.push_str(&parts.apps.into_iter().collect::<Vec<_>>().join(" "));
+                }
+                if let Some(path) = url_key.as_deref().filter(|path| !path.trim().is_empty()) {
+                    document.push_str(" path ");
+                    document.push_str(path);
+                }
+                if !window_title.trim().is_empty() {
+                    document.push_str(" title ");
+                    document.extend(window_title.chars().take(160));
+                }
+                let doc_hash = hash_document(&document);
+                ActivityDocument {
+                    activity_id: parts.activity_id,
+                    key_kind,
+                    key,
+                    url_key,
+                    window_title,
+                    document,
+                    seconds: parts.seconds,
+                    session_ids: parts.session_ids,
+                    observation_days: parts.days.iter().cloned().collect(),
+                    distinct_days: parts.days.len(),
+                    labeled_session_count: parts.labeled_session_count,
+                    doc_hash,
+                }
+            },
+        )
         .collect())
 }
 

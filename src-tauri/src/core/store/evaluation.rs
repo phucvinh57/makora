@@ -34,6 +34,7 @@ pub(crate) struct PendingVerdict {
     pub url_key: Option<String>,
     pub window_title: Option<String>,
     pub session_id: Option<i64>,
+    pub activity_id: Option<i64>,
     pub predicted_category_id: Option<i64>,
     pub predicted_category_name: Option<String>,
     pub chosen_category_id: Option<i64>,
@@ -59,9 +60,9 @@ pub(crate) fn record_verdict(conn: &Connection, verdict: &PendingVerdict) -> Res
     conn.execute(
         "INSERT INTO ai_verdicts (
              recorded_at, surface, bulk, outcome, key_kind, key, url_key, window_title,
-             session_id, predicted_category_id, predicted_category_name,
+             session_id, activity_id, predicted_category_id, predicted_category_name,
              chosen_category_id, chosen_category_name, confidence, model_version, seconds
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         params![
             Utc::now().to_rfc3339(),
             verdict.surface,
@@ -72,6 +73,7 @@ pub(crate) fn record_verdict(conn: &Connection, verdict: &PendingVerdict) -> Res
             verdict.url_key,
             verdict.window_title,
             verdict.session_id,
+            verdict.activity_id,
             verdict.predicted_category_id,
             verdict.predicted_category_name,
             verdict.chosen_category_id,

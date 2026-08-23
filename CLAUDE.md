@@ -63,7 +63,11 @@ The extension POSTs `{ browser, url, title }` to `127.0.0.1:47632` (`src-tauri/s
 
 ### Data model
 
-Table `sessions`: `id`, `app_name` (exe file stem), `exe_path`, `window_title` (at start, not updated), `url` (origin + path only — fragment and query string are stripped in `ingest::normalize_url`; `NULL` for non-browser rows), `start_time`, `end_time` (`NULL` while open).
+Table `activities` is the identity table: `(key_kind, key, url_key, title)`, where `key_kind`/`key` are the executable or normalized domain, `url_key` is the normalized resource URL, and canonical `title` is empty for browser placeholders. `display_title` keeps the best raw title for history. Rules, AI labels, and manual pins live on the activity; sessions inherit them through `sessions.activity_id`.
+
+Table `sessions` stores occurrences: `id`, `activity_id`, `app_name`, `exe_path`, `window_title`, `url`, `start_time`, and `end_time` (`NULL` while open). The tracker resumes the most recent closed occurrence of the same activity when the gap is at most `MERGE_GAP_SECONDS` (2 seconds). `SessionStore::refine_title` upgrades placeholder titles in place and repoints the occurrence when the canonical identity becomes real.
+
+The older materialized session category columns remain nullable compatibility data for databases and fixtures created before the activity migration; all new categorization writes and reads use `activities`.
 
 A row still open at startup means the last run crashed; it's deleted rather than closed at a guessed time (undercount rather than inflate).
 
@@ -72,12 +76,12 @@ A row still open at startup means the last run crashed; it's deleted rather than
 Categorization (`core/category.rs`, `core/store/categories.rs`):
 
 - Two lookup keys are written per session: `category_key` (URL host, else exe name) and `url_key` (host + path, `NULL` for non-browser). Computed at write time so rule edits re-categorize history without re-parsing.
-- **Categorization is materialized, not resolved at read time.** Rust resolves `sessions.rule_category_id` when a row opens or closes and persists it in the same transaction; background AI jobs persist `ml_category_id`. Reads are a plain `COALESCE(s.category_id, s.rule_category_id, s.ml_category_id)` — no rule join or classifier call anywhere.
-- The classifier has two document levels: one key document per `(key_kind, category_key)` for coherent rule suggestions, and one activity document per `(key_kind, category_key, url_key, window_title)` for multi-purpose title classification. Activity documents include open rows with zero duration, and title embeddings use `key_embeddings.key_kind = 'title'` with stale entries pruned on each run.
+- **Categorization is materialized, not resolved at read time.** Rust resolves `activities.rule_category_id` when an activity is created or a rule changes; background AI jobs persist activity `ml_*`, and sessions inherit the effective label. Reads join through `activities` rather than resolving rules or invoking the classifier.
+- The classifier has two document levels: one key document per `(key_kind, category_key)` for coherent rule suggestions, and one document per activity for multi-purpose title classification. Activity documents include open rows with zero duration, and title embeddings use `key_embeddings.key_kind = 'title'` with stale entries pruned on each run.
 - `multi_purpose_keys` identifies domains/apps that need title-aware labels. Enabled exact `exe`/`domain` rules remain stored but are skipped at resolve time; `url` rules still win, so repeated stable paths can graduate from title predictions into reviewable URL rules. User removal is a disabled veto, not deletion.
 - Because nothing re-derives on read, **anything that can change the answer must replay history**: `store::resolve::resolve_all` is called by `create_rule`, `delete_rule`, `delete_category`, `recategorize_all`, seed application, and multi-purpose toggles, each inside the caller's own transaction. The classifier also replays inside the same transaction when automatic detection changes the enabled set. Miss one and history silently disagrees with the rule list.
 - Rule suggestions must be *clearable*. A key already resolved by a stored rule is never suggested (`rule_already_covers` asks the real resolver, so globs and prefixes count), a key whose pins disagree keeps its dominant pin as its label instead of falling out of `load_labeled_keys` and looking unlabeled, and accepting a suggestion retargets an existing exact rule rather than failing. Break any of the three and the same domains reappear on every run.
-- `sessions.category_id` stays a *pin only* — it is what `category_is_pinned` reports. Automatic labels never go there.
+- `activities.category_id` stays a *pin only* — it is what `category_is_pinned` reports. Automatic labels never go there.
 - AI categorization is scheduled-only background work (`core/classifier.rs`). Startup, tracking, label/category/rule edits, and recategorization never enqueue it. Only `run_ai_categorization` or the persisted manual/hourly/daily/weekly scheduler may run it; missed intervals are skipped while the app is stopped. A successful title pass atomically replaces qualifying `ml_*` labels while preserving pins and surviving rules.
 - AI evaluation is append-only in `ai_verdicts` and `ai_run_evaluations`. Verdict outcomes are computed at the moment a user accepts, rejects, corrects, or pins an AI result and are never recomputed on read. Category names are stored as snapshots and category foreign keys use `ON DELETE SET NULL`, so deleting a category cannot rewrite historical precision. New label-write paths must record a verdict or explicitly document why they are not a user judgment. The Accuracy report also records holdout accuracy per successful classifier run (including cached-embedding runs), with a manual-labels-only variant; neither reviewed precision nor holdout accuracy is presented as the single truth.
 - Rule conflicts resolve in Rust by specificity only, with no manual ordering: `url` kind beats `exe`/`domain`, then `exact` > `prefix` > `substring` > `glob`, then longer pattern, then lower rule id.
@@ -99,7 +103,7 @@ React + TypeScript, Vite, Tailwind v4, TanStack Router file routes in `src/route
 - AI completion and multi-purpose mutations must also invalidate `["sessions"]`, `["activityStats"]`, `["categoryRules"]`, `["multiPurposeKeys"]`, and `["aiAccuracyReport"]` because they rewrite materialized session labels, rule effectiveness, and evaluation history. History pins must invalidate `["aiAccuracyReport"]` too.
 - Accuracy verdict history is forward-only: a new database has no report until a user judgment is recorded. The report’s reviewed precision is a lower bound because users preferentially correct suspicious rows; holdout accuracy is an in-sample leave-one-key-out trend, with a manual-labels-only variant.
 - The history time filter lives in the URL (`?kind=…&from=&to=&sessionId=`, see `routes/history/-components/timeRange.ts`) so other pages can link into a scoped view. Relative presets are stored as the preset, so "today" keeps meaning today. Rows *overlapping* the window match — unlike `activity_stats`, which buckets by `start_time`.
-- History can also filter by effective category source: Manual means `sessions.category_id` is pinned, while AI means no manual/rule category wins and `ml_category_id` supplies the displayed category.
+- History can also filter by effective category source: Manual means `activities.category_id` is pinned, while AI means no manual/rule category wins and activity `ml_category_id` supplies the displayed category. The history table shows a `×N` badge for the number of occurrences of the activity in the selected range.
 
 ## Known limitations
 
@@ -107,6 +111,6 @@ React + TypeScript, Vite, Tailwind v4, TanStack Router file routes in `src/route
 - Lock/sleep only ends the row on Linux; Windows and macOS have no presence watcher yet.
 - macOS requires Accessibility permission for window titles. Without it, tracking continues but every `window_title` is empty; unsigned development rebuilds may need the permission granted again because the app signature changes.
 - Windows UWP/Store apps currently collapse under `ApplicationFrameHost.exe`; resolving their child windows is deferred until it can be tested on Windows hardware.
-- Non-`http(s)` tabs are never recorded. Query strings are stripped, so pages distinguished only by a param collapse (every YouTube video is `youtube.com/watch`).
+- Non-`http(s)` tabs are never recorded. Query strings are stripped unless the domain/parameter pair is in `url_query_whitelist`; YouTube's `v` parameter is seeded so videos receive distinct URL identities. Existing history predates that whitelist and may retain its older collapsed keys.
 - macOS's focus watcher and the `wlr.rs` provider are implemented but not exercised end-to-end.
 - On GNOME the tray needs a StatusNotifierItem host (Ubuntu has one). Under libappindicator, left-clicking the tray icon does nothing — only menu items work.

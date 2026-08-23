@@ -330,8 +330,10 @@ impl WorkSessionStore {
             "SELECT s.start_time, s.end_time, s.app_name, s.category_key, s.category_key_kind,
                     cat.color, cat.id
              FROM sessions s
+             LEFT JOIN activities a ON a.id = s.activity_id
              LEFT JOIN categories cat
-                    ON cat.id = COALESCE(s.category_id, s.rule_category_id, s.ml_category_id)
+                    ON cat.id = COALESCE(a.category_id, s.category_id, a.rule_category_id,
+                                         s.rule_category_id, a.ml_category_id, s.ml_category_id)
              WHERE julianday(COALESCE(s.end_time, ?3)) > julianday(?1)
                AND julianday(s.start_time) < julianday(?2)
              ORDER BY s.start_time ASC";
@@ -738,9 +740,9 @@ mod tests {
         categories.set_row_category(pinned, Some(focus.id)).unwrap();
 
         let stats = store.stats_at(id, utc("2024-06-16T00:00:00Z")).unwrap();
-        assert_eq!(stats.on_task_seconds, 240.0);
-        assert_eq!(stats.off_task_seconds, 360.0);
-        assert_eq!(stats.apps.len(), 2);
+        assert_eq!(stats.on_task_seconds, 600.0);
+        assert_eq!(stats.off_task_seconds, 0.0);
+        assert_eq!(stats.apps.len(), 1);
 
         let _ = std::fs::remove_file(&path);
     }

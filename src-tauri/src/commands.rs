@@ -5,8 +5,8 @@ use crate::core::{
     AiCategorizationService, CategorizationResetOutcome, Category, CategoryFilter, CategoryRule,
     CategorySourceFilter, CategoryStore, CategorySuggestion, ClassifierStatus, ClusterAssignment,
     ClusteringGranularity, HistoryReader, IgnoreRule, IgnoreStore, MultiPurposeKey,
-    RecategorizeOutcome, SeedTaxonomy, SessionFilter, SessionRow, WorkSession, WorkSessionStats,
-    WorkSessionStore, WorkSessionUpdate,
+    RecategorizeOutcome, SeedTaxonomy, SessionFilter, SessionRow, UrlQueryParam, UrlQueryStore,
+    WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -331,6 +331,27 @@ pub fn create_ignore_rule(
 #[tauri::command]
 pub fn delete_ignore_rule(ignore: State<Arc<IgnoreStore>>, id: i64) -> Result<(), String> {
     ignore.delete_rule(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_url_query_params(
+    params: State<Arc<UrlQueryStore>>,
+) -> Result<Vec<UrlQueryParam>, String> {
+    params.list().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_url_query_param(
+    params: State<Arc<UrlQueryStore>>,
+    domain: String,
+    param: String,
+) -> Result<UrlQueryParam, String> {
+    params.create(&domain, &param).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_url_query_param(params: State<Arc<UrlQueryStore>>, id: i64) -> Result<(), String> {
+    params.delete(id).map_err(|e| e.to_string())
 }
 
 fn parse_rfc3339(value: &str) -> Result<DateTime<Utc>, String> {
