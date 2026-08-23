@@ -40,6 +40,21 @@ const granularityLabels: Record<ClusteringGranularity, string> = {
   fine: "Fine",
 };
 
+function clusterStateKey(cluster: ActivityCluster) {
+  // The classifier rebuilds clusters by deleting and reinserting them, so an
+  // SQLite id alone is not a stable identity for local UI state.
+  const members = [...cluster.members]
+    .sort((left, right) => left.id - right.id)
+    .map((member) => [
+      member.id,
+      member.key_kind,
+      member.key,
+      member.url_key,
+      member.window_title,
+    ]);
+  return JSON.stringify([cluster.id, cluster.created_at, members]);
+}
+
 function ClusterCard({
   cluster,
   categories,
@@ -160,17 +175,17 @@ function ClusterSection({
   clusters: ActivityCluster[];
   groupByParent?: boolean;
   categories: Parameters<typeof categoryOptions>[0];
-  selected: Record<number, Set<number>>;
-  categorySelections: Record<number, string>;
+  selected: Record<string, Set<number>>;
+  categorySelections: Record<string, string>;
   expanded: Set<number>;
   assigning: boolean;
   onToggleExpanded: (id: number) => void;
   onToggleMember: (
-    clusterId: number,
+    clusterKey: string,
     memberId: number,
     checked: boolean,
   ) => void;
-  onCategoryChange: (id: number, value: string) => void;
+  onCategoryChange: (clusterKey: string, value: string) => void;
   onAssign: (cluster: ActivityCluster) => void;
 }) {
   if (clusters.length === 0) return null;
@@ -195,28 +210,36 @@ function ClusterSection({
               {parent}
             </h3>
           ) : null}
-          {group.map((cluster) => (
-            <ClusterCard
-              key={cluster.id}
-              cluster={cluster}
-              categories={categories}
-              selectedMemberIds={selected[cluster.id] ?? new Set()}
-              categoryId={
-                categorySelections[cluster.id] ??
-                (cluster.category_id == null
-                  ? null
-                  : String(cluster.category_id))
-              }
-              expanded={expanded.has(cluster.id)}
-              assigning={assigning}
-              onToggleExpanded={() => onToggleExpanded(cluster.id)}
-              onToggleMember={(memberId, checked) =>
-                onToggleMember(cluster.id, memberId, checked)
-              }
-              onCategoryChange={(value) => onCategoryChange(cluster.id, value)}
-              onAssign={() => onAssign(cluster)}
-            />
-          ))}
+          {group.map((cluster) => {
+            const clusterKey = clusterStateKey(cluster);
+            return (
+              <ClusterCard
+                key={clusterKey}
+                cluster={cluster}
+                categories={categories}
+                selectedMemberIds={
+                  selected[clusterKey] ??
+                  new Set(cluster.members.map((member) => member.id))
+                }
+                categoryId={
+                  categorySelections[clusterKey] ??
+                  (cluster.category_id == null
+                    ? null
+                    : String(cluster.category_id))
+                }
+                expanded={expanded.has(cluster.id)}
+                assigning={assigning}
+                onToggleExpanded={() => onToggleExpanded(cluster.id)}
+                onToggleMember={(memberId, checked) =>
+                  onToggleMember(clusterKey, memberId, checked)
+                }
+                onCategoryChange={(value) =>
+                  onCategoryChange(clusterKey, value)
+                }
+                onAssign={() => onAssign(cluster)}
+              />
+            );
+          })}
         </div>
       ))}
     </section>
@@ -225,9 +248,9 @@ function ClusterSection({
 
 export function ClustersTab() {
   const queryClient = useQueryClient();
-  const [selected, setSelected] = useState<Record<number, Set<number>>>({});
+  const [selected, setSelected] = useState<Record<string, Set<number>>>({});
   const [categorySelections, setCategorySelections] = useState<
-    Record<number, string>
+    Record<string, string>
   >({});
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const clustersQuery = useQuery({
@@ -288,42 +311,58 @@ export function ClustersTab() {
 
   useEffect(() => {
     setSelected((current) => {
-      const next = { ...current };
+      const next: Record<string, Set<number>> = {};
       for (const cluster of clusters) {
-        if (!next[cluster.id])
-          next[cluster.id] = new Set(
-            cluster.members.map((member) => member.id),
-          );
+        const key = clusterStateKey(cluster);
+        next[key] =
+          current[key] ?? new Set(cluster.members.map((member) => member.id));
+      }
+      return next;
+    });
+
+    setCategorySelections((current) => {
+      const next: Record<string, string> = {};
+      for (const cluster of clusters) {
+        const key = clusterStateKey(cluster);
+        if (current[key] != null) next[key] = current[key];
       }
       return next;
     });
   }, [clusters]);
 
-  function toggleMember(clusterId: number, memberId: number, checked: boolean) {
+  function toggleMember(
+    clusterKey: string,
+    memberId: number,
+    checked: boolean,
+  ) {
     setSelected((current) => {
-      const members = new Set(current[clusterId]);
+      const members = new Set(current[clusterKey]);
       if (checked) members.add(memberId);
       else members.delete(memberId);
-      return { ...current, [clusterId]: members };
+      return { ...current, [clusterKey]: members };
     });
   }
 
   function assignCluster(cluster: ActivityCluster) {
+    const clusterKey = clusterStateKey(cluster);
     const categoryId = Number(
-      categorySelections[cluster.id] ?? cluster.category_id,
+      categorySelections[clusterKey] ?? cluster.category_id,
     );
     if (!Number.isFinite(categoryId)) return;
     assign.mutate({
       clusterId: cluster.id,
       categoryId,
-      memberIds: [...(selected[cluster.id] ?? new Set())],
+      memberIds: [
+        ...(selected[clusterKey] ??
+          new Set(cluster.members.map((member) => member.id))),
+      ],
     });
   }
 
   const busy = status?.state === "queued" || status?.state === "running";
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
-      <Card size="sm">
+      <Card size="sm" className="shrink-0">
         <CardHeader>
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>

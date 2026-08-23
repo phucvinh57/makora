@@ -16,6 +16,7 @@ import {
   setSessionsCategory,
 } from "@/api";
 import { categoryPath } from "@/categories";
+import { isFeatureEnabled } from "@/stores/features";
 import type { SessionRow } from "@/types";
 import { BulkActionsBar } from "./-components/BulkActionsBar";
 import {
@@ -49,6 +50,7 @@ function validateSearch(search: Partial<TimeRange>): TimeRange {
   const kind = RANGE_KINDS.find((k) => k === search.kind);
   if (!kind || kind === "all") return ALL_TIME;
   if (kind === "session") {
+    if (!isFeatureEnabled("focus")) return ALL_TIME;
     const sessionId = Number(search.sessionId);
     return Number.isInteger(sessionId) ? { kind, sessionId } : ALL_TIME;
   }

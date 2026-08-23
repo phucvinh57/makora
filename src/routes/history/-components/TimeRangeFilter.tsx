@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
+import { useFeatureFlags } from "@/stores/features";
 import type { WorkSession } from "@/types";
 import {
   ALL_TIME,
@@ -31,7 +32,10 @@ export function TimeRangeFilter({
   onChange: (range: TimeRange) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const active = isRangeActive(range);
+  const focusEnabled = useFeatureFlags((state) => state.flags.focus);
+  const displayRange =
+    !focusEnabled && range.kind === "session" ? ALL_TIME : range;
+  const active = isRangeActive(displayRange);
 
   function apply(next: TimeRange) {
     onChange(next);
@@ -52,27 +56,31 @@ export function TimeRangeFilter({
                 active && "rounded-r-none border-r-0",
               )}
             >
-              {range.kind === "session" ? (
+              {displayRange.kind === "session" ? (
                 <Target className="size-3.5 shrink-0" />
               ) : (
                 <CalendarRange className="size-3.5 shrink-0" />
               )}
-              <span className="truncate">{describeRange(range, session)}</span>
+              <span className="truncate">
+                {describeRange(displayRange, session)}
+              </span>
             </Button>
           }
         />
         <PopoverContent className="w-80" align="end">
           <Tabs
-            defaultValue={range.kind === "session" ? "session" : "range"}
+            defaultValue={displayRange.kind === "session" ? "session" : "range"}
             className="flex flex-col gap-3"
           >
             <TabsList className="w-full">
               <TabsTrigger value="range" className="flex-1">
                 Time range
               </TabsTrigger>
-              <TabsTrigger value="session" className="flex-1">
-                Focus session
-              </TabsTrigger>
+              {focusEnabled ? (
+                <TabsTrigger value="session" className="flex-1">
+                  Focus session
+                </TabsTrigger>
+              ) : null}
             </TabsList>
 
             <TabsContent value="range" className="flex flex-col gap-3">
@@ -82,7 +90,9 @@ export function TimeRangeFilter({
                     key={preset.kind}
                     type="button"
                     size="sm"
-                    variant={range.kind === preset.kind ? "secondary" : "ghost"}
+                    variant={
+                      displayRange.kind === preset.kind ? "secondary" : "ghost"
+                    }
                     className="justify-start"
                     onClick={() => apply({ kind: preset.kind })}
                   >
@@ -93,16 +103,20 @@ export function TimeRangeFilter({
               <CustomRangeFields range={range} onApply={apply} />
             </TabsContent>
 
-            <TabsContent value="session">
-              <WorkSessionPicker
-                selectedId={
-                  range.kind === "session" ? range.sessionId : undefined
-                }
-                onSelect={(picked) =>
-                  apply({ kind: "session", sessionId: picked.id })
-                }
-              />
-            </TabsContent>
+            {focusEnabled ? (
+              <TabsContent value="session">
+                <WorkSessionPicker
+                  selectedId={
+                    displayRange.kind === "session"
+                      ? displayRange.sessionId
+                      : undefined
+                  }
+                  onSelect={(picked) =>
+                    apply({ kind: "session", sessionId: picked.id })
+                  }
+                />
+              </TabsContent>
+            ) : null}
           </Tabs>
         </PopoverContent>
       </Popover>

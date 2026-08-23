@@ -1,4 +1,5 @@
 {
+  "identifier": "dev.phucvinh57.makora",
   "bundle": {
     "targets": ["deb"],
     "linux": {

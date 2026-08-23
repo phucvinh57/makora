@@ -108,6 +108,59 @@ On wlroots-based compositors (sway, Hyprland, river) no extension is needed:
 those advertise `wlr-foreign-toplevel-management-v1`, which reports focus
 directly, and the app uses it automatically.
 
+## Categorization flow
+
+Makora stores category decisions on each session row. Reads use the stored
+values; they do not run the rule matcher or the AI classifier again.
+
+```mermaid
+flowchart TD
+    A[Focus or browser-tab event] --> B[Persist session]
+    B --> C[Derive stable keys<br/>Browser: normalized domain and URL path<br/>Other apps: executable name]
+    C --> D[Resolve stored rules]
+    D --> E{Key is multi-purpose?}
+    E -- No --> F[Match app/domain or URL rules]
+    E -- Yes --> G[Skip app/domain key rules<br/>URL rules still apply]
+    F --> H{Rule matches?}
+    G --> H
+    H -- Yes --> I[Store rule_category_id]
+    H -- No --> J[Leave rule category empty]
+
+    P[User pins a session] --> Q[Store category_id<br/>manual pin]
+    I --> K[Effective category]
+    J --> K
+    Q --> K
+
+    R[Scheduled AI run<br/>manual, hourly, daily, or weekly] --> S[Learn from labeled history<br/>and category descriptions]
+    S --> T[Classify stable keys and<br/>title-level activities]
+    T --> U{Classification result}
+    U -- Stable key --> V[Create reviewable suggestion]
+    U -- Multi-purpose activity --> W[Store confident ml_category_id<br/>only when no pin or rule applies]
+    V --> X[User accepts suggestion as a rule]
+    X --> D
+    W --> K
+
+    K[Manual pin > rule > AI<br/>otherwise Uncategorized]
+    Y[Rule, category, or multi-purpose change<br/>or Recategorize] --> Z[Replay session history]
+    Z --> D
+```
+
+In short:
+
+- A focus or tab event creates a session and stores a stable key: the domain
+  for browser activity, or the executable name for other apps. A URL key also
+  keeps the normalized site path available for specific rules.
+- Rules are matched case-insensitively by specificity: URL rules beat app or
+  domain rules, then exact, prefix, substring, and glob matches are considered.
+  The winning category is materialized as `rule_category_id`.
+- A manual pin is stored as `category_id` and always wins. Scheduled AI uses
+  labeled history and category descriptions. For multi-purpose apps or domains,
+  confident title-level predictions are stored as `ml_category_id`; other
+  predictions become reviewable suggestions that the user can turn into rules.
+- Changing rules, categories, or multi-purpose settings replays the history.
+  **Recategorize** preserves manual pins, clears AI predictions, and reruns the
+  rules. AI is not run automatically by those changes.
+
 ## Known limitations
 
 - Lock/sleep presence handling is Linux-only; Windows and macOS do not yet have presence watchers.

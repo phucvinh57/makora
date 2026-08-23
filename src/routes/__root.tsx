@@ -4,6 +4,7 @@ import {
   Hourglass,
   PanelLeftClose,
   PanelLeftOpen,
+  Sparkles,
   Settings as SettingsIcon,
   Tags,
   Target,
@@ -15,15 +16,22 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { useFeatureFlags, type PluginFeature } from "@/stores/features";
 import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
 
-type NavItem = { to: string; label: string; icon: typeof History };
+type NavItem = {
+  to: string;
+  label: string;
+  icon: typeof History;
+  feature?: PluginFeature;
+};
 
 const NAV_ITEMS: NavItem[] = [
   { to: "/statistics", label: "Statistics", icon: BarChart3 },
-  { to: "/labeling", label: "Labeling", icon: Tags },
+  { to: "/labeling", label: "Labeling", icon: Sparkles },
+  { to: "/categories", label: "Categories", icon: Tags },
   { to: "/history", label: "History", icon: History },
-  { to: "/focus", label: "Focus", icon: Target },
+  { to: "/focus", label: "Focus", icon: Target, feature: "focus" },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 
@@ -36,6 +44,10 @@ export const Route = createRootRoute({
 function RootLayout() {
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(COLLAPSE_STORAGE_KEY) === "1",
+  );
+  const featureFlags = useFeatureFlags((state) => state.flags);
+  const navItems = NAV_ITEMS.filter(
+    ({ feature }) => feature === undefined || featureFlags[feature],
   );
 
   function toggleCollapsed() {
@@ -84,7 +96,7 @@ function RootLayout() {
           </button>
         </div>
         <nav className="flex flex-1 flex-col gap-1 px-2">
-          {NAV_ITEMS.map(({ to, label, icon: Icon }) => {
+          {navItems.map(({ to, label, icon: Icon }) => {
             const itemClassName = cn(
               "flex items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm font-medium transition-colors",
               collapsed && "justify-center px-0",

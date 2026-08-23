@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import { format } from "date-fns";
 import { Pencil, Play, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -11,6 +11,7 @@ import { deleteWorkSession, listCategories, listWorkSessions } from "@/api";
 import { formatSeconds } from "@/duration";
 import { openDialog } from "@/hooks/useDialog";
 import { cn } from "@/lib/utils";
+import { isFeatureEnabled } from "@/stores/features";
 import type { WorkSession } from "@/types";
 import { ActiveSessionCard } from "./-components/ActiveSessionCard";
 import { WORK_SESSIONS_KEY } from "./-components/constants";
@@ -19,6 +20,11 @@ import { SessionSummary } from "./-components/SessionSummary";
 import { StartSessionDialog } from "./-components/StartSessionDialog";
 
 export const Route = createFileRoute("/focus")({
+  beforeLoad: () => {
+    if (!isFeatureEnabled("focus")) {
+      throw redirect({ to: "/settings" });
+    }
+  },
   component: FocusPage,
 });
 

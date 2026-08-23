@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { AiCategorizationSettingsSection } from "./-components/AiCategorizationSettingsSection";
+import { FeatureFlagsSection } from "./-components/FeatureFlagsSection";
 import { GeneralSection } from "./-components/GeneralSection";
 import { IgnoreListSection } from "./-components/IgnoreListSection";
 
@@ -17,6 +18,7 @@ function SettingsPage() {
         </p>
       </header>
       <GeneralSection />
+      <FeatureFlagsSection />
       <AiCategorizationSettingsSection />
       <IgnoreListSection />
     </div>
