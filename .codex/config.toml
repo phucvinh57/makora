@@ -1,8 +1,0 @@
-# Luna owns the primary thread and executes the approved plan.
-model = "gpt-5.6-luna"
-model_reasoning_effort = "xhigh"
-notify = ["notify-send", "Codex job completed"]
-
-[agents]
-enabled = true
-max_concurrent_threads_per_session = 2

@@ -317,7 +317,6 @@ pub(crate) struct SessionCategoryInput<'a> {
     pub key_kind: KeyKind,
     pub key: &'a str,
     pub url_key: Option<&'a str>,
-    pub multi_purpose: bool,
 }
 
 pub(crate) fn resolve_category(
@@ -327,7 +326,7 @@ pub(crate) fn resolve_category(
     for rule in rules {
         let candidate = match rule.key_kind {
             KeyKind::Url => input.url_key,
-            kind if kind == input.key_kind && !input.multi_purpose => Some(input.key),
+            kind if kind == input.key_kind => Some(input.key),
             _ => None,
         };
         if candidate.is_some_and(|candidate| rule.matcher.matches(candidate)) {
@@ -577,7 +576,6 @@ mod tests {
             key_kind: KeyKind::Domain,
             key: "github.com",
             url_key: Some("github.com/org/repo/pulls"),
-            multi_purpose: false,
         };
         assert_eq!(resolve_category(&rules, &input), Some(20));
     }
@@ -588,42 +586,8 @@ mod tests {
             key_kind: KeyKind::Exe,
             key: "unknown.exe",
             url_key: None,
-            multi_purpose: false,
         };
         assert_eq!(resolve_category(&[], &input), None);
-    }
-
-    #[test]
-    fn multi_purpose_keys_skip_domain_rules_but_keep_url_rules() {
-        let rules = compile_rules([
-            RuleSpec {
-                id: 1,
-                key_kind: KeyKind::Domain,
-                pattern: "youtube.com".into(),
-                match_kind: MatchKind::Exact,
-                category_id: 10,
-            },
-            RuleSpec {
-                id: 2,
-                key_kind: KeyKind::Url,
-                pattern: "youtube.com/@rust".into(),
-                match_kind: MatchKind::Exact,
-                category_id: 20,
-            },
-        ]);
-        let input = SessionCategoryInput {
-            key_kind: KeyKind::Domain,
-            key: "youtube.com",
-            url_key: Some("youtube.com/@rust"),
-            multi_purpose: true,
-        };
-        assert_eq!(resolve_category(&rules, &input), Some(20));
-
-        let input = SessionCategoryInput {
-            url_key: Some("youtube.com/watch"),
-            ..input
-        };
-        assert_eq!(resolve_category(&rules, &input), None);
     }
 
     #[test]

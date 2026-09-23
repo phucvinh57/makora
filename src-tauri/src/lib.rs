@@ -9,11 +9,11 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use chrono::Utc;
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 use tracing::{error, info};
 
 use crate::core::{
-    open_connection, AiCategorizationService, CategoryStore, FocusWatcher, HistoryReader,
+    open_connection, CategoryStore, FocusWatcher, HistoryReader,
     IgnoreStore, PlatformFocusWatcher, SessionTracker, SqliteStore, UrlQueryStore, WatchEvent,
     WorkSessionStore,
 };
@@ -38,7 +38,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_sessions,
             commands::activity_stats,
-            commands::ai_accuracy_report,
             commands::list_categories,
             commands::set_session_row_category,
             commands::set_sessions_category,
@@ -46,24 +45,12 @@ pub fn run() {
             commands::create_category,
             commands::update_category,
             commands::delete_category,
-            commands::list_category_suggestions,
-            commands::list_multi_purpose_keys,
-            commands::list_activity_clusters,
-            commands::assign_activity_cluster,
-            commands::set_multi_purpose_key,
-            commands::accept_category_suggestions,
-            commands::dismiss_category_suggestions,
             commands::apply_seed_taxonomy,
             commands::get_seed_taxonomy_preview,
             commands::list_category_rules,
             commands::create_category_rule,
             commands::delete_category_rule,
-            commands::get_classifier_status,
-            commands::run_ai_categorization,
             commands::reset_categorization,
-            commands::set_ai_categorization_schedule,
-            commands::set_ai_categorization_confidence_threshold,
-            commands::set_ai_clustering_granularity,
             commands::list_ignore_rules,
             commands::create_ignore_rule,
             commands::delete_ignore_rule,
@@ -95,14 +82,6 @@ pub fn run() {
             })?;
             let ignore = Arc::new(IgnoreStore::new(conn.clone()));
             let url_params = Arc::new(UrlQueryStore::new(conn.clone()));
-            let event_app = app.handle().clone();
-            let ai = AiCategorizationService::new_with_completion(
-                conn.clone(),
-                Arc::new(move || {
-                    let _ = event_app.emit("ai-categorization-completed", ());
-                }),
-            )
-            .context("starting AI categorization service")?;
             let store = SqliteStore::new(conn.clone());
             let tracker: SharedTracker = Arc::new(Mutex::new(
                 SessionTracker::with_ignore_policy(store, ignore.clone())
@@ -112,7 +91,6 @@ pub fn run() {
             app.manage(HistoryReader::new(conn.clone()));
             app.manage(WorkSessionStore::new(conn.clone()));
             app.manage(CategoryStore::new(conn));
-            app.manage(ai);
             app.manage(tracker.clone());
             app.manage(ignore);
             app.manage(url_params.clone());

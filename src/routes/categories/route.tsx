@@ -1,8 +1,8 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useLabelingStore, type CategoryTab } from "@/stores/labeling";
-import { CategoriesTab } from "../labeling/-components/CategoriesTab";
-import { RulesTab } from "../labeling/-components/RulesTab";
+import { useCategoryPageStore, type CategoryTab } from "@/stores/categoryPage";
+import { CategoriesTab } from "./-components/CategoriesTab";
+import { RulesTab } from "./-components/RulesTab";
 
 const TABS: CategoryTab[] = ["categories", "rules"];
 
@@ -11,12 +11,12 @@ export const Route = createFileRoute("/categories")({
 });
 
 function CategoriesPage() {
-  const tab = useLabelingStore((state) => state.categoryTab);
-  const rulesCategoryFilter = useLabelingStore(
+  const tab = useCategoryPageStore((state) => state.categoryTab);
+  const rulesCategoryFilter = useCategoryPageStore(
     (state) => state.rulesCategoryFilter,
   );
-  const setCategoryTab = useLabelingStore((state) => state.setCategoryTab);
-  const setRulesCategoryFilter = useLabelingStore(
+  const setCategoryTab = useCategoryPageStore((state) => state.setCategoryTab);
+  const setRulesCategoryFilter = useCategoryPageStore(
     (state) => state.setRulesCategoryFilter,
   );
   const activeTab = TABS.includes(tab) ? tab : "categories";

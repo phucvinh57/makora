@@ -453,6 +453,29 @@ fn migrations() -> Migrations<'static> {
                 VALUES ('activity_identity_version', '0');",
         )
         .foreign_key_check(),
+        // The AI categorizer (embedding classifier, suggestions, clusters, multi-purpose
+        // keys and the accuracy reports) is gone: drop everything it stored.
+        M::up(
+            "DROP TABLE IF EXISTS ai_verdicts;
+             DROP TABLE IF EXISTS ai_run_evaluations;
+             DROP TABLE IF EXISTS activity_cluster_members;
+             DROP TABLE IF EXISTS activity_clusters;
+             DROP TABLE IF EXISTS category_suggestions;
+             DROP TABLE IF EXISTS key_embeddings;
+             DROP TABLE IF EXISTS multi_purpose_keys;
+
+             DROP INDEX IF EXISTS idx_sessions_ml_category;
+             ALTER TABLE sessions DROP COLUMN ml_category_id;
+             ALTER TABLE sessions DROP COLUMN ml_confidence;
+             ALTER TABLE sessions DROP COLUMN ml_model_version;
+             DROP INDEX IF EXISTS idx_activities_ml;
+             ALTER TABLE activities DROP COLUMN ml_category_id;
+             ALTER TABLE activities DROP COLUMN ml_confidence;
+             ALTER TABLE activities DROP COLUMN ml_model_version;
+
+             DELETE FROM settings WHERE substr(key, 1, 18) = 'ai_categorization_';",
+        )
+        .foreign_key_check(),
     ])
 }
 
@@ -694,25 +717,9 @@ fn backfill_activities(tx: &rusqlite::Transaction<'_>) -> Result<()> {
                 |row| row.get(0),
             )
             .optional()?;
-        let ml: Option<(i64, Option<f64>, Option<i64>)> = tx
-            .query_row(
-                "SELECT ml_category_id, AVG(ml_confidence), MAX(ml_model_version)
-                 FROM sessions WHERE activity_id = ?1 AND ml_category_id IS NOT NULL
-                 GROUP BY ml_category_id ORDER BY COUNT(*) DESC, ml_category_id LIMIT 1",
-                params![activity_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .optional()?;
         tx.execute(
-            "UPDATE activities SET category_id = ?1, ml_category_id = ?2,
-                    ml_confidence = ?3, ml_model_version = ?4 WHERE id = ?5",
-            params![
-                manual,
-                ml.as_ref().map(|v| v.0),
-                ml.as_ref().and_then(|v| v.1),
-                ml.as_ref().and_then(|v| v.2),
-                activity_id
-            ],
+            "UPDATE activities SET category_id = ?1 WHERE id = ?2",
+            params![manual, activity_id],
         )?;
     }
 
@@ -761,10 +768,6 @@ fn backfill_activities(tx: &rusqlite::Transaction<'_>) -> Result<()> {
                     window_title = CASE WHEN ?2 THEN ?3 ELSE window_title END WHERE id = ?4",
                 params![current.end_time, better, current.window_title, prev.id],
             )?;
-            tx.execute(
-                "UPDATE ai_verdicts SET activity_id = ?1 WHERE session_id = ?2",
-                params![prev.activity_id, current.id],
-            )?;
             tx.execute("DELETE FROM sessions WHERE id = ?1", params![current.id])?;
             prev.end_time = current.end_time;
             if better {
@@ -774,12 +777,6 @@ fn backfill_activities(tx: &rusqlite::Transaction<'_>) -> Result<()> {
             previous = Some(current);
         }
     }
-    tx.execute(
-        "UPDATE ai_verdicts SET activity_id = (
-            SELECT activity_id FROM sessions WHERE sessions.id = ai_verdicts.session_id
-         ) WHERE activity_id IS NULL AND session_id IS NOT NULL",
-        [],
-    )?;
     Ok(())
 }
 
@@ -1005,7 +1002,7 @@ fn prune_orphan_activity(tx: &rusqlite::Transaction<'_>, id: i64) -> Result<()> 
 mod tests {
     use super::*;
 
-    type MigratedResolution = (i64, Option<i64>, Option<i64>, Option<i64>);
+    type MigratedResolution = (i64, Option<i64>, Option<i64>);
 
     fn temp_db_path() -> std::path::PathBuf {
         let unique = std::time::SystemTime::now()
@@ -1171,23 +1168,15 @@ mod tests {
             .unwrap();
         assert_eq!(threshold_count, 0);
 
-        let ai_schedule: String = conn
-            .query_row(
-                "SELECT value FROM settings WHERE key = 'ai_categorization_schedule'",
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM settings WHERE key LIKE 'ai_categorization_%'",
                 [],
-                |row| row.get(0),
+                |row| row.get::<_, i64>(0),
             )
-            .unwrap();
-        assert_eq!(ai_schedule, "manual");
-
-        let ai_confidence_threshold: String = conn
-            .query_row(
-                "SELECT value FROM settings WHERE key = 'ai_categorization_confidence_threshold'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(ai_confidence_threshold, "0.75");
+            .unwrap(),
+            0
+        );
 
         let resolved_column_count: i64 = conn
             .query_row(
@@ -1206,23 +1195,34 @@ mod tests {
             )
             .unwrap();
         assert_eq!(description_column_count, 1);
-        let model_version: String = conn
-            .query_row(
-                "SELECT value FROM settings WHERE key = 'ai_categorization_model_version'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(model_version, "0");
         assert_eq!(
             conn.query_row(
                 "SELECT COUNT(*) FROM sqlite_master
-                 WHERE type = 'table' AND name IN ('category_suggestions', 'key_embeddings')",
+                 WHERE type = 'table' AND name IN (
+                    'category_suggestions', 'key_embeddings', 'multi_purpose_keys',
+                    'activity_clusters', 'activity_cluster_members',
+                    'ai_verdicts', 'ai_run_evaluations')",
                 [],
                 |row| row.get::<_, i64>(0),
             )
             .unwrap(),
-            2
+            0
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name LIKE 'ml_%'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+                + conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM pragma_table_info('activities') WHERE name LIKE 'ml_%'",
+                        [],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+            0
         );
 
         let system_key_column_count: i64 = conn
@@ -1241,67 +1241,6 @@ mod tests {
             "only the Test category inserted by this test exists"
         );
 
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn migration_22_preserves_suggestions_and_accepts_url_kind() {
-        let path = temp_db_path();
-        let mut conn = Connection::open(&path).unwrap();
-        migrations().to_version(&mut conn, 21).unwrap();
-        conn.execute(
-            "INSERT INTO categories (id, name, color) VALUES (1, 'Learning', '#111111')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO category_suggestions
-                (id, key_kind, key, category_id, confidence, seconds, model_version, created_at, status)
-             VALUES
-                (7, 'domain', 'example.com', 1, 0.81, 120.0, 3, '2024-01-01T00:00:00Z', 'pending'),
-                (8, 'exe', 'player', 1, 0.61, 80.0, 2, '2024-01-02T00:00:00Z', 'dismissed')",
-            [],
-        )
-        .unwrap();
-
-        migrate(&mut conn).unwrap();
-        conn.execute(
-            "INSERT INTO category_suggestions
-                (id, key_kind, key, category_id, confidence, seconds, model_version, created_at)
-             VALUES (9, 'url', 'example.com/learning', 1, 0.9, 50.0, 4, '2024-01-03T00:00:00Z')",
-            [],
-        )
-        .unwrap();
-        let rows: Vec<(i64, String, String, String)> = conn
-            .prepare("SELECT id, key_kind, key, status FROM category_suggestions ORDER BY id")
-            .unwrap()
-            .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-            })
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        assert_eq!(
-            rows,
-            vec![
-                (7, "domain".into(), "example.com".into(), "pending".into()),
-                (8, "exe".into(), "player".into(), "dismissed".into()),
-                (
-                    9,
-                    "url".into(),
-                    "example.com/learning".into(),
-                    "pending".into()
-                ),
-            ]
-        );
-        let foreign_key_violations: Vec<String> = conn
-            .prepare("PRAGMA foreign_key_check")
-            .unwrap()
-            .query_map([], |row| row.get(0))
-            .unwrap()
-            .collect::<rusqlite::Result<_>>()
-            .unwrap();
-        assert!(foreign_key_violations.is_empty());
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1496,12 +1435,12 @@ mod tests {
 
         let resolved: Vec<MigratedResolution> = conn
             .prepare(
-                "SELECT id, category_id, rule_category_id, ml_category_id
+                "SELECT id, category_id, rule_category_id
                  FROM sessions ORDER BY id",
             )
             .unwrap()
             .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })
             .unwrap()
             .collect::<rusqlite::Result<_>>()
@@ -1509,12 +1448,12 @@ mod tests {
         assert_eq!(
             resolved,
             vec![
-                (1, None, None, None),
-                (2, None, Some(2), None),
-                (3, Some(2), None, None),
-                (4, None, None, None),
+                (1, None, None),
+                (2, None, Some(2)),
+                (3, Some(2), None),
+                (4, None, None),
             ],
-            "fallback labels are cleared, while rule, manual and AI assignments remain"
+            "fallback labels are cleared, while rule and manual assignments remain"
         );
 
         let work_session_link: i64 = conn
@@ -1633,84 +1572,55 @@ mod tests {
     }
 
     #[test]
-    fn migration_19_adds_the_ai_confidence_threshold_without_overwriting_settings() {
+    fn migration_27_drops_the_ai_schema_and_keeps_labels() {
         let path = temp_db_path();
         let mut conn = Connection::open(&path).unwrap();
-        migrations().to_version(&mut conn, 18).unwrap();
-        conn.execute(
-            "UPDATE settings SET value = 'daily' WHERE key = 'ai_categorization_schedule'",
-            [],
+        migrations().to_version(&mut conn, 26).unwrap();
+        conn.execute_batch(
+            "INSERT INTO categories (id, name, color) VALUES (1, 'Work', '#111111');
+             INSERT INTO activities
+                (id, key_kind, key, first_seen, last_seen, category_id, rule_category_id,
+                 ml_category_id, ml_confidence, ml_model_version)
+             VALUES (1, 'exe', 'a.exe', '2024-06-15T00:00:00Z', '2024-06-15T00:00:00Z',
+                     1, 1, 1, 0.9, 3);
+             INSERT INTO category_suggestions
+                (key_kind, key, category_id, confidence, seconds, model_version, created_at)
+             VALUES ('exe', 'b.exe', 1, 0.8, 10.0, 1, '2024-06-15T00:00:00Z');
+             UPDATE settings SET value = 'daily' WHERE key = 'ai_categorization_schedule';
+             UPDATE settings SET value = '1' WHERE key = 'activity_identity_version';",
         )
         .unwrap();
 
         migrate(&mut conn).unwrap();
 
-        let threshold: String = conn
-            .query_row(
-                "SELECT value FROM settings WHERE key = 'ai_categorization_confidence_threshold'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        let schedule: String = conn
-            .query_row(
-                "SELECT value FROM settings WHERE key = 'ai_categorization_schedule'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(threshold, "0.75");
-        assert_eq!(schedule, "daily");
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn migration_24_creates_evaluation_tables_and_preserves_deleted_names() {
-        let path = temp_db_path();
-        let mut conn = Connection::open(&path).unwrap();
-        migrations().to_version(&mut conn, 23).unwrap();
-        migrations().to_version(&mut conn, 24).unwrap();
-
-        let table_count: i64 = conn
+        let tables: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master
-                 WHERE type = 'table' AND name IN ('ai_verdicts', 'ai_run_evaluations')",
+                 WHERE type = 'table' AND name IN (
+                    'category_suggestions', 'key_embeddings', 'multi_purpose_keys',
+                    'activity_clusters', 'activity_cluster_members',
+                    'ai_verdicts', 'ai_run_evaluations')",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(table_count, 2);
-
-        conn.execute(
-            "INSERT INTO categories (name, color) VALUES ('Old label', '#123456')",
-            [],
-        )
-        .unwrap();
-        let category_id = conn.last_insert_rowid();
-        conn.execute(
-            "INSERT INTO ai_verdicts
-                (recorded_at, surface, outcome, predicted_category_id,
-                 predicted_category_name, chosen_category_id, chosen_category_name)
-             VALUES ('2025-01-01T00:00:00Z', 'session', 'corrected', ?1, 'Old label', ?1, 'Old label')",
-            params![category_id],
-        )
-        .unwrap();
-        conn.execute("DELETE FROM categories WHERE id = ?1", params![category_id])
-            .unwrap();
-        let snapshot: (Option<i64>, Option<i64>, String, String) = conn
+        assert_eq!(tables, 0);
+        let ai_settings: i64 = conn
             .query_row(
-                "SELECT predicted_category_id, chosen_category_id,
-                        predicted_category_name, chosen_category_name
-                 FROM ai_verdicts",
+                "SELECT COUNT(*) FROM settings WHERE key LIKE 'ai_categorization_%'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(
-            snapshot,
-            (None, None, "Old label".into(), "Old label".into())
-        );
+        assert_eq!(ai_settings, 0);
+        let labels: (Option<i64>, Option<i64>) = conn
+            .query_row(
+                "SELECT category_id, rule_category_id FROM activities WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(labels.0, Some(1), "manual pins survive");
 
         let _ = std::fs::remove_file(&path);
     }

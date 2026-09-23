@@ -12,7 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { invalidateLabelingQueries } from "@/queries";
+import { invalidateCategorizationQueries } from "@/queries";
 
 export function CategorizationDataSection() {
   const queryClient = useQueryClient();
@@ -20,10 +20,10 @@ export function CategorizationDataSection() {
   const resetMutation = useMutation({
     mutationFn: resetCategorization,
     onSuccess: (outcome) => {
-      invalidateLabelingQueries(queryClient);
+      invalidateCategorizationQueries(queryClient);
       setOpen(false);
       toast.success("Categorization data reset", {
-        description: `${outcome.rules_deleted} rules and ${outcome.sessions_cleared} session labels were cleared. Go to Labeling → AI and click Run now for a fresh run.`,
+        description: `${outcome.rules_deleted} rules and ${outcome.sessions_cleared} session labels were cleared.`,
       });
     },
   });
@@ -40,8 +40,8 @@ export function CategorizationDataSection() {
       </CardHeader>
       <CardContent className="flex flex-col gap-3 text-sm">
         <p className="m-0 text-muted-foreground">
-          Clear previous categorization evidence and rules so you can review a
-          fresh AI run yourself. Categories and tracking history are kept.
+          Clear all rules and manual categorizations so you can start over.
+          Categories and tracking history are kept.
         </p>
         <div>
           <Button variant="destructive" onClick={() => setDialogOpen(true)}>
@@ -56,10 +56,8 @@ export function CategorizationDataSection() {
             <DialogTitle>Reset categorization data?</DialogTitle>
             <DialogDescription>
               This action cannot be undone. It will keep your categories and
-              tracking history, but delete all rules, manual categorizations, AI
-              results, suggestions, derived AI detections, and accuracy history.
-              AI scheduling will be changed to manual, and nothing will be
-              seeded or run automatically.
+              tracking history, but delete all rules and manual categorizations.
+              Nothing will be seeded automatically.
             </DialogDescription>
             {resetMutation.isError && (
               <p className="m-0 text-xs text-destructive">

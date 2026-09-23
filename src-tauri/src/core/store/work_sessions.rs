@@ -333,7 +333,7 @@ impl WorkSessionStore {
              LEFT JOIN activities a ON a.id = s.activity_id
              LEFT JOIN categories cat
                     ON cat.id = COALESCE(a.category_id, s.category_id, a.rule_category_id,
-                                         s.rule_category_id, a.ml_category_id, s.ml_category_id)
+                                         s.rule_category_id)
              WHERE julianday(COALESCE(s.end_time, ?3)) > julianday(?1)
                AND julianday(s.start_time) < julianday(?2)
              ORDER BY s.start_time ASC";

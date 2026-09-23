@@ -145,9 +145,7 @@ function HistoryPage() {
         PAGE_SIZE,
         search || undefined,
         categoryFilter === ALL_CATEGORIES ? undefined : categoryFilter,
-        sourceFilter === ALL_SOURCES
-          ? undefined
-          : (sourceFilter as "manual" | "ai"),
+        sourceFilter === ALL_SOURCES ? undefined : "manual",
         start,
         end,
       ),
@@ -173,8 +171,6 @@ function HistoryPage() {
     queryClient.invalidateQueries({ queryKey: ["sessions"] });
     // The statistics page buckets the same rows, so it goes stale on the same edits.
     queryClient.invalidateQueries({ queryKey: ["activityStats"] });
-    queryClient.invalidateQueries({ queryKey: ["aiAccuracyReport"] });
-    queryClient.invalidateQueries({ queryKey: ["activityClusters"] });
   }
 
   const categoryChangeMutation = useMutation({

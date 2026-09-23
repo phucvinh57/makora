@@ -117,13 +117,5 @@
     { "key_kind": "exe", "match_kind": "exact", "pattern": "teams.exe", "category": "Email & Chat" },
     { "key_kind": "exe", "match_kind": "exact", "pattern": "ms-teams.exe", "category": "Email & Chat" },
     { "key_kind": "exe", "match_kind": "exact", "pattern": "msteams", "category": "Email & Chat" }
-  ],
-  "multi_purpose": [
-    { "key_kind": "domain", "key": "youtube.com" },
-    { "key_kind": "domain", "key": "reddit.com" },
-    { "key_kind": "domain", "key": "medium.com" },
-    { "key_kind": "domain", "key": "x.com" },
-    { "key_kind": "domain", "key": "linkedin.com" },
-    { "key_kind": "domain", "key": "news.ycombinator.com" }
   ]
 }

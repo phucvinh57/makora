@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -19,7 +17,6 @@ struct StoredActivity {
 
 struct ResolutionContext {
     rules: Vec<CompiledRule>,
-    multi_purpose_keys: HashSet<(KeyKind, String)>,
 }
 
 /// Re-derives `rule_category_id` for every activity in Rust.
@@ -160,15 +157,12 @@ fn ensure_activity_for_session(conn: &Connection, id: i64) -> Result<i64> {
         params![activity_id, id],
     )?;
     // Direct legacy inserts may still carry their labels on the session row. Lift them when the
-    // compatibility path first materializes the activity so classifier inputs do not mistake a
-    // manually labeled occurrence for an unlabeled activity.
+    // compatibility path first materializes the activity so a manually labeled occurrence is not
+    // mistaken for an unlabeled activity.
     conn.execute(
         "UPDATE activities SET
              category_id = COALESCE(category_id, (SELECT category_id FROM sessions WHERE id = ?1)),
-             rule_category_id = COALESCE(rule_category_id, (SELECT rule_category_id FROM sessions WHERE id = ?1)),
-             ml_category_id = COALESCE(ml_category_id, (SELECT ml_category_id FROM sessions WHERE id = ?1)),
-             ml_confidence = COALESCE(ml_confidence, (SELECT ml_confidence FROM sessions WHERE id = ?1)),
-             ml_model_version = COALESCE(ml_model_version, (SELECT ml_model_version FROM sessions WHERE id = ?1))
+             rule_category_id = COALESCE(rule_category_id, (SELECT rule_category_id FROM sessions WHERE id = ?1))
          WHERE id = ?2",
         params![id, activity_id],
     )?;
@@ -177,8 +171,6 @@ fn ensure_activity_for_session(conn: &Connection, id: i64) -> Result<i64> {
 
 /// Loads every stored rule in the same specificity order the resolver applies.
 ///
-/// The classifier reuses this so a suggestion is judged against the rules that will actually
-/// label the key, globs included, rather than against an exact-pattern lookup.
 pub(crate) fn load_rules(conn: &Connection) -> Result<Vec<CompiledRule>> {
     let mut stmt = conn.prepare(
         "SELECT id, key_kind, pattern, match_kind, category_id
@@ -209,23 +201,8 @@ pub(crate) fn load_rules(conn: &Connection) -> Result<Vec<CompiledRule>> {
 }
 
 fn load_context(conn: &Connection) -> Result<ResolutionContext> {
-    let rules = load_rules(conn)?;
-
-    let mut multi_purpose_keys = HashSet::new();
-    let mut stmt =
-        conn.prepare("SELECT key_kind, key FROM multi_purpose_keys WHERE enabled = 1")?;
-    for row in stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })? {
-        let (key_kind, key) = row?;
-        if let Some(key_kind) = KeyKind::parse(&key_kind) {
-            multi_purpose_keys.insert((key_kind, key));
-        }
-    }
-
     Ok(ResolutionContext {
-        rules,
-        multi_purpose_keys,
+        rules: load_rules(conn)?,
     })
 }
 
@@ -264,16 +241,12 @@ fn stored_activity_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredA
 }
 
 fn resolve_stored_activity(context: &ResolutionContext, session: &StoredActivity) -> Option<i64> {
-    let multi_purpose = context
-        .multi_purpose_keys
-        .contains(&(session.key_kind, session.key.clone()));
     resolve_category(
         &context.rules,
         &SessionCategoryInput {
             key_kind: session.key_kind,
             key: &session.key,
             url_key: session.url_key.as_deref(),
-            multi_purpose,
         },
     )
 }

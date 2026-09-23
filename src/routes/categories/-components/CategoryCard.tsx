@@ -100,7 +100,7 @@ export function CategoryCard({
               type="text"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="What this category means to the AI"
+              placeholder="What this category means"
               className="min-w-56 flex-1"
             />
             <Select

@@ -5,22 +5,14 @@ import {
   isEnabled as checkAutostartEnabled,
 } from "@tauri-apps/plugin-autostart";
 import type {
-  ActivityCluster,
   ActivityStats,
-  AiAccuracyReport,
-  AiCategorizationSchedule,
   Category,
-  CategorySuggestion,
-  ClusterAssignment,
-  ClassifierStatus,
   CategorizationResetOutcome,
-  ClusteringGranularity,
   CategoryRule,
   IgnoreKind,
   IgnoreRule,
   KeyKind,
   MatchKind,
-  MultiPurposeKey,
   RecategorizeOutcome,
   SessionsPage,
   SeedTaxonomy,
@@ -35,7 +27,7 @@ export function listSessions(
   pageSize: number,
   search?: string,
   category?: string,
-  source?: "manual" | "ai",
+  source?: "manual",
   start?: string,
   end?: string,
 ): Promise<SessionsPage> {
@@ -55,14 +47,6 @@ export function activityStats(
   end: string,
 ): Promise<ActivityStats> {
   return invoke("activity_stats", { start, end });
-}
-
-export function aiAccuracyReport(
-  start: string,
-  end: string,
-  includeBulk: boolean,
-): Promise<AiAccuracyReport> {
-  return invoke("ai_accuracy_report", { start, end, includeBulk });
 }
 
 export function listCategories(): Promise<Category[]> {
@@ -87,34 +71,8 @@ export function recategorizeAll(): Promise<RecategorizeOutcome> {
   return invoke("recategorize_all");
 }
 
-export function getClassifierStatus(): Promise<ClassifierStatus> {
-  return invoke("get_classifier_status");
-}
-
-export function runAiCategorization(): Promise<void> {
-  return invoke("run_ai_categorization");
-}
-
 export function resetCategorization(): Promise<CategorizationResetOutcome> {
   return invoke("reset_categorization");
-}
-
-export function setAiCategorizationSchedule(
-  schedule: AiCategorizationSchedule,
-): Promise<void> {
-  return invoke("set_ai_categorization_schedule", { schedule });
-}
-
-export function setAiCategorizationConfidenceThreshold(
-  threshold: number,
-): Promise<void> {
-  return invoke("set_ai_categorization_confidence_threshold", { threshold });
-}
-
-export function setAiClusteringGranularity(
-  granularity: ClusteringGranularity,
-): Promise<void> {
-  return invoke("set_ai_clustering_granularity", { granularity });
 }
 
 export function createCategory(
@@ -138,57 +96,6 @@ export function updateCategory(
 
 export function deleteCategory(id: number): Promise<void> {
   return invoke("delete_category", { id });
-}
-
-export function listCategorySuggestions(): Promise<CategorySuggestion[]> {
-  return invoke("list_category_suggestions");
-}
-
-export function listMultiPurposeKeys(): Promise<MultiPurposeKey[]> {
-  return invoke("list_multi_purpose_keys");
-}
-
-export function listActivityClusters(): Promise<ActivityCluster[]> {
-  return invoke("list_activity_clusters");
-}
-
-export function assignActivityCluster(
-  clusterId: number,
-  categoryId: number,
-  memberIds: number[],
-): Promise<ClusterAssignment> {
-  return invoke("assign_activity_cluster", {
-    clusterId,
-    categoryId,
-    memberIds,
-  });
-}
-
-export function setMultiPurposeKey(
-  keyKind: "exe" | "domain",
-  key: string,
-  enabled: boolean,
-): Promise<void> {
-  return invoke("set_multi_purpose_key", { keyKind, key, enabled });
-}
-
-export function acceptCategorySuggestions(
-  ids: number[],
-  overrideCategory?: number,
-  bulk = false,
-): Promise<void> {
-  return invoke("accept_category_suggestions", {
-    ids,
-    overrideCategory: overrideCategory ?? null,
-    bulk,
-  });
-}
-
-export function dismissCategorySuggestions(
-  ids: number[],
-  bulk = false,
-): Promise<void> {
-  return invoke("dismiss_category_suggestions", { ids, bulk });
 }
 
 export function applySeedTaxonomy(): Promise<void> {

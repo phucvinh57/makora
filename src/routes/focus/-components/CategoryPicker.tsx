@@ -26,7 +26,7 @@ export function CategoryPicker({
   if (categories.length === 0) {
     return (
       <p className="m-0 text-sm text-muted-foreground">
-        No categories yet — create one on the Labeling page first.
+        No categories yet — create one on the Categories page first.
       </p>
     );
   }

@@ -4,7 +4,6 @@ import {
   Hourglass,
   PanelLeftClose,
   PanelLeftOpen,
-  Sparkles,
   Settings as SettingsIcon,
   Tags,
   Target,
@@ -28,7 +27,6 @@ type NavItem = {
 
 const NAV_ITEMS: NavItem[] = [
   { to: "/statistics", label: "Statistics", icon: BarChart3 },
-  { to: "/labeling", label: "Labeling", icon: Sparkles },
   { to: "/categories", label: "Categories", icon: Tags },
   { to: "/history", label: "History", icon: History },
   { to: "/focus", label: "Focus", icon: Target, feature: "focus" },

@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
 use crate::core::{
-    ActivityCluster, ActivityStats, AiAccuracyReport, AiCategorizationSchedule,
-    AiCategorizationService, CategorizationResetOutcome, Category, CategoryFilter, CategoryRule,
-    CategorySourceFilter, CategoryStore, CategorySuggestion, ClassifierStatus, ClusterAssignment,
-    ClusteringGranularity, HistoryReader, IgnoreRule, IgnoreStore, MultiPurposeKey,
+    ActivityStats, CategorizationResetOutcome, Category, CategoryFilter, CategoryRule,
+    CategorySourceFilter, CategoryStore, HistoryReader, IgnoreRule, IgnoreStore,
     RecategorizeOutcome, SeedTaxonomy, SessionFilter, SessionRow, UrlQueryParam, UrlQueryStore,
     WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
 };
@@ -52,7 +50,6 @@ fn parse_category_source_filter(source: Option<&str>) -> Result<CategorySourceFi
     match source {
         None => Ok(CategorySourceFilter::All),
         Some("manual") => Ok(CategorySourceFilter::Manual),
-        Some("ai") => Ok(CategorySourceFilter::Ai),
         Some(value) => Err(format!("invalid category source filter: {value}")),
     }
 }
@@ -66,21 +63,6 @@ pub fn activity_stats(
     reader
         .activity_stats(&start, &end)
         .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn ai_accuracy_report(
-    reader: State<HistoryReader>,
-    start: String,
-    end: String,
-    include_bulk: bool,
-) -> Result<AiAccuracyReport, String> {
-    let report = if include_bulk {
-        reader.accuracy_report_with_bulk(&start, &end, true)
-    } else {
-        reader.accuracy_report(&start, &end)
-    };
-    report.map_err(|e| e.to_string())
 }
 
 fn parse_category_filter(category: Option<&str>) -> Result<CategoryFilter, String> {
@@ -159,78 +141,6 @@ pub fn delete_category(categories: State<CategoryStore>, id: i64) -> Result<(), 
 }
 
 #[tauri::command]
-pub fn list_category_suggestions(
-    categories: State<CategoryStore>,
-) -> Result<Vec<CategorySuggestion>, String> {
-    categories.list_suggestions().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn list_multi_purpose_keys(
-    categories: State<CategoryStore>,
-) -> Result<Vec<MultiPurposeKey>, String> {
-    categories
-        .list_multi_purpose_keys()
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn list_activity_clusters(
-    categories: State<CategoryStore>,
-) -> Result<Vec<ActivityCluster>, String> {
-    categories
-        .list_activity_clusters()
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn assign_activity_cluster(
-    categories: State<CategoryStore>,
-    cluster_id: i64,
-    category_id: i64,
-    member_ids: Vec<i64>,
-) -> Result<ClusterAssignment, String> {
-    categories
-        .assign_activity_cluster(cluster_id, category_id, &member_ids)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn set_multi_purpose_key(
-    categories: State<CategoryStore>,
-    key_kind: String,
-    key: String,
-    enabled: bool,
-) -> Result<(), String> {
-    categories
-        .set_multi_purpose_key(&key_kind, &key, enabled)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn accept_category_suggestions(
-    categories: State<CategoryStore>,
-    ids: Vec<i64>,
-    override_category: Option<i64>,
-    bulk: bool,
-) -> Result<(), String> {
-    categories
-        .accept_suggestions(&ids, override_category, bulk)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn dismiss_category_suggestions(
-    categories: State<CategoryStore>,
-    ids: Vec<i64>,
-    bulk: bool,
-) -> Result<(), String> {
-    categories
-        .dismiss_suggestions(&ids, bulk)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 pub fn apply_seed_taxonomy(categories: State<CategoryStore>) -> Result<(), String> {
     categories
         .apply_seed_taxonomy(include_str!("../resources/seed_taxonomy.json"))
@@ -267,48 +177,12 @@ pub fn delete_category_rule(categories: State<CategoryStore>, id: i64) -> Result
 }
 
 #[tauri::command]
-pub fn get_classifier_status(ai: State<AiCategorizationService>) -> ClassifierStatus {
-    ai.status()
-}
-
-#[tauri::command]
-pub fn run_ai_categorization(ai: State<AiCategorizationService>) -> Result<(), String> {
-    ai.run_now().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
 pub fn reset_categorization(
-    ai: State<AiCategorizationService>,
+    categories: State<CategoryStore>,
 ) -> Result<CategorizationResetOutcome, String> {
-    ai.reset_categorization().map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-pub fn set_ai_categorization_schedule(
-    ai: State<AiCategorizationService>,
-    schedule: String,
-) -> Result<(), String> {
-    let schedule = AiCategorizationSchedule::parse(&schedule).map_err(|error| error.to_string())?;
-    ai.set_schedule(schedule).map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-pub fn set_ai_categorization_confidence_threshold(
-    ai: State<AiCategorizationService>,
-    threshold: f32,
-) -> Result<(), String> {
-    ai.set_confidence_threshold(threshold)
+    categories
+        .reset_categorization()
         .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-pub fn set_ai_clustering_granularity(
-    ai: State<AiCategorizationService>,
-    granularity: String,
-) -> Result<(), String> {
-    let granularity = ClusteringGranularity::parse(&granularity).map_err(|e| e.to_string())?;
-    ai.set_clustering_granularity(granularity)
-        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

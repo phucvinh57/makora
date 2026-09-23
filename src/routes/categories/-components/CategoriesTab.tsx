@@ -78,9 +78,6 @@ export function CategoriesTab({
     queryClient.invalidateQueries({ queryKey: ["sessions"] });
     queryClient.invalidateQueries({ queryKey: ["activityStats"] });
     queryClient.invalidateQueries({ queryKey: ["workSessionStats"] });
-    queryClient.invalidateQueries({ queryKey: ["categorySuggestions"] });
-    queryClient.invalidateQueries({ queryKey: ["multiPurposeKeys"] });
-    queryClient.invalidateQueries({ queryKey: ["classifierStatus"] });
   }
 
   const createCategoryMutation = useMutation({
@@ -270,15 +267,14 @@ export function CategoriesTab({
               type="text"
               value={newDescription}
               onChange={(e) => setNewDescription(e.target.value)}
-              placeholder="Description for AI suggestions"
+              placeholder="Description (optional)"
               aria-describedby="category-description-help"
             />
             <p
               id="category-description-help"
               className="text-xs text-muted-foreground"
             >
-              Describe what belongs here; the AI uses this when suggesting new
-              rules.
+              Describe what belongs here.
             </p>
             <Select
               value={newParentId === null ? NO_PARENT : String(newParentId)}
