@@ -4,7 +4,6 @@ const CATEGORIZATION_QUERY_KEYS = [
   "categories",
   "sessions",
   "activityStats",
-  "workSessionStats",
 ] as const;
 
 export function invalidateCategorizationQueries(queryClient: QueryClient) {

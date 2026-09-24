@@ -7,7 +7,6 @@ use crate::core::model::AppInfo;
 pub mod categories;
 pub mod queries;
 pub mod sqlite;
-pub mod work_sessions;
 
 pub use categories::{
     CategorizationResetOutcome, Category, CategoryStore, NewCategory, SeedTaxonomy,
@@ -16,10 +15,6 @@ pub use queries::{
     ActivityStats, CategoryFilter, CategorySourceFilter, HistoryReader, SessionFilter, SessionRow,
 };
 pub use sqlite::{open_connection, SqliteStore};
-pub use work_sessions::{
-    NewWorkSession, WorkSession, WorkSessionFields, WorkSessionStats, WorkSessionStore,
-    WorkSessionUpdate,
-};
 
 pub trait SessionStore {
     fn start_session(

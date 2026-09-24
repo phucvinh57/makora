@@ -8,14 +8,12 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
-  getWorkSession,
   listCategories,
   listSessions,
   setSessionRowCategory,
   setSessionsCategory,
 } from "@/api";
 import { categoryPath } from "@/categories";
-import { isFeatureEnabled } from "@/stores/features";
 import type { SessionRow } from "@/types";
 import { BulkActionsBar } from "./-components/BulkActionsBar";
 import {
@@ -42,17 +40,11 @@ const RANGE_KINDS: TimeRangeKind[] = [
   "3d",
   "7d",
   "custom",
-  "session",
 ];
 
 function validateSearch(search: Partial<TimeRange>): TimeRange {
   const kind = RANGE_KINDS.find((k) => k === search.kind);
   if (!kind || kind === "all") return ALL_TIME;
-  if (kind === "session") {
-    if (!isFeatureEnabled("focus")) return ALL_TIME;
-    const sessionId = Number(search.sessionId);
-    return Number.isInteger(sessionId) ? { kind, sessionId } : ALL_TIME;
-  }
   if (kind === "custom") {
     const from = typeof search.from === "string" ? search.from : undefined;
     const to = typeof search.to === "string" ? search.to : undefined;
@@ -112,20 +104,7 @@ function HistoryPage() {
     clearSelection();
   }
 
-  const rangeSessionQuery = useQuery({
-    queryKey: ["workSession", range.sessionId],
-    queryFn: () => getWorkSession(range.sessionId as number),
-    enabled: range.kind === "session" && range.sessionId !== undefined,
-  });
-  const rangeSession =
-    range.kind === "session" ? (rangeSessionQuery.data ?? null) : null;
-  const rangeSessionMissing =
-    range.kind === "session" && rangeSessionQuery.isSuccess && !rangeSession;
-
-  const { start, end } = useMemo(
-    () => resolveRange(range, rangeSession),
-    [range, rangeSession],
-  );
+  const { start, end } = useMemo(() => resolveRange(range), [range]);
 
   const sessionsQuery = useQuery({
     queryKey: [
@@ -148,7 +127,6 @@ function HistoryPage() {
         start,
         end,
       ),
-    enabled: range.kind !== "session" || rangeSession !== null,
     placeholderData: keepPreviousData,
   });
 
@@ -233,18 +211,10 @@ function HistoryPage() {
         onSourceFilterChange={handleSourceFilterChange}
         categories={categories}
         range={range}
-        rangeSession={rangeSession}
         onRangeChange={handleRangeChange}
         loading={loading}
         onRefresh={() => sessionsQuery.refetch()}
       />
-
-      {rangeSessionMissing && (
-        <div className="mb-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          That focus session no longer exists — clear the time filter to see
-          your history again.
-        </div>
-      )}
 
       {error && (
         <div className="mb-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">

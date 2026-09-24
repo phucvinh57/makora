@@ -62,7 +62,6 @@ export function CategoriesTab() {
     // Deleting a category clears the pins that pointed at it, and a rename or recolour is denormalized into the rows these two queries hold.
     queryClient.invalidateQueries({ queryKey: ["sessions"] });
     queryClient.invalidateQueries({ queryKey: ["activityStats"] });
-    queryClient.invalidateQueries({ queryKey: ["workSessionStats"] });
   }
 
   const createCategoryMutation = useMutation({

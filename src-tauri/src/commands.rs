@@ -2,9 +2,7 @@ use crate::core::category::url_location;
 use crate::core::llm::{self, ActivityText};
 use crate::core::{
     ActivityStats, CategorizationResetOutcome, Category, CategoryFilter, CategorySourceFilter,
-    CategoryStore, HistoryReader, NewCategory, NewWorkSession, SeedTaxonomy, SessionFilter,
-    SessionRow, WorkSession, WorkSessionFields, WorkSessionStats, WorkSessionStore,
-    WorkSessionUpdate,
+    CategoryStore, HistoryReader, NewCategory, SeedTaxonomy, SessionFilter, SessionRow,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -178,104 +176,6 @@ fn parse_rfc3339(value: &str) -> Result<DateTime<Utc>, String> {
     DateTime::parse_from_rfc3339(value)
         .map(|t| t.with_timezone(&Utc))
         .map_err(|_| format!("invalid timestamp: {value}"))
-}
-
-fn validate_work_session(name: &str, target_seconds: i64) -> Result<(), String> {
-    if name.trim().is_empty() {
-        return Err("work session name must not be empty".to_string());
-    }
-    if target_seconds <= 0 {
-        return Err("target duration must be positive".to_string());
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub fn create_work_session(
-    work_sessions: State<WorkSessionStore>,
-    name: String,
-    note: Option<String>,
-    target_seconds: i64,
-    start_time: Option<String>,
-    category_ids: Vec<i64>,
-) -> Result<WorkSession, String> {
-    validate_work_session(&name, target_seconds)?;
-    let start = start_time.as_deref().map(parse_rfc3339).transpose()?;
-    work_sessions
-        .create(&NewWorkSession {
-            name: name.trim().to_string(),
-            note,
-            target_seconds,
-            start_time: start,
-            category_ids,
-        })
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn list_work_sessions(
-    work_sessions: State<WorkSessionStore>,
-) -> Result<Vec<WorkSession>, String> {
-    work_sessions.list().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn search_work_sessions(
-    work_sessions: State<WorkSessionStore>,
-    search: Option<String>,
-    limit: i64,
-    offset: i64,
-) -> Result<Vec<WorkSession>, String> {
-    work_sessions
-        .search(search.as_deref(), limit, offset)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn get_work_session(
-    work_sessions: State<WorkSessionStore>,
-    id: i64,
-) -> Result<Option<WorkSession>, String> {
-    work_sessions.get(id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn update_work_session(
-    work_sessions: State<WorkSessionStore>,
-    update: WorkSessionUpdate,
-) -> Result<(), String> {
-    let WorkSessionUpdate { id, fields } = update;
-    validate_work_session(&fields.name, fields.target_seconds)?;
-    let start = parse_rfc3339(&fields.start_time)?;
-    let end = parse_rfc3339(&fields.end_time)?;
-    if end <= start {
-        return Err("end time must be after start time".to_string());
-    }
-    let fields = WorkSessionFields {
-        name: fields.name.trim().to_string(),
-        start_time: start.to_rfc3339(),
-        end_time: end.to_rfc3339(),
-        ..fields
-    };
-    work_sessions.update(id, &fields).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn stop_work_session(work_sessions: State<WorkSessionStore>, id: i64) -> Result<(), String> {
-    work_sessions.stop(id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn delete_work_session(work_sessions: State<WorkSessionStore>, id: i64) -> Result<(), String> {
-    work_sessions.delete(id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn work_session_stats(
-    work_sessions: State<WorkSessionStore>,
-    id: i64,
-) -> Result<WorkSessionStats, String> {
-    work_sessions.stats(id).map_err(|e| e.to_string())
 }
 
 /// Guards against two categorization runs loading the model at once.

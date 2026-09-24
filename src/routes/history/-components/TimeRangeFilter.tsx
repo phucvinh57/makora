@@ -1,4 +1,4 @@
-import { CalendarRange, Target, X } from "lucide-react";
+import { CalendarRange, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { DateTimePicker } from "@/components/ui/date-time-picker";
@@ -7,10 +7,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
-import { useFeatureFlags } from "@/stores/features";
-import type { WorkSession } from "@/types";
 import {
   ALL_TIME,
   describeRange,
@@ -20,22 +17,16 @@ import {
   type TimeRange,
   toLocalInputValue,
 } from "./timeRange";
-import { WorkSessionPicker } from "./WorkSessionPicker";
 
 export function TimeRangeFilter({
   range,
-  session,
   onChange,
 }: {
   range: TimeRange;
-  session?: WorkSession | null;
   onChange: (range: TimeRange) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const focusEnabled = useFeatureFlags((state) => state.flags.focus);
-  const displayRange =
-    !focusEnabled && range.kind === "session" ? ALL_TIME : range;
-  const active = isRangeActive(displayRange);
+  const active = isRangeActive(range);
 
   function apply(next: TimeRange) {
     onChange(next);
@@ -56,68 +47,29 @@ export function TimeRangeFilter({
                 active && "rounded-r-none border-r-0",
               )}
             >
-              {displayRange.kind === "session" ? (
-                <Target className="size-3.5 shrink-0" />
-              ) : (
-                <CalendarRange className="size-3.5 shrink-0" />
-              )}
-              <span className="truncate">
-                {describeRange(displayRange, session)}
-              </span>
+              <CalendarRange className="size-3.5 shrink-0" />
+              <span className="truncate">{describeRange(range)}</span>
             </Button>
           }
         />
         <PopoverContent className="w-80" align="end">
-          <Tabs
-            defaultValue={displayRange.kind === "session" ? "session" : "range"}
-            className="flex flex-col gap-3"
-          >
-            <TabsList className="w-full">
-              <TabsTrigger value="range" className="flex-1">
-                Time range
-              </TabsTrigger>
-              {focusEnabled ? (
-                <TabsTrigger value="session" className="flex-1">
-                  Focus session
-                </TabsTrigger>
-              ) : null}
-            </TabsList>
-
-            <TabsContent value="range" className="flex flex-col gap-3">
-              <div className="grid grid-cols-2 gap-1.5">
-                {RELATIVE_PRESETS.map((preset) => (
-                  <Button
-                    key={preset.kind}
-                    type="button"
-                    size="sm"
-                    variant={
-                      displayRange.kind === preset.kind ? "secondary" : "ghost"
-                    }
-                    className="justify-start"
-                    onClick={() => apply({ kind: preset.kind })}
-                  >
-                    {preset.label}
-                  </Button>
-                ))}
-              </div>
-              <CustomRangeFields range={range} onApply={apply} />
-            </TabsContent>
-
-            {focusEnabled ? (
-              <TabsContent value="session">
-                <WorkSessionPicker
-                  selectedId={
-                    displayRange.kind === "session"
-                      ? displayRange.sessionId
-                      : undefined
-                  }
-                  onSelect={(picked) =>
-                    apply({ kind: "session", sessionId: picked.id })
-                  }
-                />
-              </TabsContent>
-            ) : null}
-          </Tabs>
+          <div className="flex flex-col gap-3">
+            <div className="grid grid-cols-2 gap-1.5">
+              {RELATIVE_PRESETS.map((preset) => (
+                <Button
+                  key={preset.kind}
+                  type="button"
+                  size="sm"
+                  variant={range.kind === preset.kind ? "secondary" : "ghost"}
+                  className="justify-start"
+                  onClick={() => apply({ kind: preset.kind })}
+                >
+                  {preset.label}
+                </Button>
+              ))}
+            </div>
+            <CustomRangeFields range={range} onApply={apply} />
+          </div>
         </PopoverContent>
       </Popover>
 

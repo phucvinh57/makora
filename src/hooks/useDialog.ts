@@ -1,10 +1,6 @@
 import { useEffect, useState } from "react";
 
-export type DialogName =
-  | "add-category"
-  | "add-rule"
-  | "start-work-session"
-  | "edit-work-session";
+export type DialogName = "add-category" | "add-rule";
 
 function eventName(name: DialogName) {
   return `makora:${name}`;

@@ -12,7 +12,7 @@ import {
   categoryOptions,
   categoryValueLabels,
 } from "@/components/CategoryOptions";
-import type { Category, WorkSession } from "@/types";
+import type { Category } from "@/types";
 import {
   ALL_CATEGORIES,
   ALL_SOURCES,
@@ -31,7 +31,6 @@ export function HistoryHeader({
   onSourceFilterChange,
   categories,
   range,
-  rangeSession,
   onRangeChange,
   loading,
   onRefresh,
@@ -44,7 +43,6 @@ export function HistoryHeader({
   onSourceFilterChange: (value: string) => void;
   categories: Category[];
   range: TimeRange;
-  rangeSession?: WorkSession | null;
   onRangeChange: (range: TimeRange) => void;
   loading: boolean;
   onRefresh: () => void;
@@ -102,11 +100,7 @@ export function HistoryHeader({
           <SelectItem value={MANUAL_SOURCE}>Manual</SelectItem>
         </SelectContent>
       </Select>
-      <TimeRangeFilter
-        range={range}
-        session={rangeSession}
-        onChange={onRangeChange}
-      />
+      <TimeRangeFilter range={range} onChange={onRangeChange} />
       <Button
         variant="outline"
         size="sm"

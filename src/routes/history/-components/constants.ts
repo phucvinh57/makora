@@ -4,4 +4,3 @@ export const ALL_CATEGORIES = "all";
 export const ALL_SOURCES = "all";
 export const MANUAL_SOURCE = "manual";
 export const SEARCH_DEBOUNCE_MS = 300;
-export const WORK_SESSION_PAGE_SIZE = 20;

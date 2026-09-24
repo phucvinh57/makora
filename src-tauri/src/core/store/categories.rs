@@ -250,7 +250,6 @@ impl CategoryStore {
             "UPDATE activities SET category_id = NULL WHERE category_id IN ({ids});
              UPDATE activities SET ai_category_id = NULL WHERE ai_category_id IN ({ids});
              UPDATE sessions SET category_id = NULL WHERE category_id IN ({ids});
-             DELETE FROM work_session_categories WHERE category_id IN ({ids});
              DELETE FROM categories WHERE id IN ({ids});"
         ))?;
         tx.commit()?;

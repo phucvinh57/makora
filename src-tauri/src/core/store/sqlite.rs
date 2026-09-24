@@ -89,6 +89,11 @@ fn migrations() -> Migrations<'static> {
             "ALTER TABLE activities ADD COLUMN ai_category_id INTEGER REFERENCES categories(id);
         CREATE INDEX idx_activities_ai_category ON activities(ai_category_id);",
         ),
+        // Work sessions (the focus feature) were removed.
+        M::up(
+            "DROP TABLE work_session_categories;
+        DROP TABLE work_sessions;",
+        ),
     ])
 }
 
@@ -113,7 +118,7 @@ pub fn open_connection(path: &Path) -> Result<SharedConnection> {
 /// `user_version` the 28 migrations this schema replaced ended at. Such a database already
 /// has the squashed schema, so it is stamped as migrated instead of being run again.
 const LEGACY_SCHEMA_VERSION: i64 = 28;
-const LATEST_SCHEMA_VERSION: i64 = 2;
+const LATEST_SCHEMA_VERSION: i64 = 3;
 
 fn migrate(conn: &mut Connection) -> Result<()> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;

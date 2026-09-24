@@ -1,5 +1,4 @@
 import { addDays, format, startOfDay } from "date-fns";
-import type { WorkSession } from "@/types";
 
 export type TimeRangeKind =
   | "all"
@@ -7,14 +6,12 @@ export type TimeRangeKind =
   | "yesterday"
   | "3d"
   | "7d"
-  | "custom"
-  | "session";
+  | "custom";
 
 export interface TimeRange {
   kind: TimeRangeKind;
   from?: string;
   to?: string;
-  sessionId?: number;
 }
 
 export const ALL_TIME: TimeRange = { kind: "all" };
@@ -33,10 +30,10 @@ export const RELATIVE_PRESETS: { kind: TimeRangeKind; label: string }[] = [
   { kind: "7d", label: "Last 7 days" },
 ];
 
-export function resolveRange(
-  range: TimeRange,
-  session?: WorkSession | null,
-): { start?: string; end?: string } {
+export function resolveRange(range: TimeRange): {
+  start?: string;
+  end?: string;
+} {
   const today = startOfDay(new Date());
   switch (range.kind) {
     case "all":
@@ -55,25 +52,16 @@ export function resolveRange(
       };
     case "custom":
       return { start: range.from, end: range.to };
-    case "session":
-      return session
-        ? { start: session.start_time, end: session.end_time }
-        : { start: undefined, end: undefined };
   }
 }
 
-export function describeRange(
-  range: TimeRange,
-  session?: WorkSession | null,
-): string {
+export function describeRange(range: TimeRange): string {
   switch (range.kind) {
     case "custom": {
       const from = range.from ? formatBound(range.from) : "…";
       const to = range.to ? formatBound(range.to) : "…";
       return `${from} – ${to}`;
     }
-    case "session":
-      return session?.name ?? `Session #${range.sessionId}`;
     default:
       return (
         RELATIVE_PRESETS.find((preset) => preset.kind === range.kind)?.label ??

@@ -14,7 +14,7 @@ use tracing::{error, info};
 
 use crate::core::{
     open_connection, CategoryStore, FocusWatcher, HistoryReader, PlatformFocusWatcher,
-    SessionTracker, SqliteStore, WatchEvent, WorkSessionStore,
+    SessionTracker, SqliteStore, WatchEvent,
 };
 
 type SharedTracker = Arc<Mutex<SessionTracker<SqliteStore>>>;
@@ -47,14 +47,6 @@ pub fn run() {
             commands::get_seed_taxonomy_preview,
             commands::reset_categorization,
             commands::categorize,
-            commands::create_work_session,
-            commands::list_work_sessions,
-            commands::search_work_sessions,
-            commands::get_work_session,
-            commands::update_work_session,
-            commands::stop_work_session,
-            commands::delete_work_session,
-            commands::work_session_stats,
         ])
         .setup(|app| {
             let data_dir = app_data_dir(app.handle())?;
@@ -76,7 +68,6 @@ pub fn run() {
             ));
 
             app.manage(HistoryReader::new(conn.clone()));
-            app.manage(WorkSessionStore::new(conn.clone()));
             app.manage(CategoryStore::new(conn));
             app.manage(commands::AiCategorizeState::default());
             app.manage(tracker.clone());

@@ -11,9 +11,6 @@ import type {
   CategorizationResetOutcome,
   SessionsPage,
   SeedTaxonomy,
-  WorkSession,
-  WorkSessionStats,
-  WorkSessionUpdate,
 } from "./types";
 
 export function listSessions(
@@ -94,54 +91,6 @@ export function applySeedTaxonomy(): Promise<void> {
 
 export function getSeedTaxonomyPreview(): Promise<SeedTaxonomy> {
   return invoke("get_seed_taxonomy_preview");
-}
-
-export function createWorkSession(
-  name: string,
-  note: string | null,
-  targetSeconds: number,
-  categoryIds: number[],
-  startTime?: string,
-): Promise<WorkSession> {
-  return invoke("create_work_session", {
-    name,
-    note,
-    targetSeconds,
-    categoryIds,
-    startTime,
-  });
-}
-
-export function listWorkSessions(): Promise<WorkSession[]> {
-  return invoke("list_work_sessions");
-}
-
-export function searchWorkSessions(
-  search: string | undefined,
-  limit: number,
-  offset: number,
-): Promise<WorkSession[]> {
-  return invoke("search_work_sessions", { search, limit, offset });
-}
-
-export function getWorkSession(id: number): Promise<WorkSession | null> {
-  return invoke("get_work_session", { id });
-}
-
-export function updateWorkSession(update: WorkSessionUpdate): Promise<void> {
-  return invoke("update_work_session", { update });
-}
-
-export function stopWorkSession(id: number): Promise<void> {
-  return invoke("stop_work_session", { id });
-}
-
-export function deleteWorkSession(id: number): Promise<void> {
-  return invoke("delete_work_session", { id });
-}
-
-export function workSessionStats(id: number): Promise<WorkSessionStats> {
-  return invoke("work_session_stats", { id });
 }
 
 export function isAutostartEnabled(): Promise<boolean> {
