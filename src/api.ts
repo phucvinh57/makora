@@ -7,8 +7,10 @@ import {
 import type {
   ActivityStats,
   AiCategorizeOutcome,
+  AiReviewPage,
   Category,
   CategorizationResetOutcome,
+  FeedbackStats,
   SessionsPage,
   SeedTaxonomy,
 } from "./types";
@@ -101,6 +103,45 @@ export function setAutostartEnabled(enabled: boolean): Promise<void> {
   return enabled ? enableAutostart() : disableAutostart();
 }
 
-export function categorizeWithAi(model?: string): Promise<AiCategorizeOutcome> {
-  return invoke("categorize", { model });
+export function cancelCategorize(): Promise<void> {
+  return invoke("cancel_categorize");
+}
+
+export function aiModelLoaded(): Promise<boolean> {
+  return invoke("ai_model_loaded");
+}
+
+export function unloadAiModel(): Promise<void> {
+  return invoke("unload_ai_model");
+}
+
+export function categorizeWithAi(
+  recheck = false,
+  model?: string,
+): Promise<AiCategorizeOutcome> {
+  return invoke("categorize", { model, recheck });
+}
+
+export function listAiReview(
+  page: number,
+  pageSize: number,
+  category?: number,
+): Promise<AiReviewPage> {
+  return invoke("list_ai_review", { page, pageSize, category });
+}
+
+export function acceptAiLabels(activityIds: number[]): Promise<void> {
+  return invoke("accept_ai_labels", { activityIds });
+}
+
+/** Pins activities to a category; `null` rejects their AI label. */
+export function setActivitiesCategory(
+  activityIds: number[],
+  categoryId: number | null,
+): Promise<void> {
+  return invoke("set_activities_category", { activityIds, categoryId });
+}
+
+export function aiFeedbackStats(): Promise<FeedbackStats> {
+  return invoke("ai_feedback_stats");
 }

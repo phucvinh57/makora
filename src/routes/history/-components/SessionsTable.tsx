@@ -1,3 +1,5 @@
+import { Check } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -71,6 +73,7 @@ export function SessionsTable({
   onToggleRow,
   onToggleAllVisible,
   onRowCategoryChange,
+  onAcceptAiLabel,
 }: {
   rows: SessionRow[];
   categories: Category[];
@@ -82,6 +85,7 @@ export function SessionsTable({
   onToggleRow: (id: number, checked: boolean) => void;
   onToggleAllVisible: (checked: boolean) => void;
   onRowCategoryChange: (row: SessionRow, value: string) => void;
+  onAcceptAiLabel: (row: SessionRow) => void;
 }) {
   const [columnWidths, setColumnWidths] = useState(DEFAULT_COLUMN_WIDTHS);
   const [resizingColumn, setResizingColumn] = useState<ResizableColumn | null>(
@@ -313,6 +317,18 @@ export function SessionsTable({
                           {categoryOptions(categories)}
                         </SelectContent>
                       </Select>
+                      {row.category_source === "ai" &&
+                        row.activity_id !== null && (
+                          <Button
+                            size="icon-xs"
+                            variant="ghost"
+                            aria-label="Accept AI label"
+                            title="Accept this AI label"
+                            onClick={() => onAcceptAiLabel(row)}
+                          >
+                            <Check />
+                          </Button>
+                        )}
                     </div>
                   </TableCell>
                   <TableCell

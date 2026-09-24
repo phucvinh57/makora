@@ -42,14 +42,65 @@ pub struct NewCategory {
     pub parent_id: Option<i64>,
 }
 
-/// An activity nobody has categorized yet, as the LLM needs to see it.
+/// An activity the LLM is asked to label, as it needs to see it.
 #[derive(Debug, Clone)]
 pub struct UncategorizedActivity {
     pub id: i64,
+    pub key_kind: String,
+    pub key: String,
     pub app_name: String,
     pub url: Option<String>,
     pub title: String,
 }
+
+/// An activity the user has judged, either by pinning it or by rejecting an AI label. These
+/// are the examples the LLM learns from.
+#[derive(Debug, Clone)]
+pub struct LabeledActivity {
+    pub key_kind: String,
+    pub key: String,
+    pub app_name: String,
+    pub url: Option<String>,
+    pub title: String,
+    pub category_id: Option<i64>,
+    pub ai_category_id: Option<i64>,
+    pub ai_rejected_category_id: Option<i64>,
+}
+
+/// An AI label waiting for the user to accept, change or reject it.
+#[derive(Debug, Clone, Serialize)]
+pub struct AiReviewRow {
+    pub activity_id: i64,
+    pub app_name: String,
+    pub url: Option<String>,
+    pub title: String,
+    pub category_id: i64,
+    pub category_name: String,
+    pub category_color: String,
+    pub total_seconds: f64,
+    pub session_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiReviewPage {
+    pub rows: Vec<AiReviewRow>,
+    pub total: i64,
+}
+
+/// How much the user has taught the model so far.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct FeedbackStats {
+    pub corrected: i64,
+    pub confirmed: i64,
+    pub pinned: i64,
+    pub rejected: i64,
+    pub pending_review: i64,
+}
+
+/// An activity no session of which is pinned on its own: the only ones an AI label can show
+/// through for, since a session pin outranks it.
+const NO_SESSION_PIN: &str = "NOT EXISTS (SELECT 1 FROM sessions s
+                                          WHERE s.activity_id = a.id AND s.category_id IS NOT NULL)";
 
 pub struct CategoryStore {
     conn: SharedConnection,
@@ -130,6 +181,31 @@ fn insert_seed_category(
     for child in &category.children {
         insert_seed_category(tx, child, Some(id), category_ids)?;
     }
+    Ok(())
+}
+
+/// Pins one activity and every session of it. Clearing a pin also rejects the AI label that
+/// would otherwise show through, so "Uncategorized" sticks and the model learns from it.
+fn pin_activity(
+    tx: &rusqlite::Transaction<'_>,
+    activity_id: i64,
+    category_id: Option<i64>,
+) -> Result<()> {
+    if category_id.is_none() {
+        tx.execute(
+            "UPDATE activities SET ai_rejected_category_id = ai_category_id, ai_category_id = NULL
+             WHERE id = ?1 AND ai_category_id IS NOT NULL",
+            params![activity_id],
+        )?;
+    }
+    tx.execute(
+        "UPDATE activities SET category_id = ?1 WHERE id = ?2",
+        params![category_id, activity_id],
+    )?;
+    tx.execute(
+        "UPDATE sessions SET category_id = ?1 WHERE activity_id = ?2",
+        params![category_id, activity_id],
+    )?;
     Ok(())
 }
 
@@ -249,6 +325,8 @@ impl CategoryStore {
         tx.execute_batch(&format!(
             "UPDATE activities SET category_id = NULL WHERE category_id IN ({ids});
              UPDATE activities SET ai_category_id = NULL WHERE ai_category_id IN ({ids});
+             UPDATE activities SET ai_rejected_category_id = NULL
+                 WHERE ai_rejected_category_id IN ({ids});
              UPDATE sessions SET category_id = NULL WHERE category_id IN ({ids});
              DELETE FROM categories WHERE id IN ({ids});"
         ))?;
@@ -263,18 +341,56 @@ impl CategoryStore {
         }
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        {
-            let mut pin_activity = tx.prepare(
-                "UPDATE activities SET category_id = ?1
-                 WHERE id = (SELECT activity_id FROM sessions WHERE id = ?2)",
+        for session_id in session_ids {
+            let activity_id: Option<Option<i64>> = tx
+                .query_row(
+                    "SELECT activity_id FROM sessions WHERE id = ?1",
+                    params![session_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(Some(activity_id)) = activity_id {
+                pin_activity(&tx, activity_id, category_id)?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Like [`assign_sessions`](Self::assign_sessions), for activities picked directly.
+    pub fn assign_activities(&self, activity_ids: &[i64], category_id: Option<i64>) -> Result<()> {
+        if activity_ids.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        for activity_id in activity_ids {
+            pin_activity(&tx, *activity_id, category_id)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Turns each activity's AI label into a manual pin.
+    pub fn accept_ai_labels(&self, activity_ids: &[i64]) -> Result<()> {
+        if activity_ids.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        for activity_id in activity_ids {
+            let accepted = tx.execute(
+                "UPDATE activities SET category_id = ai_category_id
+                 WHERE id = ?1 AND category_id IS NULL AND ai_category_id IS NOT NULL",
+                params![activity_id],
             )?;
-            let mut pin_sessions = tx.prepare(
-                "UPDATE sessions SET category_id = ?1
-                 WHERE activity_id = (SELECT activity_id FROM sessions WHERE id = ?2)",
-            )?;
-            for session_id in session_ids {
-                pin_activity.execute(params![category_id, session_id])?;
-                pin_sessions.execute(params![category_id, session_id])?;
+            if accepted > 0 {
+                tx.execute(
+                    "UPDATE sessions
+                     SET category_id = (SELECT category_id FROM activities WHERE id = ?1)
+                     WHERE activity_id = ?1",
+                    params![activity_id],
+                )?;
             }
         }
         tx.commit()?;
@@ -294,7 +410,8 @@ impl CategoryStore {
             |row| row.get(0),
         )?;
         tx.execute(
-            "UPDATE activities SET category_id = NULL, ai_category_id = NULL",
+            "UPDATE activities
+             SET category_id = NULL, ai_category_id = NULL, ai_rejected_category_id = NULL",
             [],
         )?;
         tx.execute("UPDATE sessions SET category_id = NULL", [])?;
@@ -303,49 +420,185 @@ impl CategoryStore {
         Ok(CategorizationResetOutcome { sessions_cleared })
     }
 
-    /// Activities with neither a manual pin nor an AI label, most recently seen first.
-    pub fn get_uncategorized_activities(&self) -> Result<Vec<UncategorizedActivity>> {
+    /// Activities for the LLM to label, most recently seen first. Normally those with neither a
+    /// pin nor an AI label nor a rejected one; with `recheck`, those carrying an AI label the
+    /// user has not confirmed.
+    pub fn get_activities_to_label(&self, recheck: bool) -> Result<Vec<UncategorizedActivity>> {
+        let wanted = if recheck {
+            "a.ai_category_id IS NOT NULL"
+        } else {
+            "a.ai_category_id IS NULL AND a.ai_rejected_category_id IS NULL"
+        };
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT a.id, a.app_name, a.url, COALESCE(NULLIF(a.display_title, ''), a.title)
+        let mut stmt = conn.prepare(&format!(
+            "SELECT a.id, a.key_kind, a.key, a.app_name, a.url,
+                    COALESCE(NULLIF(a.display_title, ''), a.title)
              FROM activities a
-             WHERE a.category_id IS NULL AND a.ai_category_id IS NULL
-               AND NOT EXISTS (SELECT 1 FROM sessions s
-                               WHERE s.activity_id = a.id AND s.category_id IS NOT NULL)
-             ORDER BY a.last_seen DESC",
-        )?;
+             WHERE a.category_id IS NULL AND {wanted} AND {NO_SESSION_PIN}
+             ORDER BY a.last_seen DESC"
+        ))?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(UncategorizedActivity {
                     id: row.get(0)?,
-                    app_name: row.get(1)?,
-                    url: row.get(2)?,
-                    title: row.get(3)?,
+                    key_kind: row.get(1)?,
+                    key: row.get(2)?,
+                    app_name: row.get(3)?,
+                    url: row.get(4)?,
+                    title: row.get(5)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
-    /// Stores AI labels as `(activity_id, category_id)`. A manual pin made in the meantime is
-    /// untouched: reads prefer it over the AI label.
-    pub fn assign_ai(&self, labels: &[(i64, i64)]) -> Result<()> {
+    /// Stores AI labels as `(activity_id, category_id)`; `None` clears a label the model no
+    /// longer stands by. A manual pin made in the meantime is untouched: reads prefer it over
+    /// the AI label. Returns how many labels actually changed.
+    pub fn assign_ai(&self, labels: &[(i64, Option<i64>)]) -> Result<usize> {
         if labels.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
+        let mut changed = 0;
         {
-            let mut stmt = tx.prepare(
+            let mut set = tx.prepare(
                 "UPDATE activities SET ai_category_id = ?2
-                 WHERE id = ?1 AND category_id IS NULL
+                 WHERE id = ?1 AND category_id IS NULL AND ai_category_id IS NOT ?2
                    AND EXISTS (SELECT 1 FROM categories WHERE id = ?2)",
             )?;
+            let mut clear = tx.prepare(
+                "UPDATE activities SET ai_category_id = NULL
+                 WHERE id = ?1 AND category_id IS NULL AND ai_category_id IS NOT NULL",
+            )?;
             for (activity_id, category_id) in labels {
-                stmt.execute(params![activity_id, category_id])?;
+                changed += match category_id {
+                    Some(category_id) => set.execute(params![activity_id, category_id])?,
+                    None => clear.execute(params![activity_id])?,
+                };
             }
         }
         tx.commit()?;
-        Ok(())
+        Ok(changed)
+    }
+
+    /// Every activity the user has pinned or rejected an AI label for, newest first.
+    pub fn labeled_activities(&self) -> Result<Vec<LabeledActivity>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT key_kind, key, app_name, url, COALESCE(NULLIF(display_title, ''), title),
+                    category_id, ai_category_id, ai_rejected_category_id
+             FROM activities
+             WHERE category_id IS NOT NULL OR ai_rejected_category_id IS NOT NULL
+             ORDER BY last_seen DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(LabeledActivity {
+                    key_kind: row.get(0)?,
+                    key: row.get(1)?,
+                    app_name: row.get(2)?,
+                    url: row.get(3)?,
+                    title: row.get(4)?,
+                    category_id: row.get(5)?,
+                    ai_category_id: row.get(6)?,
+                    ai_rejected_category_id: row.get(7)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// AI labels awaiting review, longest-tracked first so the ones that matter come up first.
+    /// Filtering by a category includes everything under it.
+    pub fn ai_review_page(
+        &self,
+        page: i64,
+        page_size: i64,
+        category: Option<i64>,
+    ) -> Result<AiReviewPage> {
+        let conn = self.conn.lock().unwrap();
+        let scope = match category {
+            Some(id) => {
+                let ids = load_category_tree(&conn)?.descendants(id);
+                if ids.is_empty() {
+                    return Ok(AiReviewPage {
+                        rows: Vec::new(),
+                        total: 0,
+                    });
+                }
+                // Ids are integers, so inlining them is safe.
+                let ids = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+                format!("AND a.ai_category_id IN ({ids})")
+            }
+            None => String::new(),
+        };
+        let pending = format!(
+            "a.category_id IS NULL AND a.ai_category_id IS NOT NULL AND {NO_SESSION_PIN} {scope}"
+        );
+        let total: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM activities a WHERE {pending}"),
+            [],
+            |row| row.get(0),
+        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT a.id, a.app_name, a.url, COALESCE(NULLIF(a.display_title, ''), a.title),
+                    cat.id, cat.name, cat.color,
+                    COALESCE(SUM((julianday(s.end_time) - julianday(s.start_time)) * 86400.0), 0.0),
+                    COUNT(s.id)
+             FROM activities a
+             JOIN categories cat ON cat.id = a.ai_category_id
+             LEFT JOIN sessions s ON s.activity_id = a.id AND s.end_time IS NOT NULL
+             WHERE {pending}
+             GROUP BY a.id
+             ORDER BY 8 DESC, a.id
+             LIMIT ?1 OFFSET ?2"
+        ))?;
+        let rows = stmt
+            .query_map(params![page_size, page * page_size], |row| {
+                Ok(AiReviewRow {
+                    activity_id: row.get(0)?,
+                    app_name: row.get(1)?,
+                    url: row.get(2)?,
+                    title: row.get(3)?,
+                    category_id: row.get(4)?,
+                    category_name: row.get(5)?,
+                    category_color: row.get(6)?,
+                    total_seconds: row.get(7)?,
+                    session_count: row.get(8)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(AiReviewPage { rows, total })
+    }
+
+    pub fn feedback_stats(&self) -> Result<FeedbackStats> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.query_row(
+            &format!(
+                "SELECT
+                   COALESCE(SUM(category_id IS NOT NULL AND (
+                       ai_category_id != category_id
+                       OR (ai_category_id IS NULL AND ai_rejected_category_id IS NOT NULL))), 0),
+                   COALESCE(SUM(category_id IS NOT NULL AND ai_category_id = category_id), 0),
+                   COALESCE(SUM(category_id IS NOT NULL AND ai_category_id IS NULL
+                                AND ai_rejected_category_id IS NULL), 0),
+                   COALESCE(SUM(category_id IS NULL AND ai_rejected_category_id IS NOT NULL), 0),
+                   COALESCE(SUM(category_id IS NULL AND ai_category_id IS NOT NULL
+                                AND {NO_SESSION_PIN}), 0)
+                 FROM activities a"
+            ),
+            [],
+            |row| {
+                Ok(FeedbackStats {
+                    corrected: row.get(0)?,
+                    confirmed: row.get(1)?,
+                    pinned: row.get(2)?,
+                    rejected: row.get(3)?,
+                    pending_review: row.get(4)?,
+                })
+            },
+        )?)
     }
 }

@@ -47,6 +47,13 @@ pub fn run() {
             commands::get_seed_taxonomy_preview,
             commands::reset_categorization,
             commands::categorize,
+            commands::cancel_categorize,
+            commands::ai_model_loaded,
+            commands::unload_ai_model,
+            commands::list_ai_review,
+            commands::accept_ai_labels,
+            commands::set_activities_category,
+            commands::ai_feedback_stats,
         ])
         .setup(|app| {
             let data_dir = app_data_dir(app.handle())?;
@@ -70,6 +77,7 @@ pub fn run() {
             app.manage(HistoryReader::new(conn.clone()));
             app.manage(CategoryStore::new(conn));
             app.manage(commands::AiCategorizeState::default());
+            app.manage(core::llm::ModelCache::default());
             app.manage(tracker.clone());
             let (tx, rx) = mpsc::channel::<WatchEvent>();
 

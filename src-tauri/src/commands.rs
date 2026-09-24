@@ -1,14 +1,16 @@
 use crate::core::category::url_location;
-use crate::core::llm::{self, ActivityText};
+use crate::core::feedback::FeedbackIndex;
+use crate::core::llm::{self, ActivityText, ModelCache};
 use crate::core::{
-    ActivityStats, CategorizationResetOutcome, Category, CategoryFilter, CategorySourceFilter,
-    CategoryStore, HistoryReader, NewCategory, SeedTaxonomy, SessionFilter, SessionRow,
+    ActivityStats, AiReviewPage, CategorizationResetOutcome, Category, CategoryFilter,
+    CategorySourceFilter, CategoryStore, FeedbackStats, HistoryReader, NewCategory, SeedTaxonomy,
+    SessionFilter, SessionRow,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::{AppHandle, Emitter, State};
-use tracing::info;
+use tauri::{AppHandle, Emitter, Manager, State};
+use tracing::{info, warn};
 
 #[derive(Serialize)]
 pub struct SessionsPage {
@@ -182,12 +184,19 @@ fn parse_rfc3339(value: &str) -> Result<DateTime<Utc>, String> {
 #[derive(Default)]
 pub struct AiCategorizeState {
     running: AtomicBool,
+    cancel: AtomicBool,
 }
 
 #[derive(Serialize)]
 pub struct AiCategorizeOutcome {
+    /// Activities the model gave a category.
     pub labeled: usize,
+    /// Activities the model found no category for.
     pub skipped: usize,
+    /// Labels that differ from what was stored before the run.
+    pub changed: usize,
+    /// The user stopped the run before every activity was processed.
+    pub stopped: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -196,60 +205,144 @@ struct AiCategorizeProgress {
     total: usize,
 }
 
-/// Labels every uncategorized activity with the local LLM. Runs on a blocking thread and
-/// reports `ai-categorize-progress` events; `model` is an Ollama name or a `.gguf` path.
+/// Labels uncategorized activities with the local LLM, or with `recheck` re-labels the AI
+/// labels the user has not confirmed. The user's earlier corrections go into the prompt. Runs
+/// on a blocking thread and reports `ai-categorize-progress` events; `model` is an Ollama
+/// name or a `.gguf` path.
 #[tauri::command]
 pub async fn categorize(
     app: AppHandle,
     state: State<'_, AiCategorizeState>,
+    models: State<'_, ModelCache>,
     categories: State<'_, CategoryStore>,
     model: Option<String>,
+    recheck: Option<bool>,
 ) -> Result<AiCategorizeOutcome, String> {
     if state.running.swap(true, Ordering::AcqRel) {
         return Err("AI categorization is already running".into());
     }
     let taxonomy = categories.list().map_err(|e| e.to_string());
     let pending = categories
-        .get_uncategorized_activities()
+        .get_activities_to_label(recheck.unwrap_or(false))
         .map_err(|e| e.to_string());
+    let labeled = categories.labeled_activities().map_err(|e| e.to_string());
     let model = model.unwrap_or_else(|| llm::DEFAULT_MODEL.to_string());
+    state.cancel.store(false, Ordering::Release);
+    let models = models.inner().clone();
 
     let result = tauri::async_runtime::spawn_blocking(move || {
-        let (taxonomy, pending) = (taxonomy?, pending?);
+        let (taxonomy, pending, labeled) = (taxonomy?, pending?, labeled?);
+        let feedback = FeedbackIndex::new(&labeled);
         let texts: Vec<ActivityText> = pending
             .iter()
             .map(|activity| ActivityText {
                 app_name: activity.app_name.clone(),
                 url: activity.url.as_deref().and_then(url_location),
                 title: activity.title.clone(),
+                examples: feedback.for_key(&activity.key_kind, &activity.key),
             })
             .collect();
         let total = texts.len();
-        info!(total, %model, "categorizing activities with the local model");
-        let answers = llm::classify(&model, &taxonomy, &texts, |done, total| {
+        info!(total, %model, examples = feedback.global().len(), "categorizing activities with the local model");
+        let (mut labeled, mut changed, mut done, mut stopped) = (0, 0, 0, false);
+        // Each answer is saved as soon as it arrives, so a stopped run keeps its progress.
+        let mut save = |index: usize, answer: Option<i64>| {
+            let cancel = &app.state::<AiCategorizeState>().cancel;
+            if answer.is_some() {
+                labeled += 1;
+            }
+            match app
+                .state::<CategoryStore>()
+                .assign_ai(&[(pending[index].id, answer)])
+            {
+                Ok(n) => changed += n,
+                Err(err) => {
+                    warn!(%err, "saving AI label");
+                    return false;
+                }
+            }
+            done = index + 1;
             let _ = app.emit(
                 "ai-categorize-progress",
-                AiCategorizeProgress { done, total },
+                AiCategorizeProgress {
+                    done,
+                    total,
+                },
             );
-            true
-        })
-        .map_err(|e| format!("{e:#}"))?;
-        let labels: Vec<(i64, i64)> = pending
-            .iter()
-            .zip(&answers)
-            .filter_map(|(activity, answer)| answer.map(|category| (activity.id, category)))
-            .collect();
-        Ok::<_, String>((labels, total))
+            stopped = cancel.load(Ordering::Acquire) && index + 1 < total;
+            !stopped
+        };
+        llm::classify(&models, &model, &taxonomy, feedback.global(), &texts, &mut save)
+            .map_err(|e| format!("{e:#}"))?;
+        Ok::<_, String>((labeled, changed, stopped, done))
     })
     .await
     .map_err(|e| e.to_string())
     .and_then(|r| r);
     state.running.store(false, Ordering::Release);
 
-    let (labels, total) = result?;
-    categories.assign_ai(&labels).map_err(|e| e.to_string())?;
+    let (labeled, changed, stopped, processed) = result?;
     Ok(AiCategorizeOutcome {
-        labeled: labels.len(),
-        skipped: total - labels.len(),
+        labeled,
+        skipped: processed - labeled,
+        changed,
+        stopped,
     })
+}
+
+/// Asks a running categorization to stop after the activity it is on.
+#[tauri::command]
+pub fn cancel_categorize(state: State<AiCategorizeState>) {
+    state.cancel.store(true, Ordering::Release);
+}
+
+/// Whether the model is currently held in memory.
+#[tauri::command]
+pub fn ai_model_loaded(models: State<ModelCache>) -> bool {
+    models.is_loaded()
+}
+
+/// Releases the cached model's memory.
+#[tauri::command]
+pub fn unload_ai_model(models: State<ModelCache>) {
+    models.unload();
+}
+
+#[tauri::command]
+pub fn list_ai_review(
+    categories: State<CategoryStore>,
+    page: i64,
+    page_size: i64,
+    category: Option<i64>,
+) -> Result<AiReviewPage, String> {
+    categories
+        .ai_review_page(page.max(0), page_size.max(1), category)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn accept_ai_labels(
+    categories: State<CategoryStore>,
+    activity_ids: Vec<i64>,
+) -> Result<(), String> {
+    categories
+        .accept_ai_labels(&activity_ids)
+        .map_err(|e| e.to_string())
+}
+
+/// Pins activities to `category_id`; `None` rejects their AI label.
+#[tauri::command]
+pub fn set_activities_category(
+    categories: State<CategoryStore>,
+    activity_ids: Vec<i64>,
+    category_id: Option<i64>,
+) -> Result<(), String> {
+    categories
+        .assign_activities(&activity_ids, category_id)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn ai_feedback_stats(categories: State<CategoryStore>) -> Result<FeedbackStats, String> {
+    categories.feedback_stats().map_err(|e| e.to_string())
 }

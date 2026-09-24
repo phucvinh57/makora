@@ -8,6 +8,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
+  acceptAiLabels,
   listCategories,
   listSessions,
   setSessionRowCategory,
@@ -159,7 +160,11 @@ function HistoryPage() {
     onSuccess: ({ row, categoryId }) => {
       invalidateSessions();
       if (categoryId === null) {
-        toast.success("Cleared this activity's category");
+        toast.success(
+          row.category_source === "ai"
+            ? "Rejected the AI suggestion"
+            : "Cleared this activity's category",
+        );
         return;
       }
       const category = categories.find((c) => c.id === categoryId);
@@ -170,6 +175,12 @@ function HistoryPage() {
         description: row.window_title,
       });
     },
+    onError: (err) => toast.error(String(err)),
+  });
+
+  const acceptAiMutation = useMutation({
+    mutationFn: (row: SessionRow) => acceptAiLabels([row.activity_id!]),
+    onSuccess: invalidateSessions,
     onError: (err) => toast.error(String(err)),
   });
 
@@ -247,6 +258,7 @@ function HistoryPage() {
         onRowCategoryChange={(row, value) =>
           categoryChangeMutation.mutate({ row, value })
         }
+        onAcceptAiLabel={(row) => acceptAiMutation.mutate(row)}
       />
 
       <HistoryPagination

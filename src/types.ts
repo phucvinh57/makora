@@ -43,6 +43,33 @@ export type KeyKind = "exe" | "domain";
 export interface AiCategorizeOutcome {
   labeled: number;
   skipped: number;
+  changed: number;
+  stopped: boolean;
+}
+
+export interface AiReviewRow {
+  activity_id: number;
+  app_name: string;
+  url: string | null;
+  title: string;
+  category_id: number;
+  category_name: string;
+  category_color: string;
+  total_seconds: number;
+  session_count: number;
+}
+
+export interface AiReviewPage {
+  rows: AiReviewRow[];
+  total: number;
+}
+
+export interface FeedbackStats {
+  corrected: number;
+  confirmed: number;
+  pinned: number;
+  rejected: number;
+  pending_review: number;
 }
 
 export interface AiCategorizeProgress {

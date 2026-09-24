@@ -33,6 +33,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 llama-cpp-2 = { version = "0.1.157", default-features = false, features = ["common"] }
 
 [target.'cfg(windows)'.dependencies]
+llama-cpp-2 = { version = "0.1.157", default-features = false, features = ["common", "vulkan"] }
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
@@ -47,6 +48,7 @@ block2 = "0.6"
 core-foundation-sys = "0.8"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+llama-cpp-2 = { version = "0.1.157", default-features = false, features = ["common", "vulkan"] }
 zbus = "5"
 wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }

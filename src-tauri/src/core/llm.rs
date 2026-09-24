@@ -9,12 +9,14 @@
 //! - Sampling is greedy: classification should be deterministic.
 //! - The system prompt (taxonomy) is identical for every activity, so its KV cache is kept and
 //!   only the per-activity suffix is decoded.
-//! - The model is memory-mapped and dropped when a run ends, so an idle app holds no weights.
+//! - The model is memory-mapped and cached between runs, then released on request or after ten
+//!   idle minutes, so an idle app holds no weights.
 
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use llama_cpp_2::context::params::LlamaContextParams;
@@ -30,13 +32,18 @@ use tracing::{debug, info};
 
 use crate::core::Category;
 
-pub const DEFAULT_MODEL: &str = "llama3.2";
+/// Offload every layer to the GPU; llama.cpp clamps this to the model's layer count and falls
+/// back to the CPU when no GPU backend is available.
+const GPU_LAYERS: u32 = 999;
+
+pub const DEFAULT_MODEL: &str = "qwen2.5:7b-instruct";
 
 const N_CTX: u32 = 4096;
 const N_BATCH: u32 = 512;
 const MAX_REPLY_TOKENS: usize = 48;
 const MAX_TITLE_CHARS: usize = 200;
 const MAX_URL_CHARS: usize = 200;
+const MAX_EXAMPLE_CHARS: usize = 80;
 const NONE_ANSWER: &str = "None";
 
 /// What the model is shown about one activity.
@@ -46,6 +53,25 @@ pub struct ActivityText {
     /// `domain/path` of the page, when the activity is a browser tab.
     pub url: Option<String>,
     pub title: String,
+    /// What the user already decided about similar activities.
+    pub examples: Vec<Example>,
+}
+
+/// One decision of the user, shown to the model as a worked example.
+#[derive(Debug, Clone)]
+pub struct Example {
+    pub app_name: String,
+    pub url: Option<String>,
+    pub title: String,
+    pub verdict: Verdict,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Verdict {
+    /// The activity belongs to this category.
+    Is(i64),
+    /// The model suggested this category and the user rejected it.
+    Not(i64),
 }
 
 fn backend() -> Result<&'static LlamaBackend> {
@@ -56,6 +82,105 @@ fn backend() -> Result<&'static LlamaBackend> {
     send_logs_to_tracing(LogOptions::default());
     let backend = LlamaBackend::init().context("initializing llama.cpp")?;
     Ok(BACKEND.get_or_init(|| backend))
+}
+
+// ---------------------------------------------------------------------------------------------
+// Model cache
+// ---------------------------------------------------------------------------------------------
+
+/// How long a loaded model may sit unused before its weights are released.
+const IDLE_TTL: Duration = Duration::from_secs(10 * 60);
+const REAPER_POLL: Duration = Duration::from_secs(15);
+
+struct Loaded {
+    name: String,
+    model: Arc<LlamaModel>,
+    last_used: Instant,
+}
+
+#[derive(Default)]
+struct Slot {
+    loaded: Option<Loaded>,
+    reaper_running: bool,
+}
+
+/// Keeps the last loaded model in memory between runs so repeated categorizations skip the
+/// load. It is released by [`ModelCache::unload`] or after [`IDLE_TTL`] without use.
+#[derive(Clone, Default)]
+pub struct ModelCache {
+    slot: Arc<Mutex<Slot>>,
+}
+
+impl ModelCache {
+    fn lock(&self) -> MutexGuard<'_, Slot> {
+        self.slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    pub fn is_loaded(&self) -> bool {
+        self.lock().loaded.is_some()
+    }
+
+    /// Drops the cached model. A run in progress keeps its own handle and finishes normally.
+    pub fn unload(&self) {
+        if self.lock().loaded.take().is_some() {
+            info!("model unloaded");
+        }
+    }
+
+    fn touch(&self) {
+        if let Some(loaded) = self.lock().loaded.as_mut() {
+            loaded.last_used = Instant::now();
+        }
+    }
+
+    fn acquire(&self, name: &str) -> Result<Arc<LlamaModel>> {
+        let mut slot = self.lock();
+        if let Some(loaded) = slot.loaded.as_mut().filter(|l| l.name == name) {
+            loaded.last_used = Instant::now();
+            return Ok(loaded.model.clone());
+        }
+        slot.loaded = None;
+        let path = resolve_model(name)?;
+        info!(model = %path.display(), "loading model");
+        let model = LlamaModel::load_from_file(
+            backend()?,
+            &path,
+            &LlamaModelParams::default().with_n_gpu_layers(GPU_LAYERS),
+        )
+        .map_err(|err| anyhow!("loading {}: {err}", path.display()))?;
+        let model = Arc::new(model);
+        slot.loaded = Some(Loaded {
+            name: name.to_string(),
+            model: model.clone(),
+            last_used: Instant::now(),
+        });
+        if !slot.reaper_running {
+            slot.reaper_running = true;
+            let cache = self.clone();
+            std::thread::spawn(move || cache.reap_when_idle());
+        }
+        Ok(model)
+    }
+
+    /// Runs until the model is gone, releasing it once it has been idle for [`IDLE_TTL`].
+    fn reap_when_idle(&self) {
+        loop {
+            std::thread::sleep(REAPER_POLL);
+            let mut slot = self.lock();
+            let Some(loaded) = slot.loaded.as_ref() else {
+                slot.reaper_running = false;
+                return;
+            };
+            // A strong count above one means a run is using it right now.
+            let in_use = Arc::strong_count(&loaded.model) > 1;
+            if !in_use && loaded.last_used.elapsed() >= IDLE_TTL {
+                slot.loaded = None;
+                slot.reaper_running = false;
+                info!("model unloaded after being idle");
+                return;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -167,6 +292,10 @@ fn single_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn clip(text: &str, max_chars: usize) -> String {
+    single_line(text).chars().take(max_chars).collect()
+}
+
 fn grammar(choices: &[Choice]) -> String {
     let alternatives = std::iter::once(NONE_ANSWER)
         .chain(choices.iter().map(|c| c.path.as_str()))
@@ -179,7 +308,26 @@ fn grammar(choices: &[Choice]) -> String {
     format!("root ::= {alternatives}")
 }
 
-fn system_prompt(choices: &[Choice]) -> String {
+/// `- App | domain/path | Title => Category`, or `=> not Category` for a rejected suggestion.
+/// `None` when the category has since been deleted.
+fn example_line(example: &Example, paths: &HashMap<i64, &str>) -> Option<String> {
+    let (negation, id) = match example.verdict {
+        Verdict::Is(id) => ("", id),
+        Verdict::Not(id) => ("not ", id),
+    };
+    let path = paths.get(&id)?;
+    let mut line = format!("- {}", clip(&example.app_name, MAX_EXAMPLE_CHARS));
+    if let Some(url) = &example.url {
+        line.push_str(&format!(" | {}", clip(url, MAX_EXAMPLE_CHARS)));
+    }
+    line.push_str(&format!(
+        " | {} => {negation}{path}",
+        clip(&example.title, MAX_EXAMPLE_CHARS)
+    ));
+    Some(line)
+}
+
+fn system_prompt(choices: &[Choice], global: &[String]) -> String {
     let mut prompt = String::from(
         "You label computer activity for a time tracker. Given the app, page URL and window \
          title, weigh the URL and the title together and reply with exactly one category \
@@ -197,20 +345,37 @@ fn system_prompt(choices: &[Choice]) -> String {
         }
         prompt.push('\n');
     }
+    if !global.is_empty() {
+        prompt.push_str(
+            "\nThe user corrected earlier answers. Their labels take precedence over the \
+             descriptions above:\n",
+        );
+        for line in global {
+            prompt.push_str(line);
+            prompt.push('\n');
+        }
+    }
     prompt
 }
 
-fn user_prompt(activity: &ActivityText) -> String {
-    let mut prompt = format!("App: {}\n", single_line(&activity.app_name));
-    if let Some(url) = &activity.url {
-        let url: String = single_line(url).chars().take(MAX_URL_CHARS).collect();
-        prompt.push_str(&format!("URL: {url}\n"));
+fn user_prompt(activity: &ActivityText, examples: &[String]) -> String {
+    let mut prompt = String::new();
+    if !examples.is_empty() {
+        prompt.push_str("Activities like this one the user already labeled:\n");
+        for line in examples {
+            prompt.push_str(line);
+            prompt.push('\n');
+        }
+        prompt.push_str("\nLabel this activity:\n");
     }
-    let title: String = single_line(&activity.title)
-        .chars()
-        .take(MAX_TITLE_CHARS)
-        .collect();
-    prompt.push_str(&format!("Title: {title}"));
+    prompt.push_str(&format!("App: {}\n", single_line(&activity.app_name)));
+    if let Some(url) = &activity.url {
+        prompt.push_str(&format!("URL: {}\n", clip(url, MAX_URL_CHARS)));
+    }
+    prompt.push_str(&format!(
+        "Title: {}",
+        clip(&activity.title, MAX_TITLE_CHARS)
+    ));
     prompt
 }
 
@@ -221,21 +386,36 @@ fn user_prompt(activity: &ActivityText) -> String {
 /// Classifies each activity into one of `categories`, returning the chosen category id (or
 /// `None` when the model answers "None"). `on_progress` is called with `(done, total)` after
 /// every activity; returning `false` from it cancels the run, and the results so far are kept.
+///
+/// `global` are the user's corrections shown for every activity; each activity's own
+/// `examples` are added to its prompt.
 pub fn classify(
+    cache: &ModelCache,
     model: &str,
     categories: &[Category],
+    global: &[Example],
     activities: &[ActivityText],
-    mut on_progress: impl FnMut(usize, usize) -> bool,
-) -> Result<Vec<Option<i64>>> {
+    on_result: impl FnMut(usize, Option<i64>) -> bool,
+) -> Result<()> {
     if categories.is_empty() {
         bail!("there are no categories to choose from");
     }
     let backend = backend()?;
-    let model_path = resolve_model(model)?;
-    info!(model = %model_path.display(), "loading model");
+    let model = cache.acquire(model)?;
+    let result = run(backend, &model, categories, global, activities, on_result);
+    drop(model);
+    cache.touch();
+    result
+}
 
-    let model = LlamaModel::load_from_file(backend, &model_path, &LlamaModelParams::default())
-        .map_err(|err| anyhow!("loading {}: {err}", model_path.display()))?;
+fn run(
+    backend: &LlamaBackend,
+    model: &LlamaModel,
+    categories: &[Category],
+    global: &[Example],
+    activities: &[ActivityText],
+    mut on_result: impl FnMut(usize, Option<i64>) -> bool,
+) -> Result<()> {
     let threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
@@ -252,7 +432,12 @@ pub fn classify(
         .map_err(|err| anyhow!("creating inference context: {err}"))?;
 
     let choices = choices(categories);
-    let system = system_prompt(&choices);
+    let paths: HashMap<i64, &str> = choices.iter().map(|c| (c.id, c.path.as_str())).collect();
+    let global_lines: Vec<String> = global
+        .iter()
+        .filter_map(|example| example_line(example, &paths))
+        .collect();
+    let system = system_prompt(&choices, &global_lines);
     let template = model
         .chat_template(None)
         .map_err(|err| anyhow!("model has no chat template: {err}"))?;
@@ -262,30 +447,46 @@ pub fn classify(
     let by_path: HashMap<&str, i64> = choices.iter().map(|c| (c.path.as_str(), c.id)).collect();
 
     let mut sampler = LlamaSampler::chain_simple([
-        LlamaSampler::grammar(&model, &grammar(&choices), "root")
+        LlamaSampler::grammar(model,&grammar(&choices), "root")
             .map_err(|err| anyhow!("building category grammar: {err}"))?,
         LlamaSampler::greedy(),
     ]);
     let mut batch = LlamaBatch::new(N_BATCH as usize, 1);
     // Prompt tokens currently held in the KV cache; the shared prefix is reused between items.
     let mut cached: Vec<LlamaToken> = Vec::new();
-    let mut results = Vec::with_capacity(activities.len());
 
     for (index, activity) in activities.iter().enumerate() {
-        let chat = [
-            LlamaChatMessage::new("system".into(), system.clone())?,
-            LlamaChatMessage::new("user".into(), user_prompt(activity))?,
-        ];
-        let prompt = model
-            .apply_chat_template(&template, &chat, true)
-            .map_err(|err| anyhow!("applying chat template: {err}"))?;
-        let add_bos = if prompt.starts_with(&bos) {
-            AddBos::Never
-        } else {
-            AddBos::Always
+        let encode = |with_examples: bool| -> Result<Vec<LlamaToken>> {
+            let lines: Vec<String> = if with_examples {
+                activity
+                    .examples
+                    .iter()
+                    .filter_map(|example| example_line(example, &paths))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let chat = [
+                LlamaChatMessage::new("system".into(), system.clone())?,
+                LlamaChatMessage::new("user".into(), user_prompt(activity, &lines))?,
+            ];
+            let prompt = model
+                .apply_chat_template(&template, &chat, true)
+                .map_err(|err| anyhow!("applying chat template: {err}"))?;
+            let add_bos = if prompt.starts_with(&bos) {
+                AddBos::Never
+            } else {
+                AddBos::Always
+            };
+            Ok(model.str_to_token(&prompt, add_bos)?)
         };
-        let tokens = model.str_to_token(&prompt, add_bos)?;
-        if tokens.len() + MAX_REPLY_TOKENS > N_CTX as usize {
+        let fits = |tokens: &[LlamaToken]| tokens.len() + MAX_REPLY_TOKENS <= N_CTX as usize;
+        let mut tokens = encode(true)?;
+        // Examples are a bonus: drop them before giving up on the activity.
+        if !fits(&tokens) && !activity.examples.is_empty() {
+            tokens = encode(false)?;
+        }
+        if !fits(&tokens) {
             bail!(
                 "the category list is too large for the {N_CTX}-token context ({} prompt tokens)",
                 tokens.len()
@@ -338,11 +539,10 @@ pub fn classify(
         let answer = String::from_utf8_lossy(&answer);
         let answer = answer.trim();
         debug!(answer, title = %activity.title, "classified");
-        results.push(by_path.get(answer).copied());
 
-        if !on_progress(index + 1, activities.len()) {
+        if !on_result(index, by_path.get(answer).copied()) {
             break;
         }
     }
-    Ok(results)
+    Ok(())
 }

@@ -1,6 +1,4 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { AiCategorizationSection } from "./-components/AiCategorizationSection";
-import { CategorizationDataSection } from "./-components/CategorizationDataSection";
 import { GeneralSection } from "./-components/GeneralSection";
 
 export const Route = createFileRoute("/settings")({
@@ -17,8 +15,6 @@ function SettingsPage() {
         </p>
       </header>
       <GeneralSection />
-      <AiCategorizationSection />
-      <CategorizationDataSection />
     </div>
   );
 }
