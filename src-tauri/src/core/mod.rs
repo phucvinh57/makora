@@ -1,5 +1,4 @@
 pub mod category;
-pub mod ignore;
 pub mod model;
 pub mod platform;
 pub mod store;
@@ -11,9 +10,9 @@ pub use model::{BrowserKind, TabEvent, WatchEvent};
 pub use platform::PlatformFocusWatcher;
 pub use store::{
     open_connection, ActivityStats, CategorizationResetOutcome, Category, CategoryFilter,
-    CategoryRule, CategorySourceFilter, CategoryStore, HistoryReader, IgnoreRule, IgnoreStore,
-    RecategorizeOutcome, SeedTaxonomy, SessionFilter, SessionRow, SessionStore, SqliteStore,
-    UrlQueryParam, UrlQueryStore, WorkSession, WorkSessionStats, WorkSessionStore,
+    CategorySourceFilter, CategoryStore, HistoryReader, NewCategory, NewWorkSession,
+    SeedTaxonomy, SessionFilter, SessionRow, SessionStore, SqliteStore, UrlQueryParam,
+    UrlQueryStore, WorkSession, WorkSessionFields, WorkSessionStats, WorkSessionStore,
     WorkSessionUpdate,
 };
 pub use tracker::SessionTracker;

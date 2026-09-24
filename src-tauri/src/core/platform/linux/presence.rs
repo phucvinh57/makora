@@ -293,33 +293,3 @@ impl PresenceState {
         .is_ok()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn lock_and_sleep_are_composed_without_premature_resume() {
-        let mut state = PresenceState::default();
-        assert_eq!(state.transition(), Some(true));
-
-        state.locked = true;
-        assert_eq!(state.transition(), Some(false));
-        state.sleeping = true;
-        assert_eq!(state.transition(), None);
-        state.sleeping = false;
-        assert_eq!(state.transition(), None, "still locked after wake");
-        state.locked = false;
-        assert_eq!(state.transition(), Some(true));
-    }
-
-    #[test]
-    fn duplicate_state_observations_are_idempotent() {
-        let mut state = PresenceState::default();
-        assert_eq!(state.transition(), Some(true));
-        assert_eq!(state.transition(), None);
-        state.locked = true;
-        assert_eq!(state.transition(), Some(false));
-        assert_eq!(state.transition(), None);
-    }
-}

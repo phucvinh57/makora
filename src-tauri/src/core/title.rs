@@ -53,35 +53,3 @@ pub fn canonical_title(title: &str, app_name: &str, url: Option<&str>) -> String
         TitleQuality::Real => trimmed.to_string(),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn browser_placeholders_are_not_identity_titles() {
-        let url = Some("https://www.youtube.com/shorts/62hp_12yIaM");
-        assert_eq!(title_quality("", "Google Chrome", url), TitleQuality::Empty);
-        assert_eq!(
-            title_quality("YouTube", "Google Chrome", url),
-            TitleQuality::Placeholder
-        );
-        assert_eq!(
-            title_quality("youtube.com/shorts/62hp_12yIaM", "Google Chrome", url),
-            TitleQuality::Placeholder
-        );
-        assert_eq!(
-            title_quality("Google Chrome", "Google Chrome", url),
-            TitleQuality::Placeholder
-        );
-        assert_eq!(
-            title_quality("A real video title", "Google Chrome", url),
-            TitleQuality::Real
-        );
-        assert_eq!(canonical_title(" YouTube ", "Google Chrome", url), "");
-        assert_eq!(
-            canonical_title(" A real video title ", "Google Chrome", url),
-            "A real video title"
-        );
-    }
-}

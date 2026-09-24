@@ -5,24 +5,23 @@ use anyhow::Result;
 use crate::core::model::AppInfo;
 
 pub mod categories;
-pub mod ignore;
 pub mod queries;
-pub mod resolve;
 pub mod sqlite;
 pub mod url_params;
 pub mod work_sessions;
 
 pub use categories::{
-    CategorizationResetOutcome, Category, CategoryRule, CategoryStore, RecategorizeOutcome,
-    SeedTaxonomy,
+    CategorizationResetOutcome, Category, CategoryStore, NewCategory, SeedTaxonomy,
 };
-pub use ignore::{IgnoreRule, IgnoreStore};
 pub use queries::{
     ActivityStats, CategoryFilter, CategorySourceFilter, HistoryReader, SessionFilter, SessionRow,
 };
 pub use sqlite::{open_connection, SqliteStore};
 pub use url_params::{UrlQueryParam, UrlQueryStore};
-pub use work_sessions::{WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate};
+pub use work_sessions::{
+    NewWorkSession, WorkSession, WorkSessionFields, WorkSessionStats, WorkSessionStore,
+    WorkSessionUpdate,
+};
 
 pub trait SessionStore {
     fn start_session(

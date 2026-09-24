@@ -35,7 +35,6 @@ export function HistoryHeader({
   onRangeChange,
   loading,
   onRefresh,
-  onRecategorizeClick,
 }: {
   searchInput: string;
   onSearchInputChange: (value: string) => void;
@@ -49,7 +48,6 @@ export function HistoryHeader({
   onRangeChange: (range: TimeRange) => void;
   loading: boolean;
   onRefresh: () => void;
-  onRecategorizeClick: () => void;
 }) {
   return (
     <header className="mb-4 flex flex-wrap items-center gap-2">
@@ -117,9 +115,6 @@ export function HistoryHeader({
         aria-label="Refresh history"
       >
         <RefreshCw className={loading ? "animate-spin" : undefined} />
-      </Button>
-      <Button variant="outline" size="sm" onClick={onRecategorizeClick}>
-        Recategorize
       </Button>
     </header>
   );

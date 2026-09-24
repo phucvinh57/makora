@@ -108,43 +108,19 @@ On wlroots-based compositors (sway, Hyprland, river) no extension is needed:
 those advertise `wlr-foreign-toplevel-management-v1`, which reports focus
 directly, and the app uses it automatically.
 
-## Categorization flow
+## Categorization
 
-Makora stores category decisions on each session row. Reads use the stored
-values; they do not run the rule matcher again.
+Categorization is manual. Makora records sessions grouped into activities (the
+domain for browser activity, or the executable name for other apps, plus the
+title); nothing is categorized until you pin a category to one. Uncategorized
+time shows up as **Uncategorized**.
 
-```mermaid
-flowchart TD
-    A[Focus or browser-tab event] --> B[Persist session]
-    B --> C[Derive stable keys<br/>Browser: normalized domain and URL path<br/>Other apps: executable name]
-    C --> D[Resolve stored rules]
-    D --> H{Rule matches?}
-    H -- Yes --> I[Store rule_category_id]
-    H -- No --> J[Leave rule category empty]
-
-    P[User pins a session] --> Q[Store category_id<br/>manual pin]
-    I --> K[Effective category]
-    J --> K
-    Q --> K
-
-    K[Manual pin > rule<br/>otherwise Uncategorized]
-    Y[Rule or category change<br/>or Recategorize] --> Z[Replay session history]
-    Z --> D
-```
-
-In short:
-
-- A focus or tab event creates a session and stores a stable key: the domain
-  for browser activity, or the executable name for other apps. A URL key also
-  keeps the normalized site path available for specific rules.
-- Rules are matched case-insensitively by specificity: URL rules beat app or
-  domain rules, then exact, prefix, substring, and glob matches are considered.
-  The winning category is materialized as `rule_category_id`.
-- A manual pin is stored as `category_id` and always wins.
-- Changing rules or categories replays the history. **Recategorize** preserves
-  manual pins and reruns the rules. **Reset categorization data** keeps the
-  category taxonomy and tracking history, but clears rules and labels; nothing
-  is seeded automatically.
+- A pin is stored as `category_id` on the activity, so it applies to every
+  occurrence of that activity, past and future.
+- Deleting a category deletes its subcategories and clears the pins that pointed
+  at them.
+- **Reset categorization data** clears every pin but keeps the category taxonomy
+  and tracking history.
 
 ## Known limitations
 

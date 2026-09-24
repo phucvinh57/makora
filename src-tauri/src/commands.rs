@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use crate::core::{
-    ActivityStats, CategorizationResetOutcome, Category, CategoryFilter, CategoryRule,
-    CategorySourceFilter, CategoryStore, HistoryReader, IgnoreRule, IgnoreStore,
-    RecategorizeOutcome, SeedTaxonomy, SessionFilter, SessionRow, UrlQueryParam, UrlQueryStore,
-    WorkSession, WorkSessionStats, WorkSessionStore, WorkSessionUpdate,
+    ActivityStats, CategorizationResetOutcome, Category, CategoryFilter, CategorySourceFilter,
+    CategoryStore, HistoryReader, NewCategory, NewWorkSession, SeedTaxonomy, SessionFilter,
+    SessionRow, UrlQueryParam, UrlQueryStore, WorkSession, WorkSessionFields, WorkSessionStats,
+    WorkSessionStore, WorkSessionUpdate,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -78,7 +78,7 @@ fn parse_category_filter(category: Option<&str>) -> Result<CategoryFilter, Strin
 
 #[tauri::command]
 pub fn list_categories(categories: State<CategoryStore>) -> Result<Vec<Category>, String> {
-    categories.list_categories().map_err(|e| e.to_string())
+    categories.list().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -88,7 +88,7 @@ pub fn set_session_row_category(
     category_id: Option<i64>,
 ) -> Result<(), String> {
     categories
-        .set_row_category(session_id, category_id)
+        .assign_sessions(&[session_id], category_id)
         .map_err(|e| e.to_string())
 }
 
@@ -99,13 +99,8 @@ pub fn set_sessions_category(
     category_id: i64,
 ) -> Result<(), String> {
     categories
-        .set_row_categories(&session_ids, Some(category_id))
+        .assign_sessions(&session_ids, Some(category_id))
         .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn recategorize_all(categories: State<CategoryStore>) -> Result<RecategorizeOutcome, String> {
-    categories.recategorize_all().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -117,7 +112,12 @@ pub fn create_category(
     parent_id: Option<i64>,
 ) -> Result<Category, String> {
     categories
-        .create_category_with_description(&name, &color, description.as_deref(), parent_id)
+        .create(&NewCategory {
+            name,
+            color,
+            description,
+            parent_id,
+        })
         .map_err(|e| e.to_string())
 }
 
@@ -131,13 +131,22 @@ pub fn update_category(
     parent_id: Option<i64>,
 ) -> Result<(), String> {
     categories
-        .update_category_with_description(id, &name, &color, description.as_deref(), parent_id)
+        .update(
+            id,
+            &NewCategory {
+                name,
+                color,
+                description,
+                parent_id,
+            },
+        )
+        .map(|_| ())
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn delete_category(categories: State<CategoryStore>, id: i64) -> Result<(), String> {
-    categories.delete_category(id).map_err(|e| e.to_string())
+    categories.delete(id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -154,57 +163,12 @@ pub fn get_seed_taxonomy_preview() -> Result<SeedTaxonomy, String> {
 }
 
 #[tauri::command]
-pub fn list_category_rules(categories: State<CategoryStore>) -> Result<Vec<CategoryRule>, String> {
-    categories.list_rules().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn create_category_rule(
-    categories: State<CategoryStore>,
-    key_kind: String,
-    pattern: String,
-    match_kind: String,
-    category_id: i64,
-) -> Result<CategoryRule, String> {
-    categories
-        .create_rule(&key_kind, &pattern, &match_kind, category_id)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn delete_category_rule(categories: State<CategoryStore>, id: i64) -> Result<(), String> {
-    categories.delete_rule(id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 pub fn reset_categorization(
     categories: State<CategoryStore>,
 ) -> Result<CategorizationResetOutcome, String> {
     categories
         .reset_categorization()
         .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-pub fn list_ignore_rules(ignore: State<Arc<IgnoreStore>>) -> Result<Vec<IgnoreRule>, String> {
-    ignore.list_rules().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn create_ignore_rule(
-    ignore: State<Arc<IgnoreStore>>,
-    kind: String,
-    pattern: String,
-    match_kind: String,
-) -> Result<IgnoreRule, String> {
-    ignore
-        .create_rule(&kind, &pattern, &match_kind)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn delete_ignore_rule(ignore: State<Arc<IgnoreStore>>, id: i64) -> Result<(), String> {
-    ignore.delete_rule(id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -256,13 +220,13 @@ pub fn create_work_session(
     validate_work_session(&name, target_seconds)?;
     let start = start_time.as_deref().map(parse_rfc3339).transpose()?;
     work_sessions
-        .create(
-            name.trim(),
-            note.as_deref(),
+        .create(&NewWorkSession {
+            name: name.trim().to_string(),
+            note,
             target_seconds,
-            start,
-            &category_ids,
-        )
+            start_time: start,
+            category_ids,
+        })
         .map_err(|e| e.to_string())
 }
 
@@ -298,19 +262,20 @@ pub fn update_work_session(
     work_sessions: State<WorkSessionStore>,
     update: WorkSessionUpdate,
 ) -> Result<(), String> {
-    validate_work_session(&update.name, update.target_seconds)?;
-    let start = parse_rfc3339(&update.start_time)?;
-    let end = parse_rfc3339(&update.end_time)?;
+    let WorkSessionUpdate { id, fields } = update;
+    validate_work_session(&fields.name, fields.target_seconds)?;
+    let start = parse_rfc3339(&fields.start_time)?;
+    let end = parse_rfc3339(&fields.end_time)?;
     if end <= start {
         return Err("end time must be after start time".to_string());
     }
-    let update = WorkSessionUpdate {
-        name: update.name.trim().to_string(),
+    let fields = WorkSessionFields {
+        name: fields.name.trim().to_string(),
         start_time: start.to_rfc3339(),
         end_time: end.to_rfc3339(),
-        ..update
+        ..fields
     };
-    work_sessions.update(&update).map_err(|e| e.to_string())
+    work_sessions.update(id, &fields).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

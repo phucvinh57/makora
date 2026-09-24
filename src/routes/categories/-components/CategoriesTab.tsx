@@ -26,7 +26,6 @@ import {
   createCategory,
   deleteCategory,
   listCategories,
-  listCategoryRules,
   updateCategory,
 } from "@/api";
 import {
@@ -40,11 +39,7 @@ import { CategoryCard, NO_PARENT } from "./CategoryCard";
 
 const DEFAULT_COLOR = "#6366f1";
 
-export function CategoriesTab({
-  onShowRules,
-}: {
-  onShowRules: (categoryId: number) => void;
-}) {
+export function CategoriesTab() {
   const queryClient = useQueryClient();
   const [newName, setNewName] = useState("");
   const [newColor, setNewColor] = useState(DEFAULT_COLOR);
@@ -56,25 +51,15 @@ export function CategoriesTab({
     queryKey: ["categories"],
     queryFn: listCategories,
   });
-  const rulesQuery = useQuery({
-    queryKey: ["categoryRules"],
-    queryFn: listCategoryRules,
-  });
 
   const categories = categoriesQuery.data ?? [];
-  const rules = rulesQuery.data ?? [];
   const tree = orderedCategories(categories);
-  const loading = categoriesQuery.isLoading || rulesQuery.isLoading;
-  const error =
-    (categoriesQuery.error && String(categoriesQuery.error)) ||
-    (rulesQuery.error && String(rulesQuery.error)) ||
-    null;
+  const loading = categoriesQuery.isLoading;
+  const error = categoriesQuery.error ? String(categoriesQuery.error) : null;
 
   function invalidateAll() {
     queryClient.invalidateQueries({ queryKey: ["categories"] });
-    queryClient.invalidateQueries({ queryKey: ["categoryRules"] });
-    // Deleting a category rewrites the labels its rules had already applied to history,
-    // and a rename or recolour is denormalized into the rows these two queries hold.
+    // Deleting a category clears the pins that pointed at it, and a rename or recolour is denormalized into the rows these two queries hold.
     queryClient.invalidateQueries({ queryKey: ["sessions"] });
     queryClient.invalidateQueries({ queryKey: ["activityStats"] });
     queryClient.invalidateQueries({ queryKey: ["workSessionStats"] });
@@ -152,7 +137,7 @@ export function CategoriesTab({
     toast(`Delete ${category.name} and everything under it?`, {
       description: `This also deletes ${descendants} subcategor${
         descendants === 1 ? "y" : "ies"
-      } and their rules. This cannot be undone.`,
+      } and their pins. This cannot be undone.`,
       action: {
         label: "Delete branch",
         onClick: () => deleteCategoryMutation.mutate(category),
@@ -212,9 +197,6 @@ export function CategoriesTab({
               category={category}
               depth={depth}
               subcategoryCount={children.length}
-              ruleCount={
-                rules.filter((r) => r.category_id === category.id).length
-              }
               categories={categories}
               onSave={(cat, name, color, description, parentId) =>
                 saveCategoryMutation.mutate({
@@ -227,7 +209,6 @@ export function CategoriesTab({
               }
               onDelete={handleDelete}
               onAddSubcategory={() => startAddSubcategory(category)}
-              onShowRules={() => onShowRules(category.id)}
             />
           ))}
         </div>

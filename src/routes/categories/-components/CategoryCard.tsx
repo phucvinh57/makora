@@ -23,17 +23,14 @@ export function CategoryCard({
   category,
   depth,
   subcategoryCount,
-  ruleCount,
   categories,
   onSave,
   onDelete,
   onAddSubcategory,
-  onShowRules,
 }: {
   category: Category;
   depth: number;
   subcategoryCount: number;
-  ruleCount: number;
   categories: Category[];
   onSave: (
     category: Category,
@@ -44,7 +41,6 @@ export function CategoryCard({
   ) => void;
   onDelete: (category: Category) => void;
   onAddSubcategory: () => void;
-  onShowRules: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(category.name);
@@ -146,15 +142,6 @@ export function CategoryCard({
                 style={{ backgroundColor: category.color }}
               />
               {category.name}
-              <button
-                type="button"
-                onClick={onShowRules}
-                className="text-xs font-normal text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-              >
-                {ruleCount === 0
-                  ? "no rules"
-                  : `${ruleCount} rule${ruleCount === 1 ? "" : "s"}`}
-              </button>
               {subcategoryCount > 0 && (
                 <span className="text-xs font-normal text-muted-foreground">
                   {subcategoryCount} subcategor

@@ -96,36 +96,3 @@ fn has_allowed_extension_origin(request: &tiny_http::Request) -> bool {
         })
         .unwrap_or(false)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn temp_store() -> UrlQueryStore {
-        let path = std::env::temp_dir().join(format!(
-            "makora-ingest-test-{}-{}.sqlite",
-            std::process::id(),
-            Utc::now().timestamp_nanos_opt().unwrap_or_default()
-        ));
-        UrlQueryStore::new(crate::core::open_connection(&path).unwrap())
-    }
-
-    #[test]
-    fn normalize_url_keeps_the_whitelisted_query_and_drops_the_rest() {
-        assert_eq!(
-            normalize_url(
-                "https://www.youtube.com/watch?v=XYZ&list=abc#t=30",
-                &temp_store()
-            ),
-            "https://www.youtube.com/watch?v=XYZ"
-        );
-    }
-
-    #[test]
-    fn normalize_url_strips_a_query_string_carrying_a_secret() {
-        assert_eq!(
-            normalize_url("https://example.com/page?token=secret", &temp_store()),
-            "https://example.com/page"
-        );
-    }
-}

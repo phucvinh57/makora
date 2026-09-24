@@ -11,7 +11,6 @@ import {
   getWorkSession,
   listCategories,
   listSessions,
-  recategorizeAll,
   setSessionRowCategory,
   setSessionsCategory,
 } from "@/api";
@@ -208,34 +207,6 @@ function HistoryPage() {
     onError: (err) => toast.error(String(err)),
   });
 
-  async function runRecategorize() {
-    const toastId = toast.loading("Recategorizing all activities…");
-    try {
-      const { manual_categories_preserved } = await recategorizeAll();
-      invalidateSessions();
-      toast.success(
-        manual_categories_preserved === 0
-          ? "Recategorized all activities."
-          : `Recategorized all activities and preserved ${manual_categories_preserved} manual categorization${manual_categories_preserved === 1 ? "" : "s"}.`,
-        { id: toastId },
-      );
-    } catch (err) {
-      toast.error(String(err), { id: toastId });
-    }
-  }
-
-  function handleRecategorizeClick() {
-    toast("Recategorize all history?", {
-      description:
-        "Reapplies your rules to all activities. Categories you picked by hand are preserved and continue to take precedence.",
-      action: {
-        label: "Recategorize",
-        onClick: runRecategorize,
-      },
-      duration: 10000,
-    });
-  }
-
   function toggleRow(id: number, checked: boolean) {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -266,7 +237,6 @@ function HistoryPage() {
         onRangeChange={handleRangeChange}
         loading={loading}
         onRefresh={() => sessionsQuery.refetch()}
-        onRecategorizeClick={handleRecategorizeClick}
       />
 
       {rangeSessionMissing && (

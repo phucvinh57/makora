@@ -11,7 +11,7 @@ export interface SessionRow {
   category_name: string | null;
   category_color: string | null;
   category_is_pinned: boolean;
-  category_source: "manual" | "rule" | null;
+  category_source: "manual" | null;
 }
 
 export interface UrlQueryParam {
@@ -40,52 +40,14 @@ export interface SeedCategory {
   children: SeedCategory[];
 }
 
-export interface SeedRule {
-  key_kind: KeyKind;
-  match_kind: MatchKind;
-  pattern: string;
-  category: string;
-}
-
 export interface SeedTaxonomy {
   categories: SeedCategory[];
-  rules: SeedRule[];
 }
 
-export type KeyKind = "exe" | "domain" | "url";
-
-/**
- * Change one, change the others: `MatchKind` in `src-tauri/src/core/category.rs`, the
- * CHECK constraints in the migrations, and the label maps in `RulesTab.tsx` and
- * `IgnoreListSection.tsx`. Nothing checks those four against each other.
- */
-export type MatchKind = "exact" | "prefix" | "substring" | "glob";
-
-export interface CategoryRule {
-  id: number;
-  key_kind: KeyKind;
-  pattern: string;
-  match_kind: MatchKind;
-  category_id: number;
-}
-
-export interface RecategorizeOutcome {
-  manual_categories_preserved: number;
-  rows_resolved: number;
-}
+export type KeyKind = "exe" | "domain";
 
 export interface CategorizationResetOutcome {
-  rules_deleted: number;
   sessions_cleared: number;
-}
-
-export type IgnoreKind = "app" | "site";
-
-export interface IgnoreRule {
-  id: number;
-  kind: IgnoreKind;
-  pattern: string;
-  match_kind: MatchKind;
 }
 
 export interface CategoryStat {

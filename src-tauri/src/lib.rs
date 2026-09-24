@@ -13,9 +13,8 @@ use tauri::Manager;
 use tracing::{error, info};
 
 use crate::core::{
-    open_connection, CategoryStore, FocusWatcher, HistoryReader,
-    IgnoreStore, PlatformFocusWatcher, SessionTracker, SqliteStore, UrlQueryStore, WatchEvent,
-    WorkSessionStore,
+    open_connection, CategoryStore, FocusWatcher, HistoryReader, PlatformFocusWatcher,
+    SessionTracker, SqliteStore, UrlQueryStore, WatchEvent, WorkSessionStore,
 };
 
 type SharedTracker = Arc<Mutex<SessionTracker<SqliteStore>>>;
@@ -41,19 +40,12 @@ pub fn run() {
             commands::list_categories,
             commands::set_session_row_category,
             commands::set_sessions_category,
-            commands::recategorize_all,
             commands::create_category,
             commands::update_category,
             commands::delete_category,
             commands::apply_seed_taxonomy,
             commands::get_seed_taxonomy_preview,
-            commands::list_category_rules,
-            commands::create_category_rule,
-            commands::delete_category_rule,
             commands::reset_categorization,
-            commands::list_ignore_rules,
-            commands::create_ignore_rule,
-            commands::delete_ignore_rule,
             commands::list_url_query_params,
             commands::create_url_query_param,
             commands::delete_url_query_param,
@@ -80,19 +72,16 @@ pub fn run() {
             let conn = open_connection(&db_path).map_err(|err| {
                 anyhow::anyhow!("opening database at {}: {err:#}", db_path.display())
             })?;
-            let ignore = Arc::new(IgnoreStore::new(conn.clone()));
             let url_params = Arc::new(UrlQueryStore::new(conn.clone()));
             let store = SqliteStore::new(conn.clone());
             let tracker: SharedTracker = Arc::new(Mutex::new(
-                SessionTracker::with_ignore_policy(store, ignore.clone())
-                    .context("initializing session tracker")?,
+                SessionTracker::new(store).context("initializing session tracker")?,
             ));
 
             app.manage(HistoryReader::new(conn.clone()));
             app.manage(WorkSessionStore::new(conn.clone()));
             app.manage(CategoryStore::new(conn));
             app.manage(tracker.clone());
-            app.manage(ignore);
             app.manage(url_params.clone());
             let (tx, rx) = mpsc::channel::<WatchEvent>();
 

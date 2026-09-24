@@ -2,7 +2,6 @@ import type { QueryClient } from "@tanstack/react-query";
 
 const CATEGORIZATION_QUERY_KEYS = [
   "categories",
-  "categoryRules",
   "sessions",
   "activityStats",
   "workSessionStats",

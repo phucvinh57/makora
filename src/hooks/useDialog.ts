@@ -3,7 +3,6 @@ import { useEffect, useState } from "react";
 export type DialogName =
   | "add-category"
   | "add-rule"
-  | "add-ignore-rule"
   | "start-work-session"
   | "edit-work-session";
 

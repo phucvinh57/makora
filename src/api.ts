@@ -8,12 +8,6 @@ import type {
   ActivityStats,
   Category,
   CategorizationResetOutcome,
-  CategoryRule,
-  IgnoreKind,
-  IgnoreRule,
-  KeyKind,
-  MatchKind,
-  RecategorizeOutcome,
   SessionsPage,
   SeedTaxonomy,
   WorkSession,
@@ -67,10 +61,6 @@ export function setSessionsCategory(
   return invoke("set_sessions_category", { sessionIds, categoryId });
 }
 
-export function recategorizeAll(): Promise<RecategorizeOutcome> {
-  return invoke("recategorize_all");
-}
-
 export function resetCategorization(): Promise<CategorizationResetOutcome> {
   return invoke("reset_categorization");
 }
@@ -105,45 +95,6 @@ export function applySeedTaxonomy(): Promise<void> {
 export function getSeedTaxonomyPreview(): Promise<SeedTaxonomy> {
   return invoke("get_seed_taxonomy_preview");
 }
-
-export function listCategoryRules(): Promise<CategoryRule[]> {
-  return invoke("list_category_rules");
-}
-
-export function createCategoryRule(
-  keyKind: KeyKind,
-  pattern: string,
-  matchKind: MatchKind,
-  categoryId: number,
-): Promise<CategoryRule> {
-  return invoke("create_category_rule", {
-    keyKind,
-    pattern,
-    matchKind,
-    categoryId,
-  });
-}
-
-export function deleteCategoryRule(id: number): Promise<void> {
-  return invoke("delete_category_rule", { id });
-}
-
-export function listIgnoreRules(): Promise<IgnoreRule[]> {
-  return invoke("list_ignore_rules");
-}
-
-export function createIgnoreRule(
-  kind: IgnoreKind,
-  pattern: string,
-  matchKind: MatchKind,
-): Promise<IgnoreRule> {
-  return invoke("create_ignore_rule", { kind, pattern, matchKind });
-}
-
-export function deleteIgnoreRule(id: number): Promise<void> {
-  return invoke("delete_ignore_rule", { id });
-}
-
 export function listUrlQueryParams(): Promise<UrlQueryParam[]> {
   return invoke("list_url_query_params");
 }

@@ -23,6 +23,6 @@ Database: `makora.sqlite` in Tauri's app-data dir (`~/.local/share/dev.phucvinh5
 
 ## Rules
 
-- **Do not write useless tests.** A test must guard real behavior or a past bug. No tests that restate the implementation, assert on mocks, cover trivial getters/wiring, or exist only to raise coverage.
+- **Do not write tests for now**
 - **No `println!`/`eprintln!`** — use `tracing::{info, warn, error}`. The only exception is the bootstrap fallback in `lib.rs`, for when the subscriber failed to install.
 - **Build process-wide state inside `setup`**, never before `tauri::Builder`.

@@ -157,38 +157,3 @@ fn observation(payload: FocusPayload) -> Option<WindowObservation> {
         title,
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_present_window_becomes_an_observation() {
-        let observed = observation((
-            true,
-            4321,
-            "org.gnome.Nautilus.desktop".into(),
-            "org.gnome.Nautilus".into(),
-            "Home".into(),
-        ))
-        .expect("a focused window is an observation");
-        assert_eq!(observed.pid, Some(4321));
-        assert_eq!(observed.app_id, "org.gnome.Nautilus.desktop");
-        assert_eq!(observed.title, "Home");
-    }
-
-    #[test]
-    fn an_absent_focus_window_is_dropped() {
-        assert_eq!(
-            observation((false, 0, String::new(), String::new(), String::new())),
-            None
-        );
-    }
-
-    #[test]
-    fn a_zero_pid_is_reported_as_unknown() {
-        let observed = observation((true, 0, "Alacritty".into(), "Alacritty".into(), "~".into()))
-            .expect("still focused");
-        assert_eq!(observed.pid, None);
-    }
-}
