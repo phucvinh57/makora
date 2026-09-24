@@ -40,8 +40,8 @@ export function CategorizationDataSection() {
       </CardHeader>
       <CardContent className="flex flex-col gap-3 text-sm">
         <p className="m-0 text-muted-foreground">
-          Clear all manual categorizations so you can start over. Categories and
-          tracking history are kept.
+          Clear all manual and AI categorizations so you can start over.
+          Categories and tracking history are kept.
         </p>
         <div>
           <Button variant="destructive" onClick={() => setDialogOpen(true)}>
@@ -56,7 +56,7 @@ export function CategorizationDataSection() {
             <DialogTitle>Reset categorization data?</DialogTitle>
             <DialogDescription>
               This action cannot be undone. It will keep your categories and
-              tracking history, but delete all manual categorizations.
+              tracking history, but delete all manual and AI categorizations.
             </DialogDescription>
             {resetMutation.isError && (
               <p className="m-0 text-xs text-destructive">

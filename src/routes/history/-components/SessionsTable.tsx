@@ -285,7 +285,9 @@ export function SessionsTable({
                           title={
                             row.category_is_pinned
                               ? `${path} — pinned to this activity`
-                              : path
+                              : row.category_source === "ai"
+                                ? `${path} — suggested by AI`
+                                : path
                           }
                         >
                           <SelectValue>

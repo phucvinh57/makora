@@ -19,6 +19,8 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
+    // The Rust build tree (llama.cpp alone is thousands of files) would exhaust inotify watches.
+    watch: { ignored: ["**/src-tauri/**"] },
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {

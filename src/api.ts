@@ -6,6 +6,7 @@ import {
 } from "@tauri-apps/plugin-autostart";
 import type {
   ActivityStats,
+  AiCategorizeOutcome,
   Category,
   CategorizationResetOutcome,
   SessionsPage,
@@ -149,4 +150,8 @@ export function isAutostartEnabled(): Promise<boolean> {
 
 export function setAutostartEnabled(enabled: boolean): Promise<void> {
   return enabled ? enableAutostart() : disableAutostart();
+}
+
+export function categorizeWithAi(model?: string): Promise<AiCategorizeOutcome> {
+  return invoke("categorize", { model });
 }

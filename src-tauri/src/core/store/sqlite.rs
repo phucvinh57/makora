@@ -16,8 +16,9 @@ pub type SharedConnection = Arc<Mutex<Connection>>;
 /// The schema as of the last of the 28 migrations this replaced. A database that already ran
 /// them is adopted by [`migrate`] rather than rebuilt.
 fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(
-        "CREATE TABLE categories (
+    Migrations::new(vec![
+        M::up(
+            "CREATE TABLE categories (
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             name        TEXT NOT NULL,
             color       TEXT NOT NULL,
@@ -80,7 +81,15 @@ fn migrations() -> Migrations<'static> {
             category_id     INTEGER NOT NULL REFERENCES categories(id),
             PRIMARY KEY (work_session_id, category_id)
         );",
-    )])
+        ),
+        // Category suggested by the local LLM. Kept apart from the manual pin
+        // (`category_id`) so a pin always wins and AI output can be wiped without
+        // touching the user's own choices.
+        M::up(
+            "ALTER TABLE activities ADD COLUMN ai_category_id INTEGER REFERENCES categories(id);
+        CREATE INDEX idx_activities_ai_category ON activities(ai_category_id);",
+        ),
+    ])
 }
 
 /// A focus or tab change that is undone within a second never was activity: a page redirects,
@@ -104,13 +113,14 @@ pub fn open_connection(path: &Path) -> Result<SharedConnection> {
 /// `user_version` the 28 migrations this schema replaced ended at. Such a database already
 /// has the squashed schema, so it is stamped as migrated instead of being run again.
 const LEGACY_SCHEMA_VERSION: i64 = 28;
+const LATEST_SCHEMA_VERSION: i64 = 2;
 
 fn migrate(conn: &mut Connection) -> Result<()> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     if version == LEGACY_SCHEMA_VERSION {
         conn.execute_batch("DROP TABLE IF EXISTS settings;")?;
         conn.pragma_update(None, "user_version", 1)?;
-    } else if version > 1 {
+    } else if version > LATEST_SCHEMA_VERSION {
         anyhow::bail!(
             "database schema version {version} is not supported; \
              open it with an older release first, or delete it"

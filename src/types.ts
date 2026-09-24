@@ -11,7 +11,7 @@ export interface SessionRow {
   category_name: string | null;
   category_color: string | null;
   category_is_pinned: boolean;
-  category_source: "manual" | null;
+  category_source: "manual" | "ai" | null;
 }
 
 export interface SessionsPage {
@@ -39,6 +39,16 @@ export interface SeedTaxonomy {
 }
 
 export type KeyKind = "exe" | "domain";
+
+export interface AiCategorizeOutcome {
+  labeled: number;
+  skipped: number;
+}
+
+export interface AiCategorizeProgress {
+  done: number;
+  total: number;
+}
 
 export interface CategorizationResetOutcome {
   sessions_cleared: number;

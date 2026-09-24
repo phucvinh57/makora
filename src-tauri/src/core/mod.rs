@@ -1,4 +1,5 @@
 pub mod category;
+pub mod llm;
 pub mod model;
 pub mod platform;
 pub mod store;

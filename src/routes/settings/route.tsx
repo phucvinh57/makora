@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { AiCategorizationSection } from "./-components/AiCategorizationSection";
 import { CategorizationDataSection } from "./-components/CategorizationDataSection";
 import { FeatureFlagsSection } from "./-components/FeatureFlagsSection";
 import { GeneralSection } from "./-components/GeneralSection";
@@ -18,6 +19,7 @@ function SettingsPage() {
       </header>
       <GeneralSection />
       <FeatureFlagsSection />
+      <AiCategorizationSection />
       <CategorizationDataSection />
     </div>
   );

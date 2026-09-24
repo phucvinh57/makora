@@ -73,7 +73,7 @@ impl HistoryReader {
              FROM sessions s
              LEFT JOIN activities a ON a.id = s.activity_id
              LEFT JOIN categories cat
-                    ON cat.id = COALESCE(a.category_id, s.category_id)
+                    ON cat.id = COALESCE(a.category_id, s.category_id, a.ai_category_id)
              WHERE {where_sql}"
         );
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
@@ -96,12 +96,13 @@ impl HistoryReader {
                     cat.id, cat.name, cat.color, (a.category_id IS NOT NULL OR s.category_id IS NOT NULL),
                     CASE
                       WHEN a.category_id IS NOT NULL OR s.category_id IS NOT NULL THEN 'manual'
+                      WHEN a.ai_category_id IS NOT NULL THEN 'ai'
                       ELSE NULL
                     END
              FROM sessions s
              LEFT JOIN activities a ON a.id = s.activity_id
              LEFT JOIN categories cat
-                    ON cat.id = COALESCE(a.category_id, s.category_id)
+                    ON cat.id = COALESCE(a.category_id, s.category_id, a.ai_category_id)
              WHERE {where_sql}
              ORDER BY s.start_time DESC
              LIMIT ? OFFSET ?"
@@ -150,7 +151,7 @@ impl HistoryReader {
 
         let category_join = "             LEFT JOIN activities a ON a.id = s.activity_id
              LEFT JOIN categories cat
-                    ON cat.id = COALESCE(a.category_id, s.category_id)";
+                    ON cat.id = COALESCE(a.category_id, s.category_id, a.ai_category_id)";
 
         let mut stmt = conn.prepare(&format!(
             "SELECT cat.id, cat.name, cat.color, COALESCE(SUM({DURATION}), 0.0), COUNT(*)
@@ -237,6 +238,7 @@ pub enum CategorySourceFilter {
     #[default]
     All,
     Manual,
+    Ai,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -301,6 +303,10 @@ impl SessionFilter {
             CategorySourceFilter::Manual => {
                 clauses.push("COALESCE(a.category_id, s.category_id) IS NOT NULL".to_string());
             }
+            CategorySourceFilter::Ai => clauses.push(
+                "COALESCE(a.category_id, s.category_id) IS NULL AND a.ai_category_id IS NOT NULL"
+                    .to_string(),
+            ),
         }
 
         if let Some(start) = &self.start {

@@ -42,6 +42,15 @@ pub struct NewCategory {
     pub parent_id: Option<i64>,
 }
 
+/// An activity nobody has categorized yet, as the LLM needs to see it.
+#[derive(Debug, Clone)]
+pub struct UncategorizedActivity {
+    pub id: i64,
+    pub app_name: String,
+    pub url: Option<String>,
+    pub title: String,
+}
+
 pub struct CategoryStore {
     conn: SharedConnection,
 }
@@ -239,6 +248,7 @@ impl CategoryStore {
             .join(",");
         tx.execute_batch(&format!(
             "UPDATE activities SET category_id = NULL WHERE category_id IN ({ids});
+             UPDATE activities SET ai_category_id = NULL WHERE ai_category_id IN ({ids});
              UPDATE sessions SET category_id = NULL WHERE category_id IN ({ids});
              DELETE FROM work_session_categories WHERE category_id IN ({ids});
              DELETE FROM categories WHERE id IN ({ids});"
@@ -280,14 +290,63 @@ impl CategoryStore {
 
         let sessions_cleared: i64 = tx.query_row(
             "SELECT COUNT(*) FROM sessions s LEFT JOIN activities a ON a.id = s.activity_id
-             WHERE COALESCE(a.category_id, s.category_id) IS NOT NULL",
+             WHERE COALESCE(a.category_id, s.category_id, a.ai_category_id) IS NOT NULL",
             [],
             |row| row.get(0),
         )?;
-        tx.execute("UPDATE activities SET category_id = NULL", [])?;
+        tx.execute(
+            "UPDATE activities SET category_id = NULL, ai_category_id = NULL",
+            [],
+        )?;
         tx.execute("UPDATE sessions SET category_id = NULL", [])?;
 
         tx.commit()?;
         Ok(CategorizationResetOutcome { sessions_cleared })
+    }
+
+    /// Activities with neither a manual pin nor an AI label, most recently seen first.
+    pub fn get_uncategorized_activities(&self) -> Result<Vec<UncategorizedActivity>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT a.id, a.app_name, a.url, COALESCE(NULLIF(a.display_title, ''), a.title)
+             FROM activities a
+             WHERE a.category_id IS NULL AND a.ai_category_id IS NULL
+               AND NOT EXISTS (SELECT 1 FROM sessions s
+                               WHERE s.activity_id = a.id AND s.category_id IS NOT NULL)
+             ORDER BY a.last_seen DESC",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(UncategorizedActivity {
+                    id: row.get(0)?,
+                    app_name: row.get(1)?,
+                    url: row.get(2)?,
+                    title: row.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Stores AI labels as `(activity_id, category_id)`. A manual pin made in the meantime is
+    /// untouched: reads prefer it over the AI label.
+    pub fn assign_ai(&self, labels: &[(i64, i64)]) -> Result<()> {
+        if labels.is_empty() {
+            return Ok(());
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "UPDATE activities SET ai_category_id = ?2
+                 WHERE id = ?1 AND category_id IS NULL
+                   AND EXISTS (SELECT 1 FROM categories WHERE id = ?2)",
+            )?;
+            for (activity_id, category_id) in labels {
+                stmt.execute(params![activity_id, category_id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 }

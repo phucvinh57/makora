@@ -46,6 +46,7 @@ pub fn run() {
             commands::apply_seed_taxonomy,
             commands::get_seed_taxonomy_preview,
             commands::reset_categorization,
+            commands::categorize,
             commands::create_work_session,
             commands::list_work_sessions,
             commands::search_work_sessions,
@@ -77,6 +78,7 @@ pub fn run() {
             app.manage(HistoryReader::new(conn.clone()));
             app.manage(WorkSessionStore::new(conn.clone()));
             app.manage(CategoryStore::new(conn));
+            app.manage(commands::AiCategorizeState::default());
             app.manage(tracker.clone());
             let (tx, rx) = mpsc::channel::<WatchEvent>();
 

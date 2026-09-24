@@ -1,3 +1,5 @@
+use crate::core::category::url_location;
+use crate::core::llm::{self, ActivityText};
 use crate::core::{
     ActivityStats, CategorizationResetOutcome, Category, CategoryFilter, CategorySourceFilter,
     CategoryStore, HistoryReader, NewCategory, NewWorkSession, SeedTaxonomy, SessionFilter,
@@ -6,7 +8,9 @@ use crate::core::{
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use tauri::State;
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::{AppHandle, Emitter, State};
+use tracing::info;
 
 #[derive(Serialize)]
 pub struct SessionsPage {
@@ -48,6 +52,7 @@ fn parse_category_source_filter(source: Option<&str>) -> Result<CategorySourceFi
     match source {
         None => Ok(CategorySourceFilter::All),
         Some("manual") => Ok(CategorySourceFilter::Manual),
+        Some("ai") => Ok(CategorySourceFilter::Ai),
         Some(value) => Err(format!("invalid category source filter: {value}")),
     }
 }
@@ -271,4 +276,80 @@ pub fn work_session_stats(
     id: i64,
 ) -> Result<WorkSessionStats, String> {
     work_sessions.stats(id).map_err(|e| e.to_string())
+}
+
+/// Guards against two categorization runs loading the model at once.
+#[derive(Default)]
+pub struct AiCategorizeState {
+    running: AtomicBool,
+}
+
+#[derive(Serialize)]
+pub struct AiCategorizeOutcome {
+    pub labeled: usize,
+    pub skipped: usize,
+}
+
+#[derive(Serialize, Clone)]
+struct AiCategorizeProgress {
+    done: usize,
+    total: usize,
+}
+
+/// Labels every uncategorized activity with the local LLM. Runs on a blocking thread and
+/// reports `ai-categorize-progress` events; `model` is an Ollama name or a `.gguf` path.
+#[tauri::command]
+pub async fn categorize(
+    app: AppHandle,
+    state: State<'_, AiCategorizeState>,
+    categories: State<'_, CategoryStore>,
+    model: Option<String>,
+) -> Result<AiCategorizeOutcome, String> {
+    if state.running.swap(true, Ordering::AcqRel) {
+        return Err("AI categorization is already running".into());
+    }
+    let taxonomy = categories.list().map_err(|e| e.to_string());
+    let pending = categories
+        .get_uncategorized_activities()
+        .map_err(|e| e.to_string());
+    let model = model.unwrap_or_else(|| llm::DEFAULT_MODEL.to_string());
+
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let (taxonomy, pending) = (taxonomy?, pending?);
+        let texts: Vec<ActivityText> = pending
+            .iter()
+            .map(|activity| ActivityText {
+                app_name: activity.app_name.clone(),
+                url: activity.url.as_deref().and_then(url_location),
+                title: activity.title.clone(),
+            })
+            .collect();
+        let total = texts.len();
+        info!(total, %model, "categorizing activities with the local model");
+        let answers = llm::classify(&model, &taxonomy, &texts, |done, total| {
+            let _ = app.emit(
+                "ai-categorize-progress",
+                AiCategorizeProgress { done, total },
+            );
+            true
+        })
+        .map_err(|e| format!("{e:#}"))?;
+        let labels: Vec<(i64, i64)> = pending
+            .iter()
+            .zip(&answers)
+            .filter_map(|(activity, answer)| answer.map(|category| (activity.id, category)))
+            .collect();
+        Ok::<_, String>((labels, total))
+    })
+    .await
+    .map_err(|e| e.to_string())
+    .and_then(|r| r);
+    state.running.store(false, Ordering::Release);
+
+    let (labels, total) = result?;
+    categories.assign_ai(&labels).map_err(|e| e.to_string())?;
+    Ok(AiCategorizeOutcome {
+        labeled: labels.len(),
+        skipped: total - labels.len(),
+    })
 }

@@ -128,6 +128,19 @@ pub fn url_key(url: &str) -> Option<String> {
     Some(key)
 }
 
+/// `domain/path` with the scheme, `www.`, query and fragment dropped — what a page is about
+/// without the tracking noise.
+pub fn url_location(url: &str) -> Option<String> {
+    let domain = normalized_domain(url)?;
+    let parsed = parse_lenient(url);
+    let path = parsed
+        .as_ref()
+        .map(|p| p.path())
+        .unwrap_or("/")
+        .trim_end_matches('/');
+    Some(format!("{domain}{path}"))
+}
+
 pub fn strip_query_and_fragment(url: &str) -> String {
     let Some(mut parsed) = parse_lenient(url) else {
         return url.split('#').next().unwrap_or(url).to_string();
