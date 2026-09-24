@@ -14,7 +14,7 @@ use tracing::{error, info};
 
 use crate::core::{
     open_connection, CategoryStore, FocusWatcher, HistoryReader, PlatformFocusWatcher,
-    SessionTracker, SqliteStore, UrlQueryStore, WatchEvent, WorkSessionStore,
+    SessionTracker, SqliteStore, WatchEvent, WorkSessionStore,
 };
 
 type SharedTracker = Arc<Mutex<SessionTracker<SqliteStore>>>;
@@ -46,9 +46,6 @@ pub fn run() {
             commands::apply_seed_taxonomy,
             commands::get_seed_taxonomy_preview,
             commands::reset_categorization,
-            commands::list_url_query_params,
-            commands::create_url_query_param,
-            commands::delete_url_query_param,
             commands::create_work_session,
             commands::list_work_sessions,
             commands::search_work_sessions,
@@ -72,7 +69,6 @@ pub fn run() {
             let conn = open_connection(&db_path).map_err(|err| {
                 anyhow::anyhow!("opening database at {}: {err:#}", db_path.display())
             })?;
-            let url_params = Arc::new(UrlQueryStore::new(conn.clone()));
             let store = SqliteStore::new(conn.clone());
             let tracker: SharedTracker = Arc::new(Mutex::new(
                 SessionTracker::new(store).context("initializing session tracker")?,
@@ -82,7 +78,6 @@ pub fn run() {
             app.manage(WorkSessionStore::new(conn.clone()));
             app.manage(CategoryStore::new(conn));
             app.manage(tracker.clone());
-            app.manage(url_params.clone());
             let (tx, rx) = mpsc::channel::<WatchEvent>();
 
             #[cfg(target_os = "linux")]
@@ -112,7 +107,7 @@ pub fn run() {
                 })
                 .context("spawning activity-tracker thread")?;
 
-            ingest::spawn(tracker, url_params).context("starting tab-ingest server")?;
+            ingest::spawn(tracker).context("starting tab-ingest server")?;
             info!(port = ingest::PORT, "listening for tab events");
 
             tray::build(app.handle())?;

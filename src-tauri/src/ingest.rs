@@ -6,8 +6,8 @@ use chrono::Utc;
 use serde::Deserialize;
 use tiny_http::{Method, Response, Server};
 
-use crate::core::category::{filter_query_params, normalized_domain};
-use crate::core::{BrowserKind, SessionStore, SessionTracker, TabEvent, UrlQueryStore};
+use crate::core::category::strip_query_and_fragment;
+use crate::core::{BrowserKind, SessionStore, SessionTracker, TabEvent};
 
 pub const PORT: u16 = 47632;
 
@@ -20,24 +20,19 @@ struct TabEventDto {
 
 pub fn spawn<S: SessionStore + Send + 'static>(
     tracker: Arc<Mutex<SessionTracker<S>>>,
-    url_params: Arc<UrlQueryStore>,
 ) -> Result<thread::JoinHandle<()>> {
     let server = Server::http(("127.0.0.1", PORT))
         .map_err(|e| anyhow!("binding tab-ingest server to 127.0.0.1:{PORT}: {e}"))?;
 
     thread::Builder::new()
         .name("makora-tab-ingest".into())
-        .spawn(move || run(server, tracker, url_params))
+        .spawn(move || run(server, tracker))
         .map_err(|e| anyhow!("spawning tab-ingest server thread: {e}"))
 }
 
-fn run<S: SessionStore>(
-    server: Server,
-    tracker: Arc<Mutex<SessionTracker<S>>>,
-    url_params: Arc<UrlQueryStore>,
-) {
+fn run<S: SessionStore>(server: Server, tracker: Arc<Mutex<SessionTracker<S>>>) {
     for mut request in server.incoming_requests() {
-        let status = handle_request(&mut request, &tracker, &url_params);
+        let status = handle_request(&mut request, &tracker);
         let _ = request.respond(Response::empty(status));
     }
 }
@@ -45,7 +40,6 @@ fn run<S: SessionStore>(
 fn handle_request<S: SessionStore>(
     request: &mut tiny_http::Request,
     tracker: &Arc<Mutex<SessionTracker<S>>>,
-    url_params: &UrlQueryStore,
 ) -> u16 {
     if *request.method() != Method::Post || request.url() != "/event" {
         return 404;
@@ -66,7 +60,7 @@ fn handle_request<S: SessionStore>(
 
     let event = TabEvent {
         browser: BrowserKind::from_wire(&dto.browser),
-        url: normalize_url(&dto.url, url_params),
+        url: strip_query_and_fragment(&dto.url),
         title: dto.title,
         timestamp: Utc::now(),
     };
@@ -76,13 +70,6 @@ fn handle_request<S: SessionStore>(
         return 500;
     }
     204
-}
-
-fn normalize_url(url: &str, url_params: &UrlQueryStore) -> String {
-    let allowed = normalized_domain(url)
-        .and_then(|domain| url_params.params_for(&domain).ok())
-        .unwrap_or_default();
-    filter_query_params(url, &allowed)
 }
 
 fn has_allowed_extension_origin(request: &tiny_http::Request) -> bool {

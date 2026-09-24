@@ -2,7 +2,6 @@ import { createFileRoute } from "@tanstack/react-router";
 import { CategorizationDataSection } from "./-components/CategorizationDataSection";
 import { FeatureFlagsSection } from "./-components/FeatureFlagsSection";
 import { GeneralSection } from "./-components/GeneralSection";
-import { UrlQueryWhitelistSection } from "./-components/UrlQueryWhitelistSection";
 
 export const Route = createFileRoute("/settings")({
   component: SettingsPage,
@@ -20,7 +19,6 @@ function SettingsPage() {
       <GeneralSection />
       <FeatureFlagsSection />
       <CategorizationDataSection />
-      <UrlQueryWhitelistSection />
     </div>
   );
 }

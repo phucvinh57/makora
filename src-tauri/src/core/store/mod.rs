@@ -7,7 +7,6 @@ use crate::core::model::AppInfo;
 pub mod categories;
 pub mod queries;
 pub mod sqlite;
-pub mod url_params;
 pub mod work_sessions;
 
 pub use categories::{
@@ -17,7 +16,6 @@ pub use queries::{
     ActivityStats, CategoryFilter, CategorySourceFilter, HistoryReader, SessionFilter, SessionRow,
 };
 pub use sqlite::{open_connection, SqliteStore};
-pub use url_params::{UrlQueryParam, UrlQueryStore};
 pub use work_sessions::{
     NewWorkSession, WorkSession, WorkSessionFields, WorkSessionStats, WorkSessionStore,
     WorkSessionUpdate,

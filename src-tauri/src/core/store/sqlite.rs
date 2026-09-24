@@ -65,16 +65,6 @@ fn migrations() -> Migrations<'static> {
         CREATE INDEX idx_sessions_category ON sessions(category_id);
         CREATE INDEX idx_sessions_activity ON sessions(activity_id);
 
-        -- Which query parameters keep URLs apart, so sites such as YouTube can tell
-        -- resources from each other.
-        CREATE TABLE url_query_whitelist (
-            id     INTEGER PRIMARY KEY AUTOINCREMENT,
-            domain TEXT NOT NULL,
-            param  TEXT NOT NULL
-        );
-        CREATE UNIQUE INDEX idx_url_query_whitelist ON url_query_whitelist(domain, param);
-        INSERT INTO url_query_whitelist (domain, param) VALUES ('youtube.com', 'v');
-
         CREATE TABLE work_sessions (
             id             INTEGER PRIMARY KEY AUTOINCREMENT,
             name           TEXT NOT NULL,

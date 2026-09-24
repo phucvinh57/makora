@@ -128,23 +128,12 @@ pub fn url_key(url: &str) -> Option<String> {
     Some(key)
 }
 
-pub fn filter_query_params(url: &str, allowed: &[String]) -> String {
+pub fn strip_query_and_fragment(url: &str) -> String {
     let Some(mut parsed) = parse_lenient(url) else {
         return url.split('#').next().unwrap_or(url).to_string();
     };
     parsed.set_fragment(None);
-    let kept = parsed.query().map(|query| {
-        let mut kept: Vec<&str> = query
-            .split('&')
-            .filter(|param| {
-                let name = param.split('=').next().unwrap_or("");
-                allowed.iter().any(|a| a == name)
-            })
-            .collect();
-        kept.sort_unstable();
-        kept.join("&")
-    });
-    parsed.set_query(kept.as_deref().filter(|q| !q.is_empty()));
+    parsed.set_query(None);
     parsed.to_string()
 }
 

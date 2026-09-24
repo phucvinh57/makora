@@ -1,10 +1,8 @@
-use std::sync::Arc;
-
 use crate::core::{
     ActivityStats, CategorizationResetOutcome, Category, CategoryFilter, CategorySourceFilter,
     CategoryStore, HistoryReader, NewCategory, NewWorkSession, SeedTaxonomy, SessionFilter,
-    SessionRow, UrlQueryParam, UrlQueryStore, WorkSession, WorkSessionFields, WorkSessionStats,
-    WorkSessionStore, WorkSessionUpdate,
+    SessionRow, WorkSession, WorkSessionFields, WorkSessionStats, WorkSessionStore,
+    WorkSessionUpdate,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -169,27 +167,6 @@ pub fn reset_categorization(
     categories
         .reset_categorization()
         .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
-pub fn list_url_query_params(
-    params: State<Arc<UrlQueryStore>>,
-) -> Result<Vec<UrlQueryParam>, String> {
-    params.list().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn create_url_query_param(
-    params: State<Arc<UrlQueryStore>>,
-    domain: String,
-    param: String,
-) -> Result<UrlQueryParam, String> {
-    params.create(&domain, &param).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn delete_url_query_param(params: State<Arc<UrlQueryStore>>, id: i64) -> Result<(), String> {
-    params.delete(id).map_err(|e| e.to_string())
 }
 
 fn parse_rfc3339(value: &str) -> Result<DateTime<Utc>, String> {

@@ -14,12 +14,6 @@ export interface SessionRow {
   category_source: "manual" | null;
 }
 
-export interface UrlQueryParam {
-  id: number;
-  domain: string;
-  param: string;
-}
-
 export interface SessionsPage {
   rows: SessionRow[];
   total: number;
