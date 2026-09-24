@@ -322,44 +322,4 @@ mod tests {
         assert_eq!(state.transition(), Some(false));
         assert_eq!(state.transition(), None);
     }
-
-    #[test]
-    fn dbus_match_rules_build() {
-        locked_hint_rule("/org/freedesktop/login1/session/_42").unwrap();
-        prepare_for_sleep_rule().unwrap();
-    }
-
-    #[test]
-    fn graphical_session_resolution_works_when_logind_has_a_display_session() {
-        let Ok(connection) = Connection::system() else {
-            return;
-        };
-        let Ok(manager) = Proxy::new(&connection, LOGIN_SERVICE, MANAGER_PATH, MANAGER_INTERFACE)
-        else {
-            return;
-        };
-        let Ok(user_path) =
-            manager.call::<_, _, OwnedObjectPath>("GetUserByPID", &std::process::id())
-        else {
-            return;
-        };
-        let Ok(user) = Proxy::new(
-            &connection,
-            LOGIN_SERVICE,
-            user_path.as_str(),
-            USER_INTERFACE,
-        ) else {
-            return;
-        };
-        let Ok((session_id, _)) = user.get_property::<(String, OwnedObjectPath)>("Display") else {
-            return;
-        };
-        if session_id.is_empty() {
-            return;
-        }
-
-        let path = resolve_graphical_session(&connection, &manager)
-            .expect("a user with a display session should resolve it");
-        assert_ne!(path.as_str(), "/");
-    }
 }

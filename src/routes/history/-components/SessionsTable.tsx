@@ -1,5 +1,4 @@
 import { Card } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -312,15 +311,6 @@ export function SessionsTable({
                           {categoryOptions(categories)}
                         </SelectContent>
                       </Select>
-                      {row.activity_session_count > 1 && (
-                        <Badge
-                          variant="outline"
-                          className="shrink-0 px-1 text-[10px]"
-                          title={`This category applies to all ${row.activity_session_count} occurrences in this range`}
-                        >
-                          ×{row.activity_session_count}
-                        </Badge>
-                      )}
                     </div>
                   </TableCell>
                   <TableCell

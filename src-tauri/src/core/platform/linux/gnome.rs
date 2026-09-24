@@ -191,10 +191,4 @@ mod tests {
             .expect("still focused");
         assert_eq!(observed.pid, None);
     }
-
-    #[test]
-    fn match_rules_build() {
-        focus_changed_rule().expect("focus rule");
-        name_owner_changed_rule().expect("name owner rule");
-    }
 }

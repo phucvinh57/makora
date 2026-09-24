@@ -8,7 +8,6 @@ use super::sqlite::SharedConnection;
 pub struct SessionRow {
     pub id: i64,
     pub activity_id: Option<i64>,
-    pub activity_session_count: i64,
     pub app_name: String,
     pub exe_path: String,
     pub window_title: String,
@@ -93,7 +92,7 @@ impl HistoryReader {
         let category_ids = expanded_category_ids(&conn, filter)?;
         let (where_sql, mut binds) = filter.to_sql(category_ids.as_deref());
         let sql = format!(
-            "SELECT s.id, s.activity_id, COALESCE(occurrence_counts.n, 0), s.app_name, s.exe_path,
+            "SELECT s.id, s.activity_id, s.app_name, s.exe_path,
                     COALESCE(NULLIF(a.display_title, ''), s.window_title), s.url, s.start_time, s.end_time,
                     cat.id, cat.name, cat.color, (a.category_id IS NOT NULL OR s.category_id IS NOT NULL),
                     CASE
@@ -103,12 +102,6 @@ impl HistoryReader {
                     END
              FROM sessions s
              LEFT JOIN activities a ON a.id = s.activity_id
-             LEFT JOIN (
-                 SELECT activity_id, COUNT(*) AS n FROM sessions
-                 WHERE (? IS NULL OR start_time < ?)
-                   AND (? IS NULL OR end_time IS NULL OR end_time > ?)
-                 GROUP BY activity_id
-             ) occurrence_counts ON occurrence_counts.activity_id = s.activity_id
              LEFT JOIN categories cat
                     ON cat.id = COALESCE(a.category_id, s.category_id, a.rule_category_id,
                                          s.rule_category_id)
@@ -116,12 +109,6 @@ impl HistoryReader {
              ORDER BY s.start_time DESC
              LIMIT ? OFFSET ?"
         );
-        let range_start = filter.start.clone();
-        let range_end = filter.end.clone();
-        binds.insert(0, Box::new(range_end.clone()));
-        binds.insert(1, Box::new(range_end));
-        binds.insert(2, Box::new(range_start.clone()));
-        binds.insert(3, Box::new(range_start));
         binds.push(Box::new(limit));
         binds.push(Box::new(offset));
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
@@ -133,18 +120,17 @@ impl HistoryReader {
                 Ok(SessionRow {
                     id: row.get(0)?,
                     activity_id: row.get(1)?,
-                    activity_session_count: row.get(2)?,
-                    app_name: row.get(3)?,
-                    exe_path: row.get(4)?,
-                    window_title: row.get(5)?,
-                    url: row.get(6)?,
-                    start_time: row.get(7)?,
-                    end_time: row.get(8)?,
-                    category_id: row.get(9)?,
-                    category_name: row.get(10)?,
-                    category_color: row.get(11)?,
-                    category_is_pinned: row.get(12)?,
-                    category_source: row.get(13)?,
+                    app_name: row.get(2)?,
+                    exe_path: row.get(3)?,
+                    window_title: row.get(4)?,
+                    url: row.get(5)?,
+                    start_time: row.get(6)?,
+                    end_time: row.get(7)?,
+                    category_id: row.get(8)?,
+                    category_name: row.get(9)?,
+                    category_color: row.get(10)?,
+                    category_is_pinned: row.get(11)?,
+                    category_source: row.get(12)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;

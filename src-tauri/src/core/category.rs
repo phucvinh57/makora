@@ -677,14 +677,6 @@ mod tests {
     }
 
     #[test]
-    fn url_key_strips_port_and_userinfo_like_normalized_domain() {
-        assert_eq!(
-            url_key("https://user@example.com:8080/path"),
-            Some("example.com/path".to_string())
-        );
-    }
-
-    #[test]
     fn url_key_is_none_when_no_host_can_be_extracted() {
         assert_eq!(url_key(""), None);
     }

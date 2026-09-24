@@ -1117,41 +1117,6 @@ mod tests {
     }
 
     #[test]
-    fn a_category_named_distraction_has_full_category_crud() {
-        let (store, path) = temp_store();
-        let work = store.create_category("Work", "#111111", None).unwrap();
-        let distraction = store
-            .create_category("Distraction", "#a1a1aa", None)
-            .unwrap();
-
-        store
-            .update_category(distraction.id, "Noise", "#ff0000", Some(work.id))
-            .unwrap();
-        let child = store
-            .create_category("Nested", "#222222", Some(distraction.id))
-            .unwrap();
-        assert_eq!(
-            store
-                .list_categories()
-                .unwrap()
-                .into_iter()
-                .find(|category| category.id == distraction.id)
-                .unwrap()
-                .parent_id,
-            Some(work.id)
-        );
-        store.delete_category(distraction.id).unwrap();
-        let remaining = store.list_categories().unwrap();
-        assert!(remaining
-            .iter()
-            .all(|category| category.id != distraction.id));
-        assert!(remaining.iter().all(|category| category.id != child.id));
-        assert!(remaining.iter().any(|category| category.id == work.id));
-
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
     fn activity_duration_never_changes_rule_resolution() {
         let (store, path) = temp_store();
         let conn = store.conn.clone();

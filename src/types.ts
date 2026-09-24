@@ -1,7 +1,6 @@
 export interface SessionRow {
   id: number;
   activity_id: number | null;
-  activity_session_count: number;
   app_name: string;
   exe_path: string;
   window_title: string;

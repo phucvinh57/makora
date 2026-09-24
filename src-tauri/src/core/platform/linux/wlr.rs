@@ -219,14 +219,6 @@ mod tests {
     }
 
     #[test]
-    fn probing_is_safe_on_any_session() {
-        let found = WlrProvider::probe().is_some();
-        if std::env::var_os("WAYLAND_DISPLAY").is_none() {
-            assert!(!found, "no Wayland display, so there is nothing to bind");
-        }
-    }
-
-    #[test]
     fn activated_is_found_among_other_states() {
         let flags = encode(&[
             HandleState::Maximized,

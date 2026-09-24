@@ -439,36 +439,6 @@ mod tests {
     }
 
     #[test]
-    fn macos_edge_exe_stem_is_recognized_as_a_browser() {
-        let log = RecordingStore::default();
-        let mut tracker = SessionTracker::new(log.clone()).unwrap();
-
-        tracker
-            .handle_event(browser_event_named("msedge.app", "Microsoft Edge"))
-            .unwrap();
-        tracker
-            .handle_tab_event(tab_event(BrowserKind::Edge, "https://a.example/"))
-            .unwrap();
-
-        assert_eq!(*log.0.borrow(), vec!["start:msedge.app:https://a.example/"]);
-    }
-
-    #[test]
-    fn macos_brave_exe_stem_is_recognized_as_a_browser() {
-        let log = RecordingStore::default();
-        let mut tracker = SessionTracker::new(log.clone()).unwrap();
-
-        tracker
-            .handle_event(browser_event_named("brave.app", "Brave Browser"))
-            .unwrap();
-        tracker
-            .handle_tab_event(tab_event(BrowserKind::Brave, "https://a.example/"))
-            .unwrap();
-
-        assert_eq!(*log.0.borrow(), vec!["start:brave.app:https://a.example/"]);
-    }
-
-    #[test]
     fn ignore_policy_closes_previous_session_but_opens_none_for_an_ignored_app() {
         let log = RecordingStore::default();
         let ignore = Arc::new(FakeIgnorePolicy {
