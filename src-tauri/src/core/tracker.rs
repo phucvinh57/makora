@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 
 use anyhow::Result;
@@ -23,9 +25,17 @@ struct Current {
     window_title: String,
 }
 
+struct LastTab {
+    url: String,
+    title: String,
+}
+
 pub struct SessionTracker<S: SessionStore> {
     store: S,
     current: Option<Current>,
+    /// Latest tab the extension reported per browser. The extension only reports on
+    /// change, so this is what a browser regaining focus is still showing.
+    last_tabs: HashMap<BrowserKind, LastTab>,
     present: bool,
 }
 
@@ -35,6 +45,7 @@ impl<S: SessionStore> SessionTracker<S> {
         Ok(Self {
             store,
             current: None,
+            last_tabs: HashMap::new(),
             present: true,
         })
     }
@@ -55,17 +66,29 @@ impl<S: SessionStore> SessionTracker<S> {
         }
         self.end_current_row(event.timestamp)?;
         let browser = BrowserKind::from_app_name(&event.app.app_name);
+        let tab = browser.and_then(|kind| self.last_tabs.get(&kind));
+        let (url, window_title) = match tab {
+            Some(tab) => (Some(tab.url.clone()), tab.title.clone()),
+            None => (None, event.window_title),
+        };
         self.current = Some(Current {
             id: None,
             app: event.app,
             browser,
-            url: None,
-            window_title: event.window_title,
+            url,
+            window_title,
         });
         self.open_current_row(event.timestamp)
     }
 
     pub fn handle_tab_event(&mut self, event: TabEvent) -> Result<()> {
+        self.last_tabs.insert(
+            event.browser,
+            LastTab {
+                url: event.url.clone(),
+                title: event.title.clone(),
+            },
+        );
         let Some(current) = &self.current else {
             return Ok(());
         };
