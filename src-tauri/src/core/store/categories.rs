@@ -1,5 +1,5 @@
 use anyhow::{anyhow, bail, Context, Result};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{named_params, params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use super::sqlite::SharedConnection;
@@ -87,6 +87,43 @@ pub struct AiReviewPage {
     pub total: i64,
 }
 
+/// AI labels of one source (an executable or a domain) that suggest the same category, so one
+/// decision can cover all of them.
+#[derive(Debug, Clone, Serialize)]
+pub struct AiReviewGroup {
+    pub key_kind: String,
+    pub key: String,
+    pub app_name: String,
+    pub category_id: i64,
+    pub category_name: String,
+    pub category_color: String,
+    pub activity_count: i64,
+    pub total_seconds: f64,
+    /// The least sure the model was about any member; `None` when unknown.
+    pub min_confidence: Option<f64>,
+    pub activity_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AiReviewGroupPage {
+    pub groups: Vec<AiReviewGroup>,
+    pub total: i64,
+}
+
+/// Which pending AI labels the review queue shows.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ReviewFilter {
+    /// Only labels in this category or under it.
+    pub category: Option<i64>,
+    /// Only these activities, e.g. the members of one group.
+    pub activities: Option<Vec<i64>>,
+    /// Hide labels the model was confident about.
+    pub uncertain_only: bool,
+    /// Hide activities (or groups) tracked for less than this, in seconds.
+    pub min_seconds: f64,
+}
+
 /// How much the user has taught the model so far.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct FeedbackStats {
@@ -95,12 +132,23 @@ pub struct FeedbackStats {
     pub pinned: i64,
     pub rejected: i64,
     pub pending_review: i64,
+    /// Tracked time of the activities still waiting for review.
+    pub pending_seconds: f64,
+    /// Tracked time of the AI labels the user has already judged.
+    pub reviewed_seconds: f64,
 }
 
 /// An activity no session of which is pinned on its own: the only ones an AI label can show
 /// through for, since a session pin outranks it.
 const NO_SESSION_PIN: &str = "NOT EXISTS (SELECT 1 FROM sessions s
                                           WHERE s.activity_id = a.id AND s.category_id IS NOT NULL)";
+
+/// Labels the model was at least this sure of are left out of the default review queue.
+const CONFIDENT: f64 = 0.85;
+
+/// Tracked seconds of the activity `a` in a query that left-joins `sessions s` onto it.
+const SECONDS: &str =
+    "COALESCE(SUM((julianday(s.end_time) - julianday(s.start_time)) * 86400.0), 0.0)";
 
 pub struct CategoryStore {
     conn: SharedConnection,
@@ -193,7 +241,9 @@ fn pin_activity(
 ) -> Result<()> {
     if category_id.is_none() {
         tx.execute(
-            "UPDATE activities SET ai_rejected_category_id = ai_category_id, ai_category_id = NULL
+            "UPDATE activities
+             SET ai_rejected_category_id = ai_category_id, ai_category_id = NULL,
+                 ai_confidence = NULL
              WHERE id = ?1 AND ai_category_id IS NOT NULL",
             params![activity_id],
         )?;
@@ -324,7 +374,8 @@ impl CategoryStore {
             .join(",");
         tx.execute_batch(&format!(
             "UPDATE activities SET category_id = NULL WHERE category_id IN ({ids});
-             UPDATE activities SET ai_category_id = NULL WHERE ai_category_id IN ({ids});
+             UPDATE activities SET ai_category_id = NULL, ai_confidence = NULL
+                 WHERE ai_category_id IN ({ids});
              UPDATE activities SET ai_rejected_category_id = NULL
                  WHERE ai_rejected_category_id IN ({ids});
              UPDATE sessions SET category_id = NULL WHERE category_id IN ({ids});
@@ -411,7 +462,8 @@ impl CategoryStore {
         )?;
         tx.execute(
             "UPDATE activities
-             SET category_id = NULL, ai_category_id = NULL, ai_rejected_category_id = NULL",
+             SET category_id = NULL, ai_category_id = NULL, ai_rejected_category_id = NULL,
+                 ai_confidence = NULL",
             [],
         )?;
         tx.execute("UPDATE sessions SET category_id = NULL", [])?;
@@ -452,10 +504,10 @@ impl CategoryStore {
         Ok(rows)
     }
 
-    /// Stores AI labels as `(activity_id, category_id)`; `None` clears a label the model no
-    /// longer stands by. A manual pin made in the meantime is untouched: reads prefer it over
+    /// Stores AI labels as `(activity_id, category_id, confidence)`; `None` clears a label the
+    /// model no longer stands by. A manual pin made in the meantime is untouched: reads prefer it over
     /// the AI label. Returns how many labels actually changed.
-    pub fn assign_ai(&self, labels: &[(i64, Option<i64>)]) -> Result<usize> {
+    pub fn assign_ai(&self, labels: &[(i64, Option<i64>, f64)]) -> Result<usize> {
         if labels.is_empty() {
             return Ok(0);
         }
@@ -468,13 +520,23 @@ impl CategoryStore {
                  WHERE id = ?1 AND category_id IS NULL AND ai_category_id IS NOT ?2
                    AND EXISTS (SELECT 1 FROM categories WHERE id = ?2)",
             )?;
-            let mut clear = tx.prepare(
-                "UPDATE activities SET ai_category_id = NULL
+            // Not counted as a change: a re-check that lands on the same category only
+            // refreshes how sure the model was.
+            let mut confidence_stmt = tx.prepare(
+                "UPDATE activities SET ai_confidence = ?2
                  WHERE id = ?1 AND category_id IS NULL AND ai_category_id IS NOT NULL",
             )?;
-            for (activity_id, category_id) in labels {
+            let mut clear = tx.prepare(
+                "UPDATE activities SET ai_category_id = NULL, ai_confidence = NULL
+                 WHERE id = ?1 AND category_id IS NULL AND ai_category_id IS NOT NULL",
+            )?;
+            for (activity_id, category_id, confidence) in labels {
                 changed += match category_id {
-                    Some(category_id) => set.execute(params![activity_id, category_id])?,
+                    Some(category_id) => {
+                        let n = set.execute(params![activity_id, category_id])?;
+                        confidence_stmt.execute(params![activity_id, confidence])?;
+                        n
+                    }
                     None => clear.execute(params![activity_id])?,
                 };
             }
@@ -510,23 +572,14 @@ impl CategoryStore {
         Ok(rows)
     }
 
-    /// AI labels awaiting review, longest-tracked first so the ones that matter come up first.
-    /// Filtering by a category includes everything under it.
-    pub fn ai_review_page(
-        &self,
-        page: i64,
-        page_size: i64,
-        category: Option<i64>,
-    ) -> Result<AiReviewPage> {
-        let conn = self.conn.lock().unwrap();
-        let scope = match category {
+    /// The `WHERE` clause for pending AI labels under `filter`, or `None` when the category
+    /// filter can match nothing. Binds `:uncertain` and `:confident`.
+    fn pending_clause(conn: &rusqlite::Connection, filter: &ReviewFilter) -> Result<Option<String>> {
+        let scope = match filter.category {
             Some(id) => {
-                let ids = load_category_tree(&conn)?.descendants(id);
+                let ids = load_category_tree(conn)?.descendants(id);
                 if ids.is_empty() {
-                    return Ok(AiReviewPage {
-                        rows: Vec::new(),
-                        total: 0,
-                    });
+                    return Ok(None);
                 }
                 // Ids are integers, so inlining them is safe.
                 let ids = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
@@ -534,48 +587,158 @@ impl CategoryStore {
             }
             None => String::new(),
         };
-        let pending = format!(
-            "a.category_id IS NULL AND a.ai_category_id IS NOT NULL AND {NO_SESSION_PIN} {scope}"
-        );
+        let only = match &filter.activities {
+            Some(ids) => format!(
+                "AND a.id IN ({})",
+                ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+            ),
+            None => String::new(),
+        };
+        Ok(Some(format!(
+            "a.category_id IS NULL AND a.ai_category_id IS NOT NULL AND {NO_SESSION_PIN}
+             {scope} {only}
+             AND (:uncertain = 0 OR a.ai_confidence IS NULL OR a.ai_confidence < :confident)"
+        )))
+    }
+
+    /// AI labels awaiting review, longest-tracked first so the ones that matter come up first.
+    /// Filtering by a category includes everything under it.
+    pub fn ai_review_page(
+        &self,
+        page: i64,
+        page_size: i64,
+        filter: &ReviewFilter,
+    ) -> Result<AiReviewPage> {
+        let conn = self.conn.lock().unwrap();
+        let Some(pending) = Self::pending_clause(&conn, filter)? else {
+            return Ok(AiReviewPage {
+                rows: Vec::new(),
+                total: 0,
+            });
+        };
         let total: i64 = conn.query_row(
-            &format!("SELECT COUNT(*) FROM activities a WHERE {pending}"),
-            [],
+            &format!(
+                "SELECT COUNT(*) FROM (
+                     SELECT a.id FROM activities a
+                     LEFT JOIN sessions s ON s.activity_id = a.id AND s.end_time IS NOT NULL
+                     WHERE {pending}
+                     GROUP BY a.id
+                     HAVING {SECONDS} >= :min)"
+            ),
+            named_params! {
+                ":uncertain": filter.uncertain_only,
+                ":confident": CONFIDENT, ":min": filter.min_seconds,
+            },
             |row| row.get(0),
         )?;
         let mut stmt = conn.prepare(&format!(
             "SELECT a.id, a.app_name, a.url, COALESCE(NULLIF(a.display_title, ''), a.title),
-                    cat.id, cat.name, cat.color,
-                    COALESCE(SUM((julianday(s.end_time) - julianday(s.start_time)) * 86400.0), 0.0),
-                    COUNT(s.id)
+                    cat.id, cat.name, cat.color, {SECONDS}, COUNT(s.id)
              FROM activities a
              JOIN categories cat ON cat.id = a.ai_category_id
              LEFT JOIN sessions s ON s.activity_id = a.id AND s.end_time IS NOT NULL
              WHERE {pending}
              GROUP BY a.id
+             HAVING {SECONDS} >= :min
              ORDER BY 8 DESC, a.id
-             LIMIT ?1 OFFSET ?2"
+             LIMIT :limit OFFSET :offset"
         ))?;
         let rows = stmt
-            .query_map(params![page_size, page * page_size], |row| {
-                Ok(AiReviewRow {
-                    activity_id: row.get(0)?,
-                    app_name: row.get(1)?,
-                    url: row.get(2)?,
-                    title: row.get(3)?,
-                    category_id: row.get(4)?,
-                    category_name: row.get(5)?,
-                    category_color: row.get(6)?,
-                    total_seconds: row.get(7)?,
-                    session_count: row.get(8)?,
-                })
-            })?
+            .query_map(
+                named_params! {
+                    ":uncertain": filter.uncertain_only,
+                    ":confident": CONFIDENT, ":min": filter.min_seconds,
+                    ":limit": page_size, ":offset": page * page_size,
+                },
+                |row| {
+                    Ok(AiReviewRow {
+                        activity_id: row.get(0)?,
+                        app_name: row.get(1)?,
+                        url: row.get(2)?,
+                        title: row.get(3)?,
+                        category_id: row.get(4)?,
+                        category_name: row.get(5)?,
+                        category_color: row.get(6)?,
+                        total_seconds: row.get(7)?,
+                        session_count: row.get(8)?,
+                    })
+                },
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(AiReviewPage { rows, total })
     }
 
+    /// The pending AI labels folded into one row per source and suggested category, the
+    /// longest-tracked first. `filter.activities` is ignored: a group picks its own members.
+    pub fn ai_review_groups(
+        &self,
+        page: i64,
+        page_size: i64,
+        filter: &ReviewFilter,
+    ) -> Result<AiReviewGroupPage> {
+        let conn = self.conn.lock().unwrap();
+        let filter = ReviewFilter {
+            activities: None,
+            ..filter.clone()
+        };
+        let Some(pending) = Self::pending_clause(&conn, &filter)? else {
+            return Ok(AiReviewGroupPage {
+                groups: Vec::new(),
+                total: 0,
+            });
+        };
+        let grouped = format!(
+            "SELECT a.key_kind, a.key, MIN(a.app_name), cat.id, cat.name, cat.color,
+                    COUNT(DISTINCT a.id), {SECONDS}, MIN(a.ai_confidence),
+                    GROUP_CONCAT(DISTINCT a.id)
+             FROM activities a
+             JOIN categories cat ON cat.id = a.ai_category_id
+             LEFT JOIN sessions s ON s.activity_id = a.id AND s.end_time IS NOT NULL
+             WHERE {pending}
+             GROUP BY a.key_kind, a.key, cat.id
+             HAVING {SECONDS} >= :min"
+        );
+        let total: i64 = conn.query_row(
+            &format!("SELECT COUNT(*) FROM ({grouped})"),
+            named_params! {
+                ":uncertain": filter.uncertain_only,
+                ":confident": CONFIDENT, ":min": filter.min_seconds,
+            },
+            |row| row.get(0),
+        )?;
+        let mut stmt = conn.prepare(&format!(
+            "{grouped} ORDER BY 8 DESC, a.key_kind, a.key LIMIT :limit OFFSET :offset"
+        ))?;
+        let groups = stmt
+            .query_map(
+                named_params! {
+                    ":uncertain": filter.uncertain_only,
+                    ":confident": CONFIDENT, ":min": filter.min_seconds,
+                    ":limit": page_size, ":offset": page * page_size,
+                },
+                |row| {
+                    let ids: String = row.get(9)?;
+                    Ok(AiReviewGroup {
+                        key_kind: row.get(0)?,
+                        key: row.get(1)?,
+                        app_name: row.get(2)?,
+                        category_id: row.get(3)?,
+                        category_name: row.get(4)?,
+                        category_color: row.get(5)?,
+                        activity_count: row.get(6)?,
+                        total_seconds: row.get(7)?,
+                        min_confidence: row.get(8)?,
+                        activity_ids: ids.split(',').filter_map(|id| id.parse().ok()).collect(),
+                    })
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(AiReviewGroupPage { groups, total })
+    }
+
     pub fn feedback_stats(&self) -> Result<FeedbackStats> {
         let conn = self.conn.lock().unwrap();
-        Ok(conn.query_row(
+        let mut stats = conn.query_row(
             &format!(
                 "SELECT
                    COALESCE(SUM(category_id IS NOT NULL AND (
@@ -597,8 +760,31 @@ impl CategoryStore {
                     pinned: row.get(2)?,
                     rejected: row.get(3)?,
                     pending_review: row.get(4)?,
+                    ..FeedbackStats::default()
                 })
             },
-        )?)
+        )?;
+        // Time, not rows: a few long activities matter more than many short ones.
+        let (pending, reviewed) = conn.query_row(
+            &format!(
+                "SELECT COALESCE(SUM(CASE WHEN pending THEN secs END), 0.0),
+                        COALESCE(SUM(CASE WHEN reviewed THEN secs END), 0.0)
+                 FROM (
+                   SELECT (a.category_id IS NULL AND a.ai_category_id IS NOT NULL
+                           AND {NO_SESSION_PIN}) AS pending,
+                          ((a.ai_category_id IS NOT NULL AND a.category_id IS NOT NULL)
+                           OR a.ai_rejected_category_id IS NOT NULL) AS reviewed,
+                          (SELECT COALESCE(SUM((julianday(s.end_time) - julianday(s.start_time))
+                                               * 86400.0), 0.0)
+                           FROM sessions s
+                           WHERE s.activity_id = a.id AND s.end_time IS NOT NULL) AS secs
+                   FROM activities a)"
+            ),
+            [],
+            |row| Ok((row.get::<_, f64>(0)?, row.get::<_, f64>(1)?)),
+        )?;
+        stats.pending_seconds = pending;
+        stats.reviewed_seconds = reviewed;
+        Ok(stats)
     }
 }

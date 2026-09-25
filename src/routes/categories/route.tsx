@@ -66,7 +66,7 @@ function CategoriesPage() {
         <TabsContent value="taxonomy" className="flex flex-col">
           <CategoriesTab />
         </TabsContent>
-        <TabsContent value="review" className="flex max-w-5xl flex-col gap-6">
+        <TabsContent value="review" className="flex flex-col gap-6">
           <AiCategorizationSection />
           <ReviewQueue />
           <CategorizationDataSection />

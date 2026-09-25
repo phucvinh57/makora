@@ -2,8 +2,8 @@ use crate::core::category::url_location;
 use crate::core::feedback::FeedbackIndex;
 use crate::core::llm::{self, ActivityText, ModelCache};
 use crate::core::{
-    ActivityStats, AiReviewPage, CategorizationResetOutcome, Category, CategoryFilter,
-    CategorySourceFilter, CategoryStore, FeedbackStats, HistoryReader, NewCategory, SeedTaxonomy,
+    ActivityStats, AiReviewGroupPage, AiReviewPage, CategorizationResetOutcome, Category, CategoryFilter,
+    CategorySourceFilter, CategoryStore, FeedbackStats, HistoryReader, NewCategory, ReviewFilter, SeedTaxonomy,
     SessionFilter, SessionRow,
 };
 use chrono::{DateTime, Utc};
@@ -246,14 +246,14 @@ pub async fn categorize(
         info!(total, %model, examples = feedback.global().len(), "categorizing activities with the local model");
         let (mut labeled, mut changed, mut done, mut stopped) = (0, 0, 0, false);
         // Each answer is saved as soon as it arrives, so a stopped run keeps its progress.
-        let mut save = |index: usize, answer: Option<i64>| {
+        let mut save = |index: usize, answer: Option<i64>, confidence: f64| {
             let cancel = &app.state::<AiCategorizeState>().cancel;
             if answer.is_some() {
                 labeled += 1;
             }
             match app
                 .state::<CategoryStore>()
-                .assign_ai(&[(pending[index].id, answer)])
+                .assign_ai(&[(pending[index].id, answer, confidence)])
             {
                 Ok(n) => changed += n,
                 Err(err) => {
@@ -313,10 +313,22 @@ pub fn list_ai_review(
     categories: State<CategoryStore>,
     page: i64,
     page_size: i64,
-    category: Option<i64>,
+    filter: ReviewFilter,
 ) -> Result<AiReviewPage, String> {
     categories
-        .ai_review_page(page.max(0), page_size.max(1), category)
+        .ai_review_page(page.max(0), page_size.max(1), &filter)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_ai_review_groups(
+    categories: State<CategoryStore>,
+    page: i64,
+    page_size: i64,
+    filter: ReviewFilter,
+) -> Result<AiReviewGroupPage, String> {
+    categories
+        .ai_review_groups(page.max(0), page_size.max(1), &filter)
         .map_err(|e| e.to_string())
 }
 

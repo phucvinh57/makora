@@ -64,12 +64,47 @@ export interface AiReviewPage {
   total: number;
 }
 
+/** One executable or domain whose pending AI labels all suggest the same category. */
+export interface AiReviewGroup {
+  key_kind: "exe" | "domain";
+  key: string;
+  app_name: string;
+  category_id: number;
+  category_name: string;
+  category_color: string;
+  activity_count: number;
+  total_seconds: number;
+  /** The least sure the model was about any member; null when unknown. */
+  min_confidence: number | null;
+  activity_ids: number[];
+}
+
+export interface AiReviewGroupPage {
+  groups: AiReviewGroup[];
+  total: number;
+}
+
+export interface ReviewFilter {
+  /** Only suggestions in this category or under it. */
+  category?: number;
+  /** Only these activities, e.g. the members of one group. */
+  activities?: number[];
+  /** Hide labels the model was confident about. */
+  uncertain_only?: boolean;
+  /** Hide activities (or groups) tracked for less than this. */
+  min_seconds?: number;
+}
+
 export interface FeedbackStats {
   corrected: number;
   confirmed: number;
   pinned: number;
   rejected: number;
   pending_review: number;
+  /** Tracked time still waiting for review. */
+  pending_seconds: number;
+  /** Tracked time of the AI labels the user has judged. */
+  reviewed_seconds: number;
 }
 
 export interface AiCategorizeProgress {

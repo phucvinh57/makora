@@ -97,6 +97,9 @@ fn migrations() -> Migrations<'static> {
         // The AI label a user rejected. Moved out of `ai_category_id` so reads stop showing it,
         // and kept so the model can be told "not this" next time.
         M::up("ALTER TABLE activities ADD COLUMN ai_rejected_category_id INTEGER REFERENCES categories(id);"),
+        // How sure the model was of `ai_category_id`, from 0 to 1. NULL for labels made before
+        // it was recorded; the review queue treats those as uncertain.
+        M::up("ALTER TABLE activities ADD COLUMN ai_confidence REAL;"),
     ])
 }
 
@@ -121,7 +124,7 @@ pub fn open_connection(path: &Path) -> Result<SharedConnection> {
 /// `user_version` the 28 migrations this schema replaced ended at. Such a database already
 /// has the squashed schema, so it is stamped as migrated instead of being run again.
 const LEGACY_SCHEMA_VERSION: i64 = 28;
-const LATEST_SCHEMA_VERSION: i64 = 4;
+const LATEST_SCHEMA_VERSION: i64 = 5;
 
 fn migrate(conn: &mut Connection) -> Result<()> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;

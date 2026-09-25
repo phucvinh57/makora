@@ -7,10 +7,12 @@ import {
 import type {
   ActivityStats,
   AiCategorizeOutcome,
+  AiReviewGroupPage,
   AiReviewPage,
   Category,
   CategorizationResetOutcome,
   FeedbackStats,
+  ReviewFilter,
   SessionsPage,
   SeedTaxonomy,
 } from "./types";
@@ -125,9 +127,17 @@ export function categorizeWithAi(
 export function listAiReview(
   page: number,
   pageSize: number,
-  category?: number,
+  filter: ReviewFilter = {},
 ): Promise<AiReviewPage> {
-  return invoke("list_ai_review", { page, pageSize, category });
+  return invoke("list_ai_review", { page, pageSize, filter });
+}
+
+export function listAiReviewGroups(
+  page: number,
+  pageSize: number,
+  filter: ReviewFilter = {},
+): Promise<AiReviewGroupPage> {
+  return invoke("list_ai_review_groups", { page, pageSize, filter });
 }
 
 export function acceptAiLabels(activityIds: number[]): Promise<void> {

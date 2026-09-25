@@ -11,6 +11,7 @@ import {
 } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { formatSeconds } from "@/duration";
 import { invalidateCategorizationQueries } from "@/queries";
 import type { AiCategorizeProgress, FeedbackStats } from "@/types";
 
@@ -28,6 +29,36 @@ function learningSummary(stats: FeedbackStats): string {
     stats.rejected,
     "rejection",
   )} and ${plural(stats.confirmed + stats.pinned, "confirmed label")}.`;
+}
+
+/** How much of the AI-labelled time the user has judged, by time rather than by row count. */
+function ReviewProgress({ stats }: { stats: FeedbackStats }) {
+  const labelled = stats.reviewed_seconds + stats.pending_seconds;
+  if (labelled <= 0) return null;
+  const percent = Math.round((stats.reviewed_seconds / labelled) * 100);
+  return (
+    <div className="flex flex-col gap-1">
+      <div
+        className="h-1.5 overflow-hidden rounded-full bg-muted"
+        role="progressbar"
+        aria-valuenow={percent}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label="Share of AI-labelled time reviewed"
+      >
+        <div
+          className="h-full rounded-full bg-primary transition-all"
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+      <p className="m-0 text-xs text-muted-foreground">
+        Reviewed {percent}% of AI-labelled time
+        {stats.pending_seconds > 0 &&
+          ` — ${formatSeconds(stats.pending_seconds)} left`}
+        . Suggestions count in your reports before you review them.
+      </p>
+    </div>
+  );
 }
 
 export function AiCategorizationSection() {
@@ -102,9 +133,12 @@ export function AiCategorizationSection() {
           precedence, and your corrections are shown to the model as examples.
         </p>
         {statsQuery.data && (
-          <p className="m-0 text-xs text-muted-foreground">
-            {learningSummary(statsQuery.data)}
-          </p>
+          <>
+            <p className="m-0 text-xs text-muted-foreground">
+              {learningSummary(statsQuery.data)}
+            </p>
+            <ReviewProgress stats={statsQuery.data} />
+          </>
         )}
         <div className="flex flex-wrap items-center gap-3">
           <Button disabled={running} onClick={() => mutation.mutate(false)}>

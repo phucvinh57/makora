@@ -5,6 +5,7 @@ const CATEGORIZATION_QUERY_KEYS = [
   "sessions",
   "activityStats",
   "aiReview",
+  "aiReviewGroups",
   "aiFeedbackStats",
 ] as const;
 

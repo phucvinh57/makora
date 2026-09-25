@@ -9,7 +9,8 @@ pub mod queries;
 pub mod sqlite;
 
 pub use categories::{
-    AiReviewPage, CategorizationResetOutcome, Category, CategoryStore, FeedbackStats,
+    AiReviewGroupPage, AiReviewPage, CategorizationResetOutcome, Category, CategoryStore,
+    FeedbackStats, ReviewFilter,
     LabeledActivity, NewCategory, SeedTaxonomy,
 };
 pub use queries::{

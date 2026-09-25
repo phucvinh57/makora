@@ -6,7 +6,9 @@
 //! Throughput choices:
 //! - Output is constrained by a GBNF grammar to exactly one category path, so a reply is a
 //!   handful of tokens and can never be malformed.
-//! - Sampling is greedy: classification should be deterministic.
+//! - Sampling is greedy: classification should be deterministic. The probability the grammar-
+//!   constrained model gave its answer is kept as a confidence, so the review queue can put the
+//!   doubtful labels first.
 //! - The system prompt (taxonomy) is identical for every activity, so its KV cache is kept and
 //!   only the per-activity suffix is decoded.
 //! - The model is memory-mapped and cached between runs, then released on request or after ten
@@ -20,6 +22,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use llama_cpp_2::context::params::LlamaContextParams;
+use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
@@ -383,9 +386,10 @@ fn user_prompt(activity: &ActivityText, examples: &[String]) -> String {
 // Inference
 // ---------------------------------------------------------------------------------------------
 
-/// Classifies each activity into one of `categories`, returning the chosen category id (or
-/// `None` when the model answers "None"). `on_progress` is called with `(done, total)` after
-/// every activity; returning `false` from it cancels the run, and the results so far are kept.
+/// Classifies each activity into one of `categories`, reporting the chosen category id (or
+/// `None` when the model answers "None") and how confident the model was, from 0 to 1.
+/// `on_result` is called with `(index, category, confidence)` after every activity; returning
+/// `false` from it cancels the run, and the results so far are kept.
 ///
 /// `global` are the user's corrections shown for every activity; each activity's own
 /// `examples` are added to its prompt.
@@ -395,7 +399,7 @@ pub fn classify(
     categories: &[Category],
     global: &[Example],
     activities: &[ActivityText],
-    on_result: impl FnMut(usize, Option<i64>) -> bool,
+    on_result: impl FnMut(usize, Option<i64>, f64) -> bool,
 ) -> Result<()> {
     if categories.is_empty() {
         bail!("there are no categories to choose from");
@@ -408,13 +412,29 @@ pub fn classify(
     result
 }
 
+/// The most likely token the grammar allows, and the probability the model gave it among the
+/// allowed ones. The chosen token is fed back to the grammar. `None` when the grammar allows
+/// nothing.
+fn pick_token(ctx: &LlamaContext<'_>, grammar: &mut LlamaSampler) -> Option<(LlamaToken, f64)> {
+    let mut candidates = ctx.token_data_array();
+    candidates.apply_sampler(grammar);
+    // Tokens the grammar rules out have a logit of negative infinity and drop out of both sums.
+    let allowed = || candidates.data.iter().filter(|c| c.logit().is_finite());
+    let (token, top) = allowed()
+        .max_by(|a, b| a.logit().total_cmp(&b.logit()))
+        .map(|c| (c.id(), c.logit()))?;
+    let total: f64 = allowed().map(|c| f64::from(c.logit() - top).exp()).sum();
+    grammar.accept(token);
+    Some((token, 1.0 / total))
+}
+
 fn run(
     backend: &LlamaBackend,
     model: &LlamaModel,
     categories: &[Category],
     global: &[Example],
     activities: &[ActivityText],
-    mut on_result: impl FnMut(usize, Option<i64>) -> bool,
+    mut on_result: impl FnMut(usize, Option<i64>, f64) -> bool,
 ) -> Result<()> {
     let threads = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -446,11 +466,8 @@ fn run(
             .into_owned();
     let by_path: HashMap<&str, i64> = choices.iter().map(|c| (c.path.as_str(), c.id)).collect();
 
-    let mut sampler = LlamaSampler::chain_simple([
-        LlamaSampler::grammar(model,&grammar(&choices), "root")
-            .map_err(|err| anyhow!("building category grammar: {err}"))?,
-        LlamaSampler::greedy(),
-    ]);
+    let mut grammar = LlamaSampler::grammar(model, &grammar(&choices), "root")
+        .map_err(|err| anyhow!("building category grammar: {err}"))?;
     let mut batch = LlamaBatch::new(N_BATCH as usize, 1);
     // Prompt tokens currently held in the KV cache; the shared prefix is reused between items.
     let mut cached: Vec<LlamaToken> = Vec::new();
@@ -522,10 +539,15 @@ fn run(
                 .map_err(|err| anyhow!("decoding prompt: {err}"))?;
         }
 
-        sampler.reset();
+        grammar.reset();
         let mut answer = Vec::new();
+        let mut confidence = 1.0_f64;
         for position in (tokens.len()..).take(MAX_REPLY_TOKENS) {
-            let token = sampler.sample(&ctx, -1);
+            let Some((token, probability)) = pick_token(&ctx, &mut grammar) else {
+                confidence = 0.0;
+                break;
+            };
+            confidence *= probability;
             if model.is_eog_token(token) {
                 break;
             }
@@ -540,7 +562,7 @@ fn run(
         let answer = answer.trim();
         debug!(answer, title = %activity.title, "classified");
 
-        if !on_result(index, by_path.get(answer).copied()) {
+        if !on_result(index, by_path.get(answer).copied(), confidence) {
             break;
         }
     }

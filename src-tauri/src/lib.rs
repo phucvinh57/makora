@@ -51,6 +51,7 @@ pub fn run() {
             commands::ai_model_loaded,
             commands::unload_ai_model,
             commands::list_ai_review,
+            commands::list_ai_review_groups,
             commands::accept_ai_labels,
             commands::set_activities_category,
             commands::ai_feedback_stats,

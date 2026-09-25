@@ -11,9 +11,9 @@ pub mod watcher;
 pub use model::{BrowserKind, TabEvent, WatchEvent};
 pub use platform::PlatformFocusWatcher;
 pub use store::{
-    open_connection, ActivityStats, AiReviewPage, CategorizationResetOutcome, Category,
-    CategoryFilter, CategorySourceFilter, CategoryStore, FeedbackStats, HistoryReader,
-    LabeledActivity, NewCategory, SeedTaxonomy, SessionFilter, SessionRow, SessionStore,
+    open_connection, ActivityStats, AiReviewGroupPage, AiReviewPage, CategorizationResetOutcome,
+    Category, CategoryFilter, CategorySourceFilter, CategoryStore, FeedbackStats, HistoryReader,
+    LabeledActivity, NewCategory, ReviewFilter, SeedTaxonomy, SessionFilter, SessionRow, SessionStore,
     SqliteStore,
 };
 pub use tracker::SessionTracker;
