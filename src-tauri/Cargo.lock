@@ -2303,6 +2303,7 @@ dependencies = [
  "chrono",
  "core-foundation-sys",
  "llama-cpp-2",
+ "llama-cpp-sys-2",
  "objc2",
  "rusqlite",
  "rusqlite_migration",
