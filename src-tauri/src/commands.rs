@@ -3,12 +3,13 @@ use crate::core::feedback::FeedbackIndex;
 use crate::core::llm::{self, ActivityText, ModelCache};
 use crate::core::{
     ActivityStats, AiReviewGroupPage, AiReviewPage, CategorizationResetOutcome, Category, CategoryFilter,
-    CategorySourceFilter, CategoryStore, FeedbackStats, HistoryReader, NewCategory, ReviewFilter, SeedTaxonomy,
-    SessionFilter, SessionRow,
+    CategorySourceFilter, CategoryStore, FeedbackStats, HistoryReader, NewCategory, ReviewFilter, SessionFilter,
+    SessionRow,
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::{info, warn};
 
@@ -153,19 +154,6 @@ pub fn delete_category(categories: State<CategoryStore>, id: i64) -> Result<(), 
 }
 
 #[tauri::command]
-pub fn apply_seed_taxonomy(categories: State<CategoryStore>) -> Result<(), String> {
-    categories
-        .apply_seed_taxonomy(include_str!("../resources/seed_taxonomy.json"))
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub fn get_seed_taxonomy_preview() -> Result<SeedTaxonomy, String> {
-    CategoryStore::seed_taxonomy_preview(include_str!("../resources/seed_taxonomy.json"))
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 pub fn reset_categorization(
     categories: State<CategoryStore>,
 ) -> Result<CategorizationResetOutcome, String> {
@@ -180,11 +168,15 @@ fn parse_rfc3339(value: &str) -> Result<DateTime<Utc>, String> {
         .map_err(|_| format!("invalid timestamp: {value}"))
 }
 
-/// Guards against two categorization runs loading the model at once.
+/// Guards against two categorization runs loading the model at once, and carries enough
+/// progress to let a page that reloaded mid-run resync instead of losing track of it.
 #[derive(Default)]
 pub struct AiCategorizeState {
     running: AtomicBool,
     cancel: AtomicBool,
+    recheck: AtomicBool,
+    done: AtomicUsize,
+    total: AtomicUsize,
 }
 
 #[derive(Serialize)]
@@ -203,6 +195,26 @@ pub struct AiCategorizeOutcome {
 struct AiCategorizeProgress {
     done: usize,
     total: usize,
+}
+
+#[derive(Serialize)]
+pub struct AiCategorizeStatus {
+    running: bool,
+    recheck: bool,
+    done: usize,
+    total: usize,
+}
+
+/// Lets a page that reloaded mid-run find out a categorization is still going and resync its
+/// progress bar, instead of just losing track of it.
+#[tauri::command]
+pub fn categorize_status(state: State<AiCategorizeState>) -> AiCategorizeStatus {
+    AiCategorizeStatus {
+        running: state.running.load(Ordering::Acquire),
+        recheck: state.recheck.load(Ordering::Acquire),
+        done: state.done.load(Ordering::Acquire),
+        total: state.total.load(Ordering::Acquire),
+    }
 }
 
 /// Labels uncategorized activities with the local LLM, or with `recheck` re-labels the AI
@@ -228,6 +240,9 @@ pub async fn categorize(
     let labeled = categories.labeled_activities().map_err(|e| e.to_string());
     let model = model.unwrap_or_else(|| llm::DEFAULT_MODEL.to_string());
     state.cancel.store(false, Ordering::Release);
+    state.recheck.store(recheck.unwrap_or(false), Ordering::Release);
+    state.done.store(0, Ordering::Release);
+    state.total.store(0, Ordering::Release);
     let models = models.inner().clone();
 
     let result = tauri::async_runtime::spawn_blocking(move || {
@@ -244,10 +259,11 @@ pub async fn categorize(
             .collect();
         let total = texts.len();
         info!(total, %model, examples = feedback.global().len(), "categorizing activities with the local model");
+        app.state::<AiCategorizeState>().total.store(total, Ordering::Release);
         let (mut labeled, mut changed, mut done, mut stopped) = (0, 0, 0, false);
         // Each answer is saved as soon as it arrives, so a stopped run keeps its progress.
         let mut save = |index: usize, answer: Option<i64>, confidence: f64| {
-            let cancel = &app.state::<AiCategorizeState>().cancel;
+            let state = app.state::<AiCategorizeState>();
             if answer.is_some() {
                 labeled += 1;
             }
@@ -262,6 +278,7 @@ pub async fn categorize(
                 }
             }
             done = index + 1;
+            state.done.store(done, Ordering::Release);
             let _ = app.emit(
                 "ai-categorize-progress",
                 AiCategorizeProgress {
@@ -269,7 +286,7 @@ pub async fn categorize(
                     total,
                 },
             );
-            stopped = cancel.load(Ordering::Acquire) && index + 1 < total;
+            stopped = state.cancel.load(Ordering::Acquire) && index + 1 < total;
             !stopped
         };
         llm::classify(&models, &model, &taxonomy, feedback.global(), &texts, &mut save)
@@ -357,4 +374,104 @@ pub fn set_activities_category(
 #[tauri::command]
 pub fn ai_feedback_stats(categories: State<CategoryStore>) -> Result<FeedbackStats, String> {
     categories.feedback_stats().map_err(|e| e.to_string())
+}
+
+/// Guards against two model downloads at once, carries the stop request, and holds enough
+/// progress for a page that reloaded mid-download to resync instead of losing track of it.
+#[derive(Default)]
+pub struct ModelDownloadState {
+    running: AtomicBool,
+    cancel: AtomicBool,
+    model: Mutex<String>,
+    downloaded: AtomicU64,
+    total: AtomicU64,
+}
+
+#[derive(Serialize, Clone)]
+struct ModelDownloadProgress {
+    downloaded: u64,
+    total: u64,
+}
+
+#[derive(Serialize)]
+pub struct ModelDownloadStatus {
+    running: bool,
+    model: String,
+    downloaded: u64,
+    total: u64,
+}
+
+/// Lets a page that reloaded mid-download find out it is still going and resync its progress
+/// bar, instead of just losing track of it.
+#[tauri::command]
+pub fn model_download_status(state: State<ModelDownloadState>) -> ModelDownloadStatus {
+    ModelDownloadStatus {
+        running: state.running.load(Ordering::Acquire),
+        model: state.model.lock().expect("model download state poisoned").clone(),
+        downloaded: state.downloaded.load(Ordering::Acquire),
+        total: state.total.load(Ordering::Acquire),
+    }
+}
+
+/// Whether `model` can be loaded right now (downloaded here, pulled by Ollama, or a file).
+#[tauri::command]
+pub fn ai_model_installed(model: String) -> bool {
+    llm::resolve_model(model.trim()).is_ok()
+}
+
+/// Lists models available to categorize with right now: those downloaded into Makora or pulled
+/// by Ollama.
+#[tauri::command]
+pub fn list_installed_ai_models() -> Vec<String> {
+    llm::installed_models()
+}
+
+/// Downloads an Ollama-library model (`llama3.2:3b`) and reports `ai-model-download-progress`
+/// events. Returns `false` when the user stopped it; the partial file is kept for resuming.
+#[tauri::command]
+pub async fn download_ai_model(
+    app: AppHandle,
+    state: State<'_, ModelDownloadState>,
+    model: String,
+) -> Result<bool, String> {
+    let model = model.trim().to_string();
+    let root = llm::download_root().ok_or("model directory is not ready")?;
+    if state.running.swap(true, Ordering::AcqRel) {
+        return Err("a model download is already running".into());
+    }
+    state.cancel.store(false, Ordering::Release);
+    *state.model.lock().expect("model download state poisoned") = model.clone();
+    state.downloaded.store(0, Ordering::Release);
+    state.total.store(0, Ordering::Release);
+
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<ModelDownloadState>();
+        let mut last_emit = std::time::Instant::now();
+        let mut progress = |downloaded: u64, total: u64| {
+            state.downloaded.store(downloaded, Ordering::Release);
+            state.total.store(total, Ordering::Release);
+            // ~10 events a second is plenty for a progress bar.
+            if last_emit.elapsed() >= std::time::Duration::from_millis(100) || downloaded == total {
+                last_emit = std::time::Instant::now();
+                let _ = app.emit(
+                    "ai-model-download-progress",
+                    ModelDownloadProgress { downloaded, total },
+                );
+            }
+        };
+        crate::core::model_download::download(root, &model, &state.cancel, &mut progress)
+            .map(|()| !state.cancel.load(Ordering::Acquire))
+            .map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(|e| e.to_string())
+    .and_then(|r| r);
+    state.running.store(false, Ordering::Release);
+    result
+}
+
+/// Asks a running model download to stop.
+#[tauri::command]
+pub fn cancel_model_download(state: State<ModelDownloadState>) {
+    state.cancel.store(true, Ordering::Release);
 }

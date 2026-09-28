@@ -11,7 +11,7 @@ pub mod sqlite;
 pub use categories::{
     AiReviewGroupPage, AiReviewPage, CategorizationResetOutcome, Category, CategoryStore,
     FeedbackStats, ReviewFilter,
-    LabeledActivity, NewCategory, SeedTaxonomy,
+    LabeledActivity, NewCategory,
 };
 pub use queries::{
     ActivityStats, CategoryFilter, CategorySourceFilter, HistoryReader, SessionFilter, SessionRow,

@@ -7,14 +7,15 @@ import {
 import type {
   ActivityStats,
   AiCategorizeOutcome,
+  AiCategorizeStatus,
   AiReviewGroupPage,
   AiReviewPage,
   Category,
   CategorizationResetOutcome,
   FeedbackStats,
+  ModelDownloadStatus,
   ReviewFilter,
   SessionsPage,
-  SeedTaxonomy,
 } from "./types";
 
 export function listSessions(
@@ -89,14 +90,6 @@ export function deleteCategory(id: number): Promise<void> {
   return invoke("delete_category", { id });
 }
 
-export function applySeedTaxonomy(): Promise<void> {
-  return invoke("apply_seed_taxonomy");
-}
-
-export function getSeedTaxonomyPreview(): Promise<SeedTaxonomy> {
-  return invoke("get_seed_taxonomy_preview");
-}
-
 export function isAutostartEnabled(): Promise<boolean> {
   return checkAutostartEnabled();
 }
@@ -109,12 +102,37 @@ export function cancelCategorize(): Promise<void> {
   return invoke("cancel_categorize");
 }
 
+export function categorizeStatus(): Promise<AiCategorizeStatus> {
+  return invoke("categorize_status");
+}
+
 export function aiModelLoaded(): Promise<boolean> {
   return invoke("ai_model_loaded");
 }
 
 export function unloadAiModel(): Promise<void> {
   return invoke("unload_ai_model");
+}
+
+export function aiModelInstalled(model: string): Promise<boolean> {
+  return invoke("ai_model_installed", { model });
+}
+
+export function listInstalledAiModels(): Promise<string[]> {
+  return invoke("list_installed_ai_models");
+}
+
+/** Resolves `false` when the user stopped the download. */
+export function downloadAiModel(model: string): Promise<boolean> {
+  return invoke("download_ai_model", { model });
+}
+
+export function cancelModelDownload(): Promise<void> {
+  return invoke("cancel_model_download");
+}
+
+export function modelDownloadStatus(): Promise<ModelDownloadStatus> {
+  return invoke("model_download_status");
 }
 
 export function categorizeWithAi(

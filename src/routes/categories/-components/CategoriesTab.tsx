@@ -22,7 +22,6 @@ import {
   categoryValueLabels,
 } from "@/components/CategoryOptions";
 import {
-  applySeedTaxonomy,
   createCategory,
   deleteCategory,
   listCategories,
@@ -106,12 +105,6 @@ export function CategoriesTab() {
     onError: (err) => toast.error(String(err)),
   });
 
-  const applySeedMutation = useMutation({
-    mutationFn: applySeedTaxonomy,
-    onSuccess: invalidateAll,
-    onError: (err) => toast.error(String(err)),
-  });
-
   function handleCreateCategory(e: React.FormEvent) {
     e.preventDefault();
     if (!newName.trim()) return;
@@ -161,15 +154,6 @@ export function CategoriesTab() {
       <div className="mb-4 flex justify-end">
         <Button
           size="sm"
-          variant="outline"
-          className="mr-2"
-          onClick={() => applySeedMutation.mutate()}
-          disabled={applySeedMutation.isPending}
-        >
-          Apply starter taxonomy
-        </Button>
-        <Button
-          size="sm"
           onClick={() => {
             setNewParentId(null);
             setNewColor(DEFAULT_COLOR);
@@ -184,9 +168,7 @@ export function CategoriesTab() {
       <div className="flex-1 overflow-y-auto subtle-scrollbar">
         {!loading && categories.length === 0 && (
           <div className="flex flex-col items-start gap-2 text-sm text-muted-foreground">
-            <p>
-              No categories yet. Use “Apply starter taxonomy” above to begin.
-            </p>
+            <p>No categories yet. Use “Add category” above to begin.</p>
           </div>
         )}
         <div className="flex flex-col gap-3">

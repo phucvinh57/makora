@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, Result};
 use rusqlite::{named_params, params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
@@ -12,20 +12,6 @@ pub struct Category {
     pub color: String,
     pub parent_id: Option<i64>,
     pub description: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SeedTaxonomy {
-    pub categories: Vec<SeedCategory>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SeedCategory {
-    pub name: String,
-    pub color: String,
-    pub description: Option<String>,
-    #[serde(default)]
-    pub children: Vec<SeedCategory>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -195,43 +181,6 @@ pub(super) fn load_category_tree(conn: &rusqlite::Connection) -> Result<Category
     Ok(CategoryTree::new(categories))
 }
 
-fn insert_seed_category(
-    tx: &rusqlite::Transaction<'_>,
-    category: &SeedCategory,
-    parent_id: Option<i64>,
-    category_ids: &mut std::collections::HashMap<String, i64>,
-) -> Result<()> {
-    let existing: Option<i64> = tx
-        .query_row(
-            "SELECT id FROM categories WHERE name = ?1 AND parent_id IS ?2",
-            params![category.name, parent_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let id = if let Some(id) = existing {
-        id
-    } else {
-        tx.execute(
-            "INSERT INTO categories (name, color, description, parent_id)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![
-                category.name,
-                category.color,
-                category.description,
-                parent_id
-            ],
-        )?;
-        tx.last_insert_rowid()
-    };
-    if category_ids.insert(category.name.clone(), id).is_some() {
-        bail!("seed category name is ambiguous: {}", category.name);
-    }
-    for child in &category.children {
-        insert_seed_category(tx, child, Some(id), category_ids)?;
-    }
-    Ok(())
-}
-
 /// Pins one activity and every session of it. Clearing a pin also rejects the AI label that
 /// would otherwise show through, so "Uncategorized" sticks and the model learns from it.
 fn pin_activity(
@@ -338,22 +287,6 @@ impl CategoryStore {
             parent_id: new.parent_id,
             description: new.description.clone(),
         })
-    }
-
-    pub fn seed_taxonomy_preview(seed_json: &str) -> Result<SeedTaxonomy> {
-        serde_json::from_str(seed_json).context("parsing bundled seed taxonomy")
-    }
-
-    pub fn apply_seed_taxonomy(&self, seed_json: &str) -> Result<()> {
-        let seed = Self::seed_taxonomy_preview(seed_json)?;
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        let mut category_ids = std::collections::HashMap::new();
-        for category in &seed.categories {
-            insert_seed_category(&tx, category, None, &mut category_ids)?;
-        }
-        tx.commit()?;
-        Ok(())
     }
 
     /// Deletes a category *and everything nested under it* — a subcategory has no meaning

@@ -27,17 +27,6 @@ export interface Category {
   description: string | null;
 }
 
-export interface SeedCategory {
-  name: string;
-  color: string;
-  description: string | null;
-  children: SeedCategory[];
-}
-
-export interface SeedTaxonomy {
-  categories: SeedCategory[];
-}
-
 export type KeyKind = "exe" | "domain";
 
 export interface AiCategorizeOutcome {
@@ -109,6 +98,22 @@ export interface FeedbackStats {
 
 export interface AiCategorizeProgress {
   done: number;
+  total: number;
+}
+
+/** Lets a page that reloaded mid-run find out a categorization is still going. */
+export interface AiCategorizeStatus {
+  running: boolean;
+  recheck: boolean;
+  done: number;
+  total: number;
+}
+
+/** Lets a page that reloaded mid-download find out it is still going. */
+export interface ModelDownloadStatus {
+  running: boolean;
+  model: string;
+  downloaded: number;
   total: number;
 }
 

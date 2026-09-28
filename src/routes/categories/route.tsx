@@ -3,6 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { aiFeedbackStats } from "@/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { AiAccuracySection } from "./-components/AiAccuracySection";
 import { AiCategorizationSection } from "./-components/AiCategorizationSection";
 import { CategorizationDataSection } from "./-components/CategorizationDataSection";
 import { CategoriesTab } from "./-components/CategoriesTab";
@@ -68,6 +69,7 @@ function CategoriesPage() {
         </TabsContent>
         <TabsContent value="review" className="flex flex-col gap-6">
           <AiCategorizationSection />
+          <AiAccuracySection />
           <ReviewQueue />
           <CategorizationDataSection />
         </TabsContent>

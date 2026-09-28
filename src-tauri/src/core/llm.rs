@@ -213,11 +213,23 @@ pub fn resolve_model(name: &str) -> Result<PathBuf> {
                 .with_context(|| format!("reading Ollama manifest {}", manifest.display()));
         }
     }
-    bail!("model \"{name}\" not found; run `ollama pull {name}` or pass the path to a .gguf file")
+    bail!("model \"{name}\" not found; download it first, run `ollama pull {name}`, or pass the path to a .gguf file")
+}
+
+static DOWNLOAD_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
+/// Sets where in-app downloads are stored; searched before Ollama's own directories.
+pub fn set_download_root(root: PathBuf) {
+    let _ = DOWNLOAD_ROOT.set(root);
+}
+
+pub fn download_root() -> Option<&'static Path> {
+    DOWNLOAD_ROOT.get().map(PathBuf::as_path)
 }
 
 fn ollama_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
+    roots.extend(DOWNLOAD_ROOT.get().cloned());
     if let Some(dir) = std::env::var_os("OLLAMA_MODELS") {
         roots.push(PathBuf::from(dir));
     }
@@ -227,6 +239,42 @@ fn ollama_roots() -> Vec<PathBuf> {
     #[cfg(target_os = "linux")]
     roots.push(PathBuf::from("/usr/share/ollama/.ollama/models"));
     roots
+}
+
+/// Lists models available locally right now: those downloaded into Makora's own directory plus
+/// anything Ollama has already pulled. Each entry is a name [`resolve_model`] accepts
+/// (`llama3.2:3b`, `user/repo:tag`, ...).
+pub fn installed_models() -> Vec<String> {
+    let mut names = std::collections::BTreeSet::new();
+    for root in ollama_roots() {
+        let base = root.join("manifests/registry.ollama.ai");
+        collect_manifest_names(&base, &base, &mut names);
+    }
+    names.into_iter().collect()
+}
+
+fn collect_manifest_names(base: &Path, dir: &Path, names: &mut std::collections::BTreeSet<String>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_manifest_names(base, &path, names);
+            continue;
+        }
+        let Ok(rel) = path.strip_prefix(base) else {
+            continue;
+        };
+        let mut parts: Vec<&str> = rel.components().filter_map(|c| c.as_os_str().to_str()).collect();
+        let Some(tag) = parts.pop() else { continue };
+        let name = match parts.as_slice() {
+            ["library", repo] => format!("{repo}:{tag}"),
+            [_, _, ..] => format!("{}:{tag}", parts.join("/")),
+            _ => continue,
+        };
+        names.insert(name);
+    }
 }
 
 fn ollama_blob(root: &Path, manifest: &Path) -> Result<PathBuf> {

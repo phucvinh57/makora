@@ -372,14 +372,7 @@ export function ReviewQueue() {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <div>
-          <h2 className="m-0 text-sm font-semibold">Review AI labels</h2>
-          <p className="m-0 text-xs text-muted-foreground">
-            Grouped by app or site, longest-tracked first. One decision covers a
-            whole group, and it teaches the model. Suggestions already count in
-            your reports.
-          </p>
-        </div>
+        <h2 className="m-0 text-sm font-semibold">Review AI labels</h2>
         <div className="ml-auto flex items-center gap-2 text-xs">
           <Switch
             id="review-uncertain"
