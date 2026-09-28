@@ -165,34 +165,32 @@ export function CategoriesTab() {
         </Button>
       </div>
 
-      <div className="flex-1 overflow-y-auto subtle-scrollbar">
-        {!loading && categories.length === 0 && (
-          <div className="flex flex-col items-start gap-2 text-sm text-muted-foreground">
-            <p>No categories yet. Use “Add category” above to begin.</p>
-          </div>
-        )}
-        <div className="flex flex-col gap-3">
-          {tree.map(({ category, depth, children }) => (
-            <CategoryCard
-              key={category.id}
-              category={category}
-              depth={depth}
-              subcategoryCount={children.length}
-              categories={categories}
-              onSave={(cat, name, color, description, parentId) =>
-                saveCategoryMutation.mutate({
-                  category: cat,
-                  name,
-                  color,
-                  description,
-                  parentId,
-                })
-              }
-              onDelete={handleDelete}
-              onAddSubcategory={() => startAddSubcategory(category)}
-            />
-          ))}
+      {!loading && categories.length === 0 && (
+        <div className="flex flex-col items-start gap-2 text-sm text-muted-foreground">
+          <p>No categories yet. Use “Add category” above to begin.</p>
         </div>
+      )}
+      <div className="flex flex-col gap-3">
+        {tree.map(({ category, depth, children }) => (
+          <CategoryCard
+            key={category.id}
+            category={category}
+            depth={depth}
+            subcategoryCount={children.length}
+            categories={categories}
+            onSave={(cat, name, color, description, parentId) =>
+              saveCategoryMutation.mutate({
+                category: cat,
+                name,
+                color,
+                description,
+                parentId,
+              })
+            }
+            onDelete={handleDelete}
+            onAddSubcategory={() => startAddSubcategory(category)}
+          />
+        ))}
       </div>
 
       <Dialog

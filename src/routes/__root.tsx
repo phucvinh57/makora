@@ -8,6 +8,7 @@ import {
   Tags,
 } from "lucide-react";
 import { useState } from "react";
+import { BackgroundTasksIndicator } from "@/components/BackgroundTasksIndicator";
 import {
   Tooltip,
   TooltipContent,
@@ -131,6 +132,9 @@ function RootLayout() {
             );
           })}
         </nav>
+        <div className="px-2 pb-2">
+          <BackgroundTasksIndicator collapsed={collapsed} />
+        </div>
       </aside>
       <div className="@container/main min-w-0 flex-1 overflow-y-auto subtle-scrollbar p-6">
         <Outlet />

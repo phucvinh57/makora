@@ -3,9 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
 import { aiFeedbackStats } from "@/api";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { AiAccuracySection } from "./-components/AiAccuracySection";
 import { AiCategorizationSection } from "./-components/AiCategorizationSection";
-import { CategorizationDataSection } from "./-components/CategorizationDataSection";
 import { CategoriesTab } from "./-components/CategoriesTab";
 import { ReviewQueue } from "./-components/ReviewQueue";
 
@@ -45,15 +43,15 @@ function CategoriesPage() {
   }
 
   return (
-    <div className="flex h-full flex-col box-border">
+    <div className="flex flex-col box-border">
       <header className="mb-4">
         <h1 className="m-0 text-lg font-semibold">Categories</h1>
         <p className="m-0 text-sm text-muted-foreground">
           Organize activity with categories and teach the AI what belongs where
         </p>
       </header>
-      <Tabs value={tab} onValueChange={changeTab} className="flex-1">
-        <TabsList className="mb-4">
+      <Tabs value={tab} onValueChange={changeTab}>
+        <TabsList>
           <TabsTrigger value="taxonomy">Taxonomy</TabsTrigger>
           <TabsTrigger value="review">
             AI review
@@ -67,11 +65,9 @@ function CategoriesPage() {
         <TabsContent value="taxonomy" className="flex flex-col">
           <CategoriesTab />
         </TabsContent>
-        <TabsContent value="review" className="flex flex-col gap-6">
+        <TabsContent value="review" className="flex flex-col gap-6 mt-4">
           <AiCategorizationSection />
-          <AiAccuracySection />
           <ReviewQueue />
-          <CategorizationDataSection />
         </TabsContent>
       </Tabs>
     </div>
