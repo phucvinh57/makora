@@ -7,7 +7,6 @@ use serde::Deserialize;
 use tiny_http::{Method, Response, Server};
 
 use crate::category::strip_query_and_fragment;
-use crate::store::SessionStore;
 
 use super::{BrowserKind, SessionTracker, TabEvent};
 
@@ -20,9 +19,7 @@ struct TabEventDto {
     title: String,
 }
 
-pub fn spawn<S: SessionStore + Send + 'static>(
-    tracker: Arc<Mutex<SessionTracker<S>>>,
-) -> Result<thread::JoinHandle<()>> {
+pub fn spawn(tracker: Arc<Mutex<SessionTracker>>) -> Result<thread::JoinHandle<()>> {
     let server = Server::http(("127.0.0.1", PORT))
         .map_err(|e| anyhow!("binding tab-ingest server to 127.0.0.1:{PORT}: {e}"))?;
 
@@ -32,17 +29,14 @@ pub fn spawn<S: SessionStore + Send + 'static>(
         .map_err(|e| anyhow!("spawning tab-ingest server thread: {e}"))
 }
 
-fn run<S: SessionStore>(server: Server, tracker: Arc<Mutex<SessionTracker<S>>>) {
+fn run(server: Server, tracker: Arc<Mutex<SessionTracker>>) {
     for mut request in server.incoming_requests() {
         let status = handle_request(&mut request, &tracker);
         let _ = request.respond(Response::empty(status));
     }
 }
 
-fn handle_request<S: SessionStore>(
-    request: &mut tiny_http::Request,
-    tracker: &Arc<Mutex<SessionTracker<S>>>,
-) -> u16 {
+fn handle_request(request: &mut tiny_http::Request, tracker: &Arc<Mutex<SessionTracker>>) -> u16 {
     if *request.method() != Method::Post || request.url() != "/event" {
         return 404;
     }

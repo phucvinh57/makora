@@ -9,7 +9,7 @@ import {
   cancelCategorize,
   cancelModelDownload,
   categorizeStatus,
-  categorizeWithAi,
+  categorize,
   downloadAiModel,
   listInstalledAiModels,
   modelDownloadStatus,
@@ -204,7 +204,7 @@ export function AiCategorizationSection() {
 
   const mutation = useMutation({
     mutationFn: (recheck: boolean) =>
-      categorizeWithAi(recheck, effectiveModel || undefined),
+      categorize(recheck, effectiveModel || undefined),
     onSuccess: (outcome, recheck) => {
       invalidateCategorizationQueries(queryClient);
       toast.success(

@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use anyhow::Result;
 
 use crate::category::exe_file_name;
-use crate::store::SessionStore;
+use crate::domain::Tracking;
 
 use super::model::{AppInfo, BrowserKind, FocusEvent, PresenceEvent, TabEvent};
 
@@ -31,8 +31,8 @@ struct LastTab {
     title: String,
 }
 
-pub struct SessionTracker<S: SessionStore> {
-    store: S,
+pub struct SessionTracker {
+    tracking: Tracking,
     current: Option<Current>,
     /// Latest tab the extension reported per browser. The extension only reports on
     /// change, so this is what a browser regaining focus is still showing.
@@ -40,11 +40,11 @@ pub struct SessionTracker<S: SessionStore> {
     present: bool,
 }
 
-impl<S: SessionStore> SessionTracker<S> {
-    pub fn new(mut store: S) -> Result<Self> {
-        store.close_dangling_sessions()?;
+impl SessionTracker {
+    pub fn new(tracking: Tracking) -> Result<Self> {
+        tracking.close_dangling()?;
         Ok(Self {
-            store,
+            tracking,
             current: None,
             last_tabs: HashMap::new(),
             present: true,
@@ -99,7 +99,7 @@ impl<S: SessionStore> SessionTracker<S> {
         if current.url.as_deref() == Some(event.url.as_str()) {
             let id = current.id;
             if let Some(id) = id {
-                self.store
+                self.tracking
                     .refine_title(id, &current.app, &event.title, current.url.as_deref())?;
             }
             self.current.as_mut().expect("checked above").window_title = event.title;
@@ -133,7 +133,7 @@ impl<S: SessionStore> SessionTracker<S> {
     fn end_current_row(&mut self, at: DateTime<Utc>) -> Result<()> {
         let id = self.current.as_ref().and_then(|current| current.id);
         if let Some(id) = id {
-            self.store.end_session(id, at)?;
+            self.tracking.end(id, at)?;
             self.current.as_mut().expect("row came from current").id = None;
         }
         Ok(())
@@ -153,7 +153,7 @@ impl<S: SessionStore> SessionTracker<S> {
         let app = current.app.clone();
         let title = current.window_title.clone();
         let url = current.url.clone();
-        let id = self.store.start_session(&app, &title, url.as_deref(), at)?;
+        let id = self.tracking.start(&app, &title, url.as_deref(), at)?;
         self.current.as_mut().expect("checked above").id = Some(id);
         Ok(())
     }
