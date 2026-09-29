@@ -15,10 +15,10 @@ use chrono::Utc;
 use tauri::Manager;
 use tracing::{error, info};
 
-use crate::domain::{Categories, History, Labeling, Tracking};
-use crate::focus::{FocusWatcher, PlatformFocusWatcher, SessionTracker, WatchEvent};
+use crate::domain::{CategorySvc, HistorySvc, LabelingSvc, SqliteCategories, SqliteHistory, SqliteLabeling, SqliteTracking};
+use crate::focus::{ActivitySessionTracker, FocusWatcher, PlatformFocusWatcher, SessionTracker, WatchEvent};
 
-type SharedTracker = Arc<Mutex<SessionTracker>>;
+type SharedTracker = Arc<Mutex<Box<dyn SessionTracker>>>;
 
 pub fn run() {
     let mut builder = tauri::Builder::default()
@@ -73,18 +73,17 @@ pub fn run() {
             let db_path = data_dir.join("makora.sqlite");
             info!(path = %db_path.display(), "writing sessions");
 
-            let conn = db::open(&db_path).map_err(|err| {
+            let conn = db::open_sqlite(&db_path).map_err(|err| {
                 anyhow::anyhow!("opening database at {}: {err:#}", db_path.display())
             })?;
-            let tracking = Tracking::new(conn.clone());
-            let tracker: SharedTracker = Arc::new(Mutex::new(
-                SessionTracker::new(tracking).context("initializing session tracker")?,
-            ));
+            let tracking: Box<dyn domain::TrackingSvc> = Box::new(SqliteTracking::new(conn.clone()));
+            let session_tracker = ActivitySessionTracker::new(tracking).context("initializing session tracker")?;
+            let tracker: SharedTracker = Arc::new(Mutex::new(Box::new(session_tracker) as Box<dyn SessionTracker>));
             ai::llm::set_download_root(data_dir.join("models"));
 
-            app.manage(History::new(conn.clone()));
-            app.manage(Categories::new(conn.clone()));
-            app.manage(Labeling::new(conn));
+            app.manage(Box::new(SqliteHistory::new(conn.clone())) as Box<dyn HistorySvc>);
+            app.manage(Box::new(SqliteCategories::new(conn.clone())) as Box<dyn CategorySvc>);
+            app.manage(Box::new(SqliteLabeling::new(conn)) as Box<dyn LabelingSvc>);
             app.manage(commands::AiCategorizeState::default());
             app.manage(commands::ModelDownloadState::default());
             app.manage(ai::llm::ModelCache::default());

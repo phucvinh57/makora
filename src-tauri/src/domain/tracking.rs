@@ -23,16 +23,20 @@ const MIN_SESSION_SECONDS: i64 = 1;
 /// away and back, a window manager hiccup), not a new one starting.
 const MERGE_GAP_SECONDS: i64 = 2;
 
-pub struct Tracking {
+pub use super::traits::TrackingSvc;
+
+pub struct SqliteTracking {
     db: Db,
 }
 
-impl Tracking {
+impl SqliteTracking {
     pub fn new(db: Db) -> Self {
         Self { db }
     }
+}
 
-    pub fn start(&self, app: &AppInfo, window_title: &str, url: Option<&str>, at: DateTime<Utc>) -> Result<i64> {
+impl TrackingSvc for SqliteTracking {
+    fn start(&self, app: &AppInfo, window_title: &str, url: Option<&str>, at: DateTime<Utc>) -> Result<i64> {
         let (key_kind, key) = category_key(&app.exe_path, url);
         let path = url.map(url_path).unwrap_or_default();
         let canonical = canonical_title(window_title, &app.app_name, url);
@@ -41,18 +45,18 @@ impl Tracking {
             let source_id = ensure_source(conn, key_kind, &key, &source_name(key_kind, &key, &app.app_name))?;
             let activity = ensure_activity(conn, source_id, &path, &canonical)?;
 
-            if let Some(last) = db::sessions::last(conn)? {
+            if let Some(last) = db::sessions::SessionsRepo::get_last(conn)? {
                 if last.activity_id == activity.id {
                     if let Some(end_time) = &last.end_time {
                         if within_merge_gap(end_time, at) {
-                            db::sessions::reopen(conn, last.id)?;
+                            db::sessions::SessionsRepo::reopen(conn, last.id)?;
                             return Ok(last.id);
                         }
                     }
                 }
             }
 
-            let session = db::sessions::insert(
+            let session = db::sessions::SessionsRepo::insert(
                 conn,
                 &NewSessionRow {
                     activity_id: activity.id,
@@ -64,35 +68,30 @@ impl Tracking {
         .map_err(Into::into)
     }
 
-    /// Closes the row and derives its category in Rust in one transaction, unless the block
-    /// lasted less than [`MIN_SESSION_SECONDS`], in which case the row is dropped instead.
-    pub fn end(&self, id: i64, at: DateTime<Utc>) -> Result<()> {
+    fn end(&self, id: i64, at: DateTime<Utc>) -> Result<()> {
         let end_time = at.to_rfc3339();
         let mut conn = self.db.lock().unwrap();
         conn.transaction(|conn| -> QueryResult<()> {
-            let Some(session) = db::sessions::find(conn, id)? else {
+            let Some(session) = db::sessions::SessionsRepo::get(conn, id)? else {
                 return Ok(());
             };
             if is_too_short(&session.start_time, at) {
-                db::sessions::delete(conn, id)?;
-                prune_orphan(conn, session.activity_id)?;
+                db::sessions::SessionsRepo::delete(conn, id)?;
+                prune_orphans(conn, &[session.activity_id])?;
                 return Ok(());
             }
-            db::sessions::set_end(conn, id, &end_time)
+            db::sessions::SessionsRepo::set_end(conn, id, &end_time)
         })
         .map_err(Into::into)
     }
 
-    /// A browser reported the real title for a session that opened with a placeholder one. If
-    /// that resolves to a different activity than the one the session opened against, the
-    /// session moves onto it, carrying its manual pin along if the target has none yet.
-    pub fn refine_title(&self, id: i64, app: &AppInfo, window_title: &str, url: Option<&str>) -> Result<()> {
+    fn refine_title(&self, id: i64, app: &AppInfo, window_title: &str, url: Option<&str>) -> Result<()> {
         let mut conn = self.db.lock().unwrap();
         conn.transaction(|conn| -> QueryResult<()> {
-            let Some(session) = db::sessions::find(conn, id)? else {
+            let Some(session) = db::sessions::SessionsRepo::get(conn, id)? else {
                 return Ok(());
             };
-            let Some(old_activity) = db::activities::find(conn, session.activity_id)? else {
+            let Some(old_activity) = db::activities::ActivitiesRepo::get(conn, session.activity_id)? else {
                 return Ok(());
             };
             let canonical = canonical_title(window_title, &app.app_name, url);
@@ -111,26 +110,22 @@ impl Tracking {
                 return Ok(());
             }
             if let (Some(old_pin), None) = (old_pin, target_pin) {
-                db::activities::set_category_if_unpinned(conn, target.id, old_pin)?;
+                db::activities::ActivitiesRepo::set_category_if_unpinned(conn, target.id, old_pin)?;
             }
 
-            db::sessions::reassign_activity(conn, id, target.id)?;
-            prune_orphan(conn, old_activity.id)?;
+            db::sessions::SessionsRepo::reassign_activity(conn, id, target.id)?;
+            prune_orphans(conn, &[old_activity.id])?;
             Ok(())
         })
         .map_err(Into::into)
     }
 
-    /// Closes every row a crash or a forced quit left open, and prunes the activities that
-    /// leaves orphaned.
-    pub fn close_dangling(&self) -> Result<()> {
+    fn close_dangling(&self) -> Result<()> {
         let mut conn = self.db.lock().unwrap();
         conn.transaction(|conn| -> QueryResult<()> {
-            let activity_ids = db::sessions::open_activity_ids(conn)?;
-            db::sessions::delete_open(conn)?;
-            for activity_id in activity_ids {
-                prune_orphan(conn, activity_id)?;
-            }
+            let activity_ids = db::sessions::SessionsRepo::get_open_activity_ids(conn)?;
+            db::sessions::SessionsRepo::delete_open(conn)?;
+            prune_orphans(conn, &activity_ids)?;
             Ok(())
         })
         .map_err(Into::into)
@@ -148,13 +143,13 @@ fn source_name(key_kind: KeyKind, key: &str, app_name: &str) -> String {
 /// Finds the source by its key, or creates it. An existing source keeps its name unless it
 /// never had one — a domain's or app's display name can only improve, never be blanked.
 fn ensure_source(conn: &mut SqliteConnection, kind: KeyKind, key: &str, name: &str) -> QueryResult<i64> {
-    if let Some(existing) = db::sources::find_by_key(conn, kind.as_str(), key)? {
+    if let Some(existing) = db::sources::SourcesRepo::get_by_key(conn, kind.as_str(), key)? {
         if existing.name.is_empty() && !name.is_empty() {
-            db::sources::set_name(conn, existing.id, name)?;
+            db::sources::SourcesRepo::set_name(conn, existing.id, name)?;
         }
         return Ok(existing.id);
     }
-    let inserted = db::sources::insert(
+    let inserted = db::sources::SourcesRepo::insert(
         conn,
         &NewSourceRow {
             kind: kind.as_str(),
@@ -167,21 +162,29 @@ fn ensure_source(conn: &mut SqliteConnection, kind: KeyKind, key: &str, name: &s
 
 /// Finds the activity by its identity (source, path, title), or creates it.
 fn ensure_activity(conn: &mut SqliteConnection, source_id: i64, path: &str, title: &str) -> QueryResult<ActivityRow> {
-    if let Some(existing) = db::activities::find_by_identity(conn, source_id, path, title)? {
+    if let Some(existing) = db::activities::ActivitiesRepo::get_by_identity(conn, source_id, path, title)? {
         return Ok(existing);
     }
-    db::activities::insert(conn, &NewActivityRow { source_id, path, title })
+    db::activities::ActivitiesRepo::insert(conn, &NewActivityRow { source_id, path, title })
 }
 
-/// Deletes the activity (and its source, if nothing else uses it) once it has no category pin
-/// and no session references it any more.
-fn prune_orphan(conn: &mut SqliteConnection, activity_id: i64) -> QueryResult<()> {
-    let Some(activity) = db::activities::find_prunable(conn, activity_id)? else {
+/// Deletes every activity among `activity_ids` (and its source, if nothing else uses it) that
+/// has no category pin and no session referencing it any more, in a handful of queries
+/// regardless of how many ids are given.
+fn prune_orphans(conn: &mut SqliteConnection, activity_ids: &[i64]) -> QueryResult<()> {
+    if activity_ids.is_empty() {
         return Ok(());
-    };
-    db::ai_labels::delete_for_activity(conn, activity_id)?;
-    db::activities::delete(conn, activity_id)?;
-    db::sources::delete_if_unused(conn, activity.source_id)?;
+    }
+    let prunable = db::activities::ActivitiesRepo::get_prunable_many(conn, activity_ids)?;
+    if prunable.is_empty() {
+        return Ok(());
+    }
+    let ids: Vec<i64> = prunable.iter().map(|activity| activity.id).collect();
+    let source_ids: Vec<i64> = prunable.iter().map(|activity| activity.source_id).collect();
+
+    db::ai_labels::AiLabelsRepo::delete_for_activities(conn, &ids)?;
+    db::activities::ActivitiesRepo::delete_many(conn, &ids)?;
+    db::sources::SourcesRepo::delete_unused_many(conn, &source_ids)?;
     Ok(())
 }
 

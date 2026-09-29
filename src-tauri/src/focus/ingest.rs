@@ -19,7 +19,7 @@ struct TabEventDto {
     title: String,
 }
 
-pub fn spawn(tracker: Arc<Mutex<SessionTracker>>) -> Result<thread::JoinHandle<()>> {
+pub fn spawn(tracker: Arc<Mutex<Box<dyn SessionTracker>>>) -> Result<thread::JoinHandle<()>> {
     let server = Server::http(("127.0.0.1", PORT))
         .map_err(|e| anyhow!("binding tab-ingest server to 127.0.0.1:{PORT}: {e}"))?;
 
@@ -29,14 +29,14 @@ pub fn spawn(tracker: Arc<Mutex<SessionTracker>>) -> Result<thread::JoinHandle<(
         .map_err(|e| anyhow!("spawning tab-ingest server thread: {e}"))
 }
 
-fn run(server: Server, tracker: Arc<Mutex<SessionTracker>>) {
+fn run(server: Server, tracker: Arc<Mutex<Box<dyn SessionTracker>>>) {
     for mut request in server.incoming_requests() {
         let status = handle_request(&mut request, &tracker);
         let _ = request.respond(Response::empty(status));
     }
 }
 
-fn handle_request(request: &mut tiny_http::Request, tracker: &Arc<Mutex<SessionTracker>>) -> u16 {
+fn handle_request(request: &mut tiny_http::Request, tracker: &Arc<Mutex<Box<dyn SessionTracker>>>) -> u16 {
     if *request.method() != Method::Post || request.url() != "/event" {
         return 404;
     }

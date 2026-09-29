@@ -12,34 +12,38 @@ use super::types::{
     SessionRow, SessionsPage,
 };
 
-pub struct History {
+pub use super::traits::HistorySvc;
+
+pub struct SqliteHistory {
     db: Db,
 }
 
-impl History {
+impl SqliteHistory {
     pub fn new(db: Db) -> Self {
         Self { db }
     }
+}
 
-    pub fn list_sessions(&self, page: i64, page_size: i64, filter: &SessionFilter) -> Result<SessionsPage> {
+impl HistorySvc for SqliteHistory {
+    fn get_sessions(&self, page: i64, page_size: i64, filter: &SessionFilter) -> Result<SessionsPage> {
         let page_size = page_size.max(1);
         let offset = page.max(0) * page_size;
         let mut conn = self.db.lock().unwrap();
         let query = to_session_query(&mut conn, filter)?;
-        let rows = db::history::list_sessions(&mut conn, page_size, offset, &query)?;
-        let total = db::history::count_sessions(&mut conn, &query)?;
+        let rows = db::history::HistoryRepo::get_sessions(&mut *conn, page_size, offset, &query)?;
+        let total = db::history::HistoryRepo::get_session_count(&mut *conn, &query)?;
         Ok(SessionsPage {
             rows: rows.into_iter().map(to_session_row).collect(),
             total,
         })
     }
 
-    pub fn activity_stats(&self, start: &str, end: &str) -> Result<ActivityStats> {
+    fn get_activity_stats(&self, start: &str, end: &str) -> Result<ActivityStats> {
         let mut conn = self.db.lock().unwrap();
-        let totals = db::history::totals(&mut conn, start, end)?;
-        let categories = db::history::category_stats(&mut conn, start, end)?;
-        let apps = db::history::app_stats(&mut conn, start, end)?;
-        let daily = db::history::daily_stats(&mut conn, start, end)?;
+        let totals = db::history::HistoryRepo::get_totals(&mut *conn, start, end)?;
+        let categories = db::history::HistoryRepo::get_category_stats(&mut *conn, start, end)?;
+        let apps = db::history::HistoryRepo::get_app_stats(&mut *conn, start, end)?;
+        let daily = db::history::HistoryRepo::get_daily_stats(&mut *conn, start, end)?;
         Ok(ActivityStats {
             total_seconds: totals.total_seconds,
             session_count: totals.session_count,

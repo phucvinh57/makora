@@ -8,9 +8,10 @@ mod history;
 mod labeling;
 pub mod title;
 mod tracking;
+mod traits;
 pub mod types;
 
-pub use categories::Categories;
-pub use history::History;
-pub use labeling::Labeling;
-pub use tracking::Tracking;
+pub use categories::{CategorySvc, SqliteCategories};
+pub use history::{HistorySvc, SqliteHistory};
+pub use labeling::{LabelingSvc, SqliteLabeling};
+pub use tracking::{SqliteTracking, TrackingSvc};

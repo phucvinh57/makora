@@ -21,11 +21,6 @@ pub struct NewCategory {
     pub parent_id: Option<i64>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-pub struct CategorizationResetOutcome {
-    pub sessions_cleared: i64,
-}
-
 /// An activity the LLM is asked to label, as it needs to see it.
 #[derive(Debug, Clone)]
 pub struct UncategorizedActivity {

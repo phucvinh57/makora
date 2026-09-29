@@ -1,82 +1,82 @@
 use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
+use diesel::upsert::excluded;
 use diesel::QueryResult;
 
 use super::models::AiLabelRow;
 use super::schema::ai_labels;
 
-/// The label still standing for an activity — `None` once it has been rejected.
-pub fn find_active(conn: &mut SqliteConnection, activity_id: i64) -> QueryResult<Option<AiLabelRow>> {
-    ai_labels::table
-        .find(activity_id)
-        .filter(ai_labels::rejected.eq(false))
-        .select(AiLabelRow::as_select())
-        .first(conn)
-        .optional()
-}
+pub use super::traits::AiLabelsRepo;
 
-/// Sets the AI label for `activity_id`, replacing whatever was there (rejected or not).
-/// `activity_id` is the table's primary key, so this is insert-or-overwrite.
-pub fn upsert(
-    conn: &mut SqliteConnection,
-    activity_id: i64,
-    category_id: i64,
-    confidence: f64,
-) -> QueryResult<()> {
-    let updated = diesel::update(ai_labels::table.find(activity_id))
-        .set((
-            ai_labels::category_id.eq(category_id),
-            ai_labels::confidence.eq(confidence),
-            ai_labels::rejected.eq(false),
-        ))
-        .execute(conn)?;
-    if updated == 0 {
+impl AiLabelsRepo for SqliteConnection {
+    fn get_active_many(&mut self, activity_ids: &[i64]) -> QueryResult<Vec<AiLabelRow>> {
+        ai_labels::table
+            .filter(ai_labels::activity_id.eq_any(activity_ids))
+            .filter(ai_labels::rejected.eq(false))
+            .select(AiLabelRow::as_select())
+            .load(self)
+    }
+
+    fn upsert_many(&mut self, labels: &[(i64, i64, f64)]) -> QueryResult<()> {
+        if labels.is_empty() {
+            return Ok(());
+        }
+        let values: Vec<_> = labels
+            .iter()
+            .map(|&(activity_id, category_id, confidence)| {
+                (
+                    ai_labels::activity_id.eq(activity_id),
+                    ai_labels::category_id.eq(category_id),
+                    ai_labels::confidence.eq(confidence),
+                    ai_labels::rejected.eq(false),
+                )
+            })
+            .collect();
         diesel::insert_into(ai_labels::table)
-            .values((
-                ai_labels::activity_id.eq(activity_id),
-                ai_labels::category_id.eq(category_id),
-                ai_labels::confidence.eq(confidence),
+            .values(values)
+            .on_conflict(ai_labels::activity_id)
+            .do_update()
+            .set((
+                ai_labels::category_id.eq(excluded(ai_labels::category_id)),
+                ai_labels::confidence.eq(excluded(ai_labels::confidence)),
                 ai_labels::rejected.eq(false),
             ))
-            .execute(conn)?;
+            .execute(self)?;
+        Ok(())
     }
-    Ok(())
-}
 
-/// Removes the active (non-rejected) label, leaving the activity with none.
-pub fn clear_active(conn: &mut SqliteConnection, activity_id: i64) -> QueryResult<usize> {
-    diesel::delete(
-        ai_labels::table
-            .find(activity_id)
-            .filter(ai_labels::rejected.eq(false)),
-    )
-    .execute(conn)
-}
+    fn clear_active_many(&mut self, activity_ids: &[i64]) -> QueryResult<usize> {
+        diesel::delete(
+            ai_labels::table
+                .filter(ai_labels::activity_id.eq_any(activity_ids))
+                .filter(ai_labels::rejected.eq(false)),
+        )
+        .execute(self)
+    }
 
-/// Marks the active label rejected instead of deleting it, so the model can be told "not
-/// this" next time.
-pub fn reject_active(conn: &mut SqliteConnection, activity_id: i64) -> QueryResult<()> {
-    diesel::update(
-        ai_labels::table
-            .find(activity_id)
-            .filter(ai_labels::rejected.eq(false)),
-    )
-    .set((ai_labels::rejected.eq(true), ai_labels::confidence.eq(None::<f64>)))
-    .execute(conn)?;
-    Ok(())
-}
+    fn reject_active_many(&mut self, activity_ids: &[i64]) -> QueryResult<()> {
+        diesel::update(
+            ai_labels::table
+                .filter(ai_labels::activity_id.eq_any(activity_ids))
+                .filter(ai_labels::rejected.eq(false)),
+        )
+        .set((ai_labels::rejected.eq(true), ai_labels::confidence.eq(None::<f64>)))
+        .execute(self)?;
+        Ok(())
+    }
 
-pub fn delete_for_activity(conn: &mut SqliteConnection, activity_id: i64) -> QueryResult<()> {
-    diesel::delete(ai_labels::table.find(activity_id)).execute(conn)?;
-    Ok(())
-}
+    fn delete_for_activities(&mut self, activity_ids: &[i64]) -> QueryResult<()> {
+        diesel::delete(ai_labels::table.filter(ai_labels::activity_id.eq_any(activity_ids))).execute(self)?;
+        Ok(())
+    }
 
-pub fn delete_for_categories(conn: &mut SqliteConnection, category_ids: &[i64]) -> QueryResult<()> {
-    diesel::delete(ai_labels::table.filter(ai_labels::category_id.eq_any(category_ids))).execute(conn)?;
-    Ok(())
-}
+    fn delete_for_categories(&mut self, category_ids: &[i64]) -> QueryResult<()> {
+        diesel::delete(ai_labels::table.filter(ai_labels::category_id.eq_any(category_ids))).execute(self)?;
+        Ok(())
+    }
 
-pub fn delete_all(conn: &mut SqliteConnection) -> QueryResult<()> {
-    diesel::delete(ai_labels::table).execute(conn)?;
-    Ok(())
+    fn delete_all(&mut self) -> QueryResult<()> {
+        diesel::delete(ai_labels::table).execute(self)?;
+        Ok(())
+    }
 }

@@ -1,6 +1,8 @@
 //! AI category suggestions: which activities still need one, storing what the model comes back
 //! with, and the review queue the user judges them through.
 
+use std::collections::{HashMap, HashSet};
+
 use anyhow::Result;
 use diesel::sqlite::SqliteConnection;
 use diesel::Connection;
@@ -16,21 +18,22 @@ use super::types::{
 /// Labels the model was at least this sure of are left out of the default review queue.
 const CONFIDENT: f64 = 0.85;
 
-pub struct Labeling {
+pub use super::traits::LabelingSvc;
+
+pub struct SqliteLabeling {
     db: Db,
 }
 
-impl Labeling {
+impl SqliteLabeling {
     pub fn new(db: Db) -> Self {
         Self { db }
     }
+}
 
-    /// Activities for the LLM to label, most recently seen first. Normally those with neither a
-    /// pin nor an AI label nor a rejected one; with `recheck`, those carrying an AI label the
-    /// user has not confirmed.
-    pub fn activities_to_label(&self, recheck: bool) -> Result<Vec<UncategorizedActivity>> {
+impl LabelingSvc for SqliteLabeling {
+    fn get_activities_to_label(&self, recheck: bool) -> Result<Vec<UncategorizedActivity>> {
         let mut conn = self.db.lock().unwrap();
-        Ok(db::review::activities_to_label(&mut conn, recheck)?
+        Ok(db::review::ReviewRepo::get_activities_to_label(&mut *conn, recheck)?
             .into_iter()
             .map(|row| UncategorizedActivity {
                 id: row.id,
@@ -43,60 +46,91 @@ impl Labeling {
             .collect())
     }
 
-    /// Stores AI labels as `(activity_id, category_id, confidence)`; `None` clears a label the
-    /// model no longer stands by. A manual pin made in the meantime is untouched: reads prefer
-    /// it over the AI label. Returns how many labels actually changed.
-    pub fn assign_ai(&self, labels: &[(i64, Option<i64>, f64)]) -> Result<usize> {
+    fn assign_ai(&self, labels: &[(i64, Option<i64>, f64)]) -> Result<usize> {
         if labels.is_empty() {
             return Ok(0);
         }
         let mut conn = self.db.lock().unwrap();
         conn.transaction(|conn| -> diesel::QueryResult<usize> {
-            let mut changed = 0usize;
+            let activity_ids: Vec<i64> = labels.iter().map(|&(activity_id, ..)| activity_id).collect();
+            let unpinned: HashSet<i64> = db::activities::ActivitiesRepo::filter_unpinned(conn, &activity_ids)?
+                .into_iter()
+                .collect();
+
+            let wanted_categories: Vec<i64> = labels.iter().filter_map(|&(_, category_id, _)| category_id).collect();
+            let existing_categories: HashSet<i64> = db::categories::CategoriesRepo::filter_existing(conn, &wanted_categories)?
+                .into_iter()
+                .collect();
+
+            // A repeated activity_id keeps only its last entry — same as the sequential loop
+            // this replaced. `upsert_many` runs as one statement, and SQLite rejects an
+            // `ON CONFLICT DO UPDATE` that targets the same row twice in one statement.
+            let mut to_upsert_by_id: HashMap<i64, (i64, f64)> = HashMap::new();
+            let mut to_clear_ids: HashSet<i64> = HashSet::new();
             for &(activity_id, category_id, confidence) in labels {
-                if !db::activities::is_unpinned(conn, activity_id)? {
+                if !unpinned.contains(&activity_id) {
                     continue;
                 }
-                changed += match category_id {
-                    Some(category_id) => {
-                        if !db::categories::exists(conn, category_id)? {
-                            continue;
-                        }
-                        // Not counted as a change: a re-check that lands on the same category
-                        // only refreshes how sure the model was.
-                        let before = db::ai_labels::find_active(conn, activity_id)?.map(|label| label.category_id);
-                        db::ai_labels::upsert(conn, activity_id, category_id, confidence)?;
-                        usize::from(before != Some(category_id))
+                match category_id {
+                    Some(category_id) if existing_categories.contains(&category_id) => {
+                        to_clear_ids.remove(&activity_id);
+                        to_upsert_by_id.insert(activity_id, (category_id, confidence));
                     }
-                    None => db::ai_labels::clear_active(conn, activity_id)?,
-                };
+                    Some(_) => {}
+                    None => {
+                        to_upsert_by_id.remove(&activity_id);
+                        to_clear_ids.insert(activity_id);
+                    }
+                }
             }
-            Ok(changed)
+            let to_upsert: Vec<(i64, i64, f64)> = to_upsert_by_id
+                .into_iter()
+                .map(|(activity_id, (category_id, confidence))| (activity_id, category_id, confidence))
+                .collect();
+            let to_clear: Vec<i64> = to_clear_ids.into_iter().collect();
+
+            // Not counted as a change: a re-check that lands on the same category only
+            // refreshes how sure the model was.
+            let upsert_ids: Vec<i64> = to_upsert.iter().map(|&(activity_id, ..)| activity_id).collect();
+            let before: HashMap<i64, i64> = db::ai_labels::AiLabelsRepo::get_active_many(conn, &upsert_ids)?
+                .into_iter()
+                .map(|label| (label.activity_id, label.category_id))
+                .collect();
+            let changed = to_upsert
+                .iter()
+                .filter(|&&(activity_id, category_id, _)| before.get(&activity_id).copied() != Some(category_id))
+                .count();
+
+            db::ai_labels::AiLabelsRepo::upsert_many(conn, &to_upsert)?;
+            let cleared = db::ai_labels::AiLabelsRepo::clear_active_many(conn, &to_clear)?;
+
+            Ok(changed + cleared)
         })
         .map_err(Into::into)
     }
 
-    /// Turns each activity's AI label into a manual pin.
-    pub fn accept_ai_labels(&self, activity_ids: &[i64]) -> Result<()> {
+    fn accept_ai_labels(&self, activity_ids: &[i64]) -> Result<()> {
         if activity_ids.is_empty() {
             return Ok(());
         }
         let mut conn = self.db.lock().unwrap();
         conn.transaction(|conn| -> diesel::QueryResult<()> {
-            for &activity_id in activity_ids {
-                if let Some(label) = db::ai_labels::find_active(conn, activity_id)? {
-                    db::activities::set_category_if_unpinned(conn, activity_id, label.category_id)?;
-                }
+            let labels = db::ai_labels::AiLabelsRepo::get_active_many(conn, activity_ids)?;
+            let mut by_category: HashMap<i64, Vec<i64>> = HashMap::new();
+            for label in labels {
+                by_category.entry(label.category_id).or_default().push(label.activity_id);
+            }
+            for (category_id, ids) in by_category {
+                db::activities::ActivitiesRepo::set_category_many_if_unpinned(conn, &ids, category_id)?;
             }
             Ok(())
         })
         .map_err(Into::into)
     }
 
-    /// Every activity the user has pinned or rejected an AI label for, newest first.
-    pub fn labeled_activities(&self) -> Result<Vec<LabeledActivity>> {
+    fn get_labeled_activities(&self) -> Result<Vec<LabeledActivity>> {
         let mut conn = self.db.lock().unwrap();
-        Ok(db::review::labeled_activities(&mut conn)?
+        Ok(db::review::ReviewRepo::get_labeled_activities(&mut *conn)?
             .into_iter()
             .map(|row| LabeledActivity {
                 key_kind: row.key_kind,
@@ -111,13 +145,11 @@ impl Labeling {
             .collect())
     }
 
-    /// AI labels awaiting review, longest-tracked first so the ones that matter come up first.
-    /// Filtering by a category includes everything under it.
-    pub fn review_page(&self, page: i64, page_size: i64, filter: &ReviewFilter) -> Result<AiReviewPage> {
+    fn get_review_page(&self, page: i64, page_size: i64, filter: &ReviewFilter) -> Result<AiReviewPage> {
         let mut conn = self.db.lock().unwrap();
         let category = resolve_category_scope(&mut conn, filter.category)?;
-        let page_result = db::review::review_page(
-            &mut conn,
+        let page_result = db::review::ReviewRepo::get_review_page(
+            &mut *conn,
             page,
             page_size,
             &category,
@@ -135,13 +167,11 @@ impl Labeling {
         })
     }
 
-    /// The pending AI labels folded into one row per source and suggested category, the
-    /// longest-tracked first. `filter.activities` is ignored: a group picks its own members.
-    pub fn review_groups(&self, page: i64, page_size: i64, filter: &ReviewFilter) -> Result<AiReviewGroupPage> {
+    fn get_review_groups(&self, page: i64, page_size: i64, filter: &ReviewFilter) -> Result<AiReviewGroupPage> {
         let mut conn = self.db.lock().unwrap();
         let category = resolve_category_scope(&mut conn, filter.category)?;
-        let page_result = db::review::review_groups(
-            &mut conn,
+        let page_result = db::review::ReviewRepo::get_review_groups(
+            &mut *conn,
             page,
             page_size,
             &category,
@@ -158,10 +188,10 @@ impl Labeling {
         })
     }
 
-    pub fn feedback_stats(&self) -> Result<FeedbackStats> {
+    fn get_feedback_stats(&self) -> Result<FeedbackStats> {
         let mut conn = self.db.lock().unwrap();
-        let counts = db::review::feedback_counts(&mut conn)?;
-        let seconds = db::review::feedback_seconds(&mut conn)?;
+        let counts = db::review::ReviewRepo::get_feedback_counts(&mut *conn)?;
+        let seconds = db::review::ReviewRepo::get_feedback_seconds(&mut *conn)?;
         Ok(FeedbackStats {
             corrected: counts.corrected,
             confirmed: counts.confirmed,

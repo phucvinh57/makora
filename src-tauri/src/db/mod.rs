@@ -13,6 +13,7 @@ pub mod schema;
 pub mod sessions;
 mod sql;
 pub mod sources;
+mod traits;
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -26,7 +27,7 @@ use diesel::Connection;
 /// state. SQLite only allows one writer at a time, so there is nothing to gain from a pool.
 pub type Db = Arc<Mutex<SqliteConnection>>;
 
-pub fn open(path: &Path) -> Result<Db> {
+pub fn open_sqlite(path: &Path) -> Result<Db> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating database directory {}", parent.display()))?;

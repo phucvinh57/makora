@@ -5,78 +5,76 @@ use diesel::QueryResult;
 use super::models::{NewSessionRow, SessionRow};
 use super::schema::sessions;
 
-pub fn find(conn: &mut SqliteConnection, id: i64) -> QueryResult<Option<SessionRow>> {
-    sessions::table
-        .find(id)
-        .select(SessionRow::as_select())
-        .first(conn)
-        .optional()
-}
+pub use super::traits::SessionsRepo;
 
-/// The most recently opened session, whether or not it has closed yet.
-pub fn last(conn: &mut SqliteConnection) -> QueryResult<Option<SessionRow>> {
-    sessions::table
-        .order(sessions::id.desc())
-        .select(SessionRow::as_select())
-        .first(conn)
-        .optional()
-}
+impl SessionsRepo for SqliteConnection {
+    fn get(&mut self, id: i64) -> QueryResult<Option<SessionRow>> {
+        sessions::table
+            .find(id)
+            .select(SessionRow::as_select())
+            .first(self)
+            .optional()
+    }
 
-pub fn insert(conn: &mut SqliteConnection, new: &NewSessionRow<'_>) -> QueryResult<SessionRow> {
-    diesel::insert_into(sessions::table)
-        .values(new)
-        .returning(SessionRow::as_returning())
-        .get_result(conn)
-}
+    fn get_last(&mut self) -> QueryResult<Option<SessionRow>> {
+        sessions::table
+            .order(sessions::id.desc())
+            .select(SessionRow::as_select())
+            .first(self)
+            .optional()
+    }
 
-/// Reopens a session that was closed within the merge gap.
-pub fn reopen(conn: &mut SqliteConnection, id: i64) -> QueryResult<()> {
-    diesel::update(sessions::table.find(id))
-        .set(sessions::end_time.eq(None::<String>))
-        .execute(conn)?;
-    Ok(())
-}
+    fn insert(&mut self, new: &NewSessionRow<'_>) -> QueryResult<SessionRow> {
+        diesel::insert_into(sessions::table)
+            .values(new)
+            .returning(SessionRow::as_returning())
+            .get_result(self)
+    }
 
-pub fn set_end(conn: &mut SqliteConnection, id: i64, end_time: &str) -> QueryResult<()> {
-    diesel::update(sessions::table.find(id))
-        .set(sessions::end_time.eq(end_time))
-        .execute(conn)?;
-    Ok(())
-}
+    fn reopen(&mut self, id: i64) -> QueryResult<()> {
+        diesel::update(sessions::table.find(id))
+            .set(sessions::end_time.eq(None::<String>))
+            .execute(self)?;
+        Ok(())
+    }
 
-/// Moves a session onto a different activity — used when a refined title resolves to a
-/// different activity row than the one the session opened against.
-pub fn reassign_activity(conn: &mut SqliteConnection, id: i64, activity_id: i64) -> QueryResult<()> {
-    diesel::update(sessions::table.find(id))
-        .set(sessions::activity_id.eq(activity_id))
-        .execute(conn)?;
-    Ok(())
-}
+    fn set_end(&mut self, id: i64, end_time: &str) -> QueryResult<()> {
+        diesel::update(sessions::table.find(id))
+            .set(sessions::end_time.eq(end_time))
+            .execute(self)?;
+        Ok(())
+    }
 
-pub fn delete(conn: &mut SqliteConnection, id: i64) -> QueryResult<()> {
-    diesel::delete(sessions::table.find(id)).execute(conn)?;
-    Ok(())
-}
+    fn reassign_activity(&mut self, id: i64, activity_id: i64) -> QueryResult<()> {
+        diesel::update(sessions::table.find(id))
+            .set(sessions::activity_id.eq(activity_id))
+            .execute(self)?;
+        Ok(())
+    }
 
-/// The activities behind `session_ids`. Ids with no matching session are silently skipped.
-pub fn activity_ids_for(conn: &mut SqliteConnection, session_ids: &[i64]) -> QueryResult<Vec<i64>> {
-    sessions::table
-        .filter(sessions::id.eq_any(session_ids))
-        .select(sessions::activity_id)
-        .distinct()
-        .load(conn)
-}
+    fn delete(&mut self, id: i64) -> QueryResult<()> {
+        diesel::delete(sessions::table.find(id)).execute(self)?;
+        Ok(())
+    }
 
-/// Activities behind a session that never closed — left dangling by a crash or a forced quit.
-pub fn open_activity_ids(conn: &mut SqliteConnection) -> QueryResult<Vec<i64>> {
-    sessions::table
-        .filter(sessions::end_time.is_null())
-        .select(sessions::activity_id)
-        .distinct()
-        .load(conn)
-}
+    fn get_activity_ids_for(&mut self, session_ids: &[i64]) -> QueryResult<Vec<i64>> {
+        sessions::table
+            .filter(sessions::id.eq_any(session_ids))
+            .select(sessions::activity_id)
+            .distinct()
+            .load(self)
+    }
 
-pub fn delete_open(conn: &mut SqliteConnection) -> QueryResult<()> {
-    diesel::delete(sessions::table.filter(sessions::end_time.is_null())).execute(conn)?;
-    Ok(())
+    fn get_open_activity_ids(&mut self) -> QueryResult<Vec<i64>> {
+        sessions::table
+            .filter(sessions::end_time.is_null())
+            .select(sessions::activity_id)
+            .distinct()
+            .load(self)
+    }
+
+    fn delete_open(&mut self) -> QueryResult<()> {
+        diesel::delete(sessions::table.filter(sessions::end_time.is_null())).execute(self)?;
+        Ok(())
+    }
 }
