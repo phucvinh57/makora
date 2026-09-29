@@ -16,8 +16,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     MSG, OBJID_WINDOW, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
 };
 
-use crate::core::model::{AppInfo, FocusEvent, WatchEvent};
-use crate::core::watcher::FocusWatcher;
+use crate::focus::model::{AppInfo, FocusEvent, WatchEvent};
+use crate::focus::watcher::FocusWatcher;
 
 thread_local! {
     static EVENT_TX: RefCell<Option<Sender<WatchEvent>>> = RefCell::new(None);

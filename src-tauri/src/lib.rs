@@ -1,7 +1,9 @@
+mod ai;
+mod category;
 mod commands;
-mod core;
-mod ingest;
+mod focus;
 mod logging;
+mod store;
 mod tray;
 
 use std::sync::mpsc;
@@ -12,10 +14,8 @@ use chrono::Utc;
 use tauri::Manager;
 use tracing::{error, info};
 
-use crate::core::{
-    open_connection, CategoryStore, FocusWatcher, HistoryReader, PlatformFocusWatcher,
-    SessionTracker, SqliteStore, WatchEvent,
-};
+use crate::focus::{FocusWatcher, PlatformFocusWatcher, SessionTracker, WatchEvent};
+use crate::store::{open_connection, CategoryStore, HistoryReader, SqliteStore};
 
 type SharedTracker = Arc<Mutex<SessionTracker<SqliteStore>>>;
 
@@ -81,15 +81,15 @@ pub fn run() {
 
             app.manage(HistoryReader::new(conn.clone()));
             app.manage(CategoryStore::new(conn));
-            core::llm::set_download_root(data_dir.join("models"));
+            ai::llm::set_download_root(data_dir.join("models"));
             app.manage(commands::AiCategorizeState::default());
             app.manage(commands::ModelDownloadState::default());
-            app.manage(core::llm::ModelCache::default());
+            app.manage(ai::llm::ModelCache::default());
             app.manage(tracker.clone());
             let (tx, rx) = mpsc::channel::<WatchEvent>();
 
             #[cfg(target_os = "linux")]
-            crate::core::platform::start_presence_watcher(tx.clone())
+            crate::focus::platform::start_presence_watcher(tx.clone())
                 .context("starting presence watcher")?;
 
             let mut watcher = PlatformFocusWatcher::new();
@@ -115,8 +115,8 @@ pub fn run() {
                 })
                 .context("spawning activity-tracker thread")?;
 
-            ingest::spawn(tracker).context("starting tab-ingest server")?;
-            info!(port = ingest::PORT, "listening for tab events");
+            focus::ingest::spawn(tracker).context("starting tab-ingest server")?;
+            info!(port = focus::ingest::PORT, "listening for tab events");
 
             tray::build(app.handle())?;
 

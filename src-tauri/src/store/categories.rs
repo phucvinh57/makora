@@ -3,7 +3,7 @@ use rusqlite::{named_params, params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use super::sqlite::SharedConnection;
-use crate::core::category::CategoryTree;
+use crate::category::CategoryTree;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Category {

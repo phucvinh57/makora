@@ -1,7 +1,7 @@
 //! Downloads models from the Ollama registry into Makora's own model directory.
 //!
 //! The directory uses Ollama's on-disk layout (`manifests/…` and `blobs/sha256-…`), so
-//! [`llm::resolve_model`](crate::core::llm::resolve_model) finds a downloaded model the same
+//! [`llm::resolve_model`](crate::ai::llm::resolve_model) finds a downloaded model the same
 //! way it finds one pulled by Ollama itself. Only the weights layer is fetched; that is all
 //! llama.cpp needs.
 

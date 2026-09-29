@@ -6,10 +6,11 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use rusqlite_migration::{Migrations, M};
 
-use crate::core::category::{category_key, url_key, KeyKind};
-use crate::core::model::AppInfo;
-use crate::core::store::SessionStore;
-use crate::core::title::{canonical_title, title_quality};
+use crate::category::{category_key, url_key, KeyKind};
+use crate::focus::AppInfo;
+
+use super::title::{canonical_title, title_quality};
+use super::SessionStore;
 
 pub type SharedConnection = Arc<Mutex<Connection>>;
 

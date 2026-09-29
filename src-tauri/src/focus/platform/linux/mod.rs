@@ -11,8 +11,8 @@ use anyhow::{anyhow, Result};
 use chrono::Utc;
 use tracing::{error, info};
 
-use crate::core::model::{FocusEvent, WatchEvent};
-use crate::core::watcher::FocusWatcher;
+use crate::focus::model::{FocusEvent, WatchEvent};
+use crate::focus::watcher::FocusWatcher;
 
 pub use presence::start_presence_watcher;
 pub use provider::{ToplevelProvider, WindowObservation};

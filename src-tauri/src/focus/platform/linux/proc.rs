@@ -1,7 +1,7 @@
 use std::path::Path;
 
-use crate::core::model::AppInfo;
-use crate::core::platform::linux::provider::WindowObservation;
+use crate::focus::model::AppInfo;
+use crate::focus::platform::linux::provider::WindowObservation;
 
 const APP_ID_SCHEME: &str = "wayland-app-id://";
 

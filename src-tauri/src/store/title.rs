@@ -1,4 +1,4 @@
-use crate::core::category::{exe_file_name, normalized_domain, url_key};
+use crate::category::{exe_file_name, normalized_domain, url_key};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]

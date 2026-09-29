@@ -2,11 +2,12 @@ use chrono::{DateTime, Utc};
 
 use anyhow::Result;
 
-use crate::core::model::AppInfo;
+use crate::focus::AppInfo;
 
 pub mod categories;
 pub mod queries;
 pub mod sqlite;
+mod title;
 
 pub use categories::{
     AiReviewGroupPage, AiReviewPage, CategorizationResetOutcome, Category, CategoryStore,

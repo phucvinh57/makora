@@ -4,9 +4,10 @@ use chrono::{DateTime, Utc};
 
 use anyhow::Result;
 
-use crate::core::category::exe_file_name;
-use crate::core::model::{AppInfo, BrowserKind, FocusEvent, PresenceEvent, TabEvent};
-use crate::core::store::SessionStore;
+use crate::category::exe_file_name;
+use crate::store::SessionStore;
+
+use super::model::{AppInfo, BrowserKind, FocusEvent, PresenceEvent, TabEvent};
 
 const IGNORED_APPS: &[&str] = &["explorer.exe", "gnome-shell"];
 

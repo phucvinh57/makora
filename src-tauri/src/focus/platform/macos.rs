@@ -15,8 +15,8 @@ use objc2::rc::autoreleasepool;
 use objc2::runtime::AnyObject;
 use objc2::{class, msg_send};
 
-use crate::core::model::{AppInfo, FocusEvent, WatchEvent};
-use crate::core::watcher::FocusWatcher;
+use crate::focus::model::{AppInfo, FocusEvent, WatchEvent};
+use crate::focus::watcher::FocusWatcher;
 
 #[link(name = "Cocoa", kind = "framework")]
 extern "C" {}

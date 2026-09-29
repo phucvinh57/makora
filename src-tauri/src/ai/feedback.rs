@@ -6,9 +6,10 @@
 
 use std::collections::HashMap;
 
-use crate::core::category::url_location;
-use crate::core::llm::{Example, Verdict};
-use crate::core::LabeledActivity;
+use crate::category::url_location;
+use crate::store::LabeledActivity;
+
+use super::llm::{Example, Verdict};
 
 /// Corrections and rejections shown to the model for every activity.
 const GLOBAL_EXAMPLES: usize = 10;

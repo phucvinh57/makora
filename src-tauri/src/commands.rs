@@ -1,7 +1,7 @@
-use crate::core::category::url_location;
-use crate::core::feedback::FeedbackIndex;
-use crate::core::llm::{self, ActivityText, ModelCache};
-use crate::core::{
+use crate::ai::feedback::FeedbackIndex;
+use crate::ai::llm::{self, ActivityText, ModelCache};
+use crate::category::url_location;
+use crate::store::{
     ActivityStats, AiReviewGroupPage, AiReviewPage, CategorizationResetOutcome, Category, CategoryFilter,
     CategorySourceFilter, CategoryStore, FeedbackStats, HistoryReader, NewCategory, ReviewFilter, SessionFilter,
     SessionRow,
@@ -459,7 +459,7 @@ pub async fn download_ai_model(
                 );
             }
         };
-        crate::core::model_download::download(root, &model, &state.cancel, &mut progress)
+        crate::ai::model_download::download(root, &model, &state.cancel, &mut progress)
             .map(|()| !state.cancel.load(Ordering::Acquire))
             .map_err(|e| format!("{e:#}"))
     })

@@ -2,7 +2,7 @@ use std::sync::mpsc::Sender;
 
 use anyhow::Result;
 
-use crate::core::model::WatchEvent;
+use super::model::WatchEvent;
 
 pub trait FocusWatcher {
     fn start(&mut self, tx: Sender<WatchEvent>) -> Result<()>;
