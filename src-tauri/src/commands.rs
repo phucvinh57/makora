@@ -1,11 +1,12 @@
 use crate::ai::feedback::FeedbackIndex;
 use crate::ai::llm::{self, ActivityText, ModelCache};
 use crate::category::url_location;
-use crate::store::{
-    ActivityStats, AiReviewGroupPage, AiReviewPage, CategorizationResetOutcome, Category, CategoryFilter,
-    CategorySourceFilter, CategoryStore, FeedbackStats, HistoryStore, NewCategory, ReviewFilter, SessionFilter,
-    SessionRow,
+use crate::domain::types::{
+    ActivityStats, AiReviewGroupPage, AiReviewPage, CategorizationResetOutcome, Category,
+    CategoryFilter, CategorySourceFilter, FeedbackStats, NewCategory, ReviewFilter, SessionFilter,
+    SessionsPage,
 };
+use crate::domain::{Categories, History, Labeling};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -13,16 +14,10 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tracing::{info, warn};
 
-#[derive(Serialize)]
-pub struct SessionsPage {
-    pub rows: Vec<SessionRow>,
-    pub total: i64,
-}
-
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn list_sessions(
-    reader: State<Box<dyn HistoryStore>>,
+    history: State<History>,
     page: i64,
     page_size: i64,
     search: Option<String>,
@@ -31,8 +26,6 @@ pub fn list_sessions(
     start: Option<String>,
     end: Option<String>,
 ) -> Result<SessionsPage, String> {
-    let page_size = page_size.max(1);
-    let offset = page.max(0) * page_size;
     let start = start.as_deref().map(parse_rfc3339).transpose()?;
     let end = end.as_deref().map(parse_rfc3339).transpose()?;
     let filter = SessionFilter {
@@ -42,11 +35,9 @@ pub fn list_sessions(
         start: start.map(|t| t.to_rfc3339()),
         end: end.map(|t| t.to_rfc3339()),
     };
-    let rows = reader
-        .list_sessions(page_size, offset, &filter)
-        .map_err(|e| e.to_string())?;
-    let total = reader.count_sessions(&filter).map_err(|e| e.to_string())?;
-    Ok(SessionsPage { rows, total })
+    history
+        .list_sessions(page, page_size, &filter)
+        .map_err(|e| e.to_string())
 }
 
 fn parse_category_source_filter(source: Option<&str>) -> Result<CategorySourceFilter, String> {
@@ -60,11 +51,11 @@ fn parse_category_source_filter(source: Option<&str>) -> Result<CategorySourceFi
 
 #[tauri::command]
 pub fn activity_stats(
-    reader: State<Box<dyn HistoryStore>>,
+    history: State<History>,
     start: String,
     end: String,
 ) -> Result<ActivityStats, String> {
-    reader
+    history
         .activity_stats(&start, &end)
         .map_err(|e| e.to_string())
 }
@@ -81,13 +72,13 @@ fn parse_category_filter(category: Option<&str>) -> Result<CategoryFilter, Strin
 }
 
 #[tauri::command]
-pub fn list_categories(categories: State<Box<dyn CategoryStore>>) -> Result<Vec<Category>, String> {
+pub fn list_categories(categories: State<Categories>) -> Result<Vec<Category>, String> {
     categories.list().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn set_session_row_category(
-    categories: State<Box<dyn CategoryStore>>,
+    categories: State<Categories>,
     session_id: i64,
     category_id: Option<i64>,
 ) -> Result<(), String> {
@@ -98,7 +89,7 @@ pub fn set_session_row_category(
 
 #[tauri::command]
 pub fn set_sessions_category(
-    categories: State<Box<dyn CategoryStore>>,
+    categories: State<Categories>,
     session_ids: Vec<i64>,
     category_id: i64,
 ) -> Result<(), String> {
@@ -109,7 +100,7 @@ pub fn set_sessions_category(
 
 #[tauri::command]
 pub fn create_category(
-    categories: State<Box<dyn CategoryStore>>,
+    categories: State<Categories>,
     name: String,
     color: String,
     description: Option<String>,
@@ -127,7 +118,7 @@ pub fn create_category(
 
 #[tauri::command]
 pub fn update_category(
-    categories: State<Box<dyn CategoryStore>>,
+    categories: State<Categories>,
     id: i64,
     name: String,
     color: String,
@@ -149,14 +140,12 @@ pub fn update_category(
 }
 
 #[tauri::command]
-pub fn delete_category(categories: State<Box<dyn CategoryStore>>, id: i64) -> Result<(), String> {
+pub fn delete_category(categories: State<Categories>, id: i64) -> Result<(), String> {
     categories.delete(id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn reset_categorization(
-    categories: State<Box<dyn CategoryStore>>,
-) -> Result<CategorizationResetOutcome, String> {
+pub fn reset_categorization(categories: State<Categories>) -> Result<CategorizationResetOutcome, String> {
     categories
         .reset_categorization()
         .map_err(|error| error.to_string())
@@ -226,7 +215,8 @@ pub async fn categorize(
     app: AppHandle,
     state: State<'_, AiCategorizeState>,
     models: State<'_, ModelCache>,
-    categories: State<'_, Box<dyn CategoryStore>>,
+    categories: State<'_, Categories>,
+    labeling: State<'_, Labeling>,
     model: Option<String>,
     recheck: Option<bool>,
 ) -> Result<AiCategorizeOutcome, String> {
@@ -234,13 +224,15 @@ pub async fn categorize(
         return Err("AI categorization is already running".into());
     }
     let taxonomy = categories.list().map_err(|e| e.to_string());
-    let pending = categories
-        .get_activities_to_label(recheck.unwrap_or(false))
+    let pending = labeling
+        .activities_to_label(recheck.unwrap_or(false))
         .map_err(|e| e.to_string());
-    let labeled = categories.labeled_activities().map_err(|e| e.to_string());
+    let labeled = labeling.labeled_activities().map_err(|e| e.to_string());
     let model = model.unwrap_or_else(|| llm::DEFAULT_MODEL.to_string());
     state.cancel.store(false, Ordering::Release);
-    state.recheck.store(recheck.unwrap_or(false), Ordering::Release);
+    state
+        .recheck
+        .store(recheck.unwrap_or(false), Ordering::Release);
     state.done.store(0, Ordering::Release);
     state.total.store(0, Ordering::Release);
     let models = models.inner().clone();
@@ -268,7 +260,7 @@ pub async fn categorize(
                 labeled += 1;
             }
             match app
-                .state::<Box<dyn CategoryStore>>()
+                .state::<Labeling>()
                 .assign_ai(&[(pending[index].id, answer, confidence)])
             {
                 Ok(n) => changed += n,
@@ -327,42 +319,37 @@ pub fn unload_ai_model(models: State<ModelCache>) {
 
 #[tauri::command]
 pub fn list_ai_review(
-    categories: State<Box<dyn CategoryStore>>,
+    labeling: State<Labeling>,
     page: i64,
     page_size: i64,
     filter: ReviewFilter,
 ) -> Result<AiReviewPage, String> {
-    categories
-        .ai_review_page(page.max(0), page_size.max(1), &filter)
+    labeling
+        .review_page(page.max(0), page_size.max(1), &filter)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn list_ai_review_groups(
-    categories: State<Box<dyn CategoryStore>>,
+    labeling: State<Labeling>,
     page: i64,
     page_size: i64,
     filter: ReviewFilter,
 ) -> Result<AiReviewGroupPage, String> {
-    categories
-        .ai_review_groups(page.max(0), page_size.max(1), &filter)
+    labeling
+        .review_groups(page.max(0), page_size.max(1), &filter)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn accept_ai_labels(
-    categories: State<Box<dyn CategoryStore>>,
-    activity_ids: Vec<i64>,
-) -> Result<(), String> {
-    categories
-        .accept_ai_labels(&activity_ids)
-        .map_err(|e| e.to_string())
+pub fn accept_ai_labels(labeling: State<Labeling>, activity_ids: Vec<i64>) -> Result<(), String> {
+    labeling.accept_ai_labels(&activity_ids).map_err(|e| e.to_string())
 }
 
 /// Pins activities to `category_id`; `None` rejects their AI label.
 #[tauri::command]
 pub fn set_activities_category(
-    categories: State<Box<dyn CategoryStore>>,
+    categories: State<Categories>,
     activity_ids: Vec<i64>,
     category_id: Option<i64>,
 ) -> Result<(), String> {
@@ -372,8 +359,8 @@ pub fn set_activities_category(
 }
 
 #[tauri::command]
-pub fn ai_feedback_stats(categories: State<Box<dyn CategoryStore>>) -> Result<FeedbackStats, String> {
-    categories.feedback_stats().map_err(|e| e.to_string())
+pub fn ai_feedback_stats(labeling: State<Labeling>) -> Result<FeedbackStats, String> {
+    labeling.feedback_stats().map_err(|e| e.to_string())
 }
 
 /// Guards against two model downloads at once, carries the stop request, and holds enough
@@ -407,7 +394,11 @@ pub struct ModelDownloadStatus {
 pub fn model_download_status(state: State<ModelDownloadState>) -> ModelDownloadStatus {
     ModelDownloadStatus {
         running: state.running.load(Ordering::Acquire),
-        model: state.model.lock().expect("model download state poisoned").clone(),
+        model: state
+            .model
+            .lock()
+            .expect("model download state poisoned")
+            .clone(),
         downloaded: state.downloaded.load(Ordering::Acquire),
         total: state.total.load(Ordering::Acquire),
     }

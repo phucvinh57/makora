@@ -1,9 +1,10 @@
 mod ai;
 mod category;
 mod commands;
+mod db;
+mod domain;
 mod focus;
 mod logging;
-mod store;
 mod tray;
 
 use std::sync::mpsc;
@@ -14,13 +15,10 @@ use chrono::Utc;
 use tauri::Manager;
 use tracing::{error, info};
 
+use crate::domain::{Categories, History, Labeling, Tracking};
 use crate::focus::{FocusWatcher, PlatformFocusWatcher, SessionTracker, WatchEvent};
-use crate::store::{
-    open_connection, CategoryStore, HistoryStore, SqliteCategoryStore, SqliteHistoryStore,
-    SqliteStore,
-};
 
-type SharedTracker = Arc<Mutex<SessionTracker<SqliteStore>>>;
+type SharedTracker = Arc<Mutex<SessionTracker>>;
 
 pub fn run() {
     let mut builder = tauri::Builder::default()
@@ -75,17 +73,18 @@ pub fn run() {
             let db_path = data_dir.join("makora.sqlite");
             info!(path = %db_path.display(), "writing sessions");
 
-            let conn = open_connection(&db_path).map_err(|err| {
+            let conn = db::open(&db_path).map_err(|err| {
                 anyhow::anyhow!("opening database at {}: {err:#}", db_path.display())
             })?;
-            let store = SqliteStore::new(conn.clone());
+            let tracking = Tracking::new(conn.clone());
             let tracker: SharedTracker = Arc::new(Mutex::new(
-                SessionTracker::new(store).context("initializing session tracker")?,
+                SessionTracker::new(tracking).context("initializing session tracker")?,
             ));
             ai::llm::set_download_root(data_dir.join("models"));
 
-            app.manage(Box::new(SqliteHistoryStore::new(conn.clone())) as Box<dyn HistoryStore>);
-            app.manage(Box::new(SqliteCategoryStore::new(conn)) as Box<dyn CategoryStore>);
+            app.manage(History::new(conn.clone()));
+            app.manage(Categories::new(conn.clone()));
+            app.manage(Labeling::new(conn));
             app.manage(commands::AiCategorizeState::default());
             app.manage(commands::ModelDownloadState::default());
             app.manage(ai::llm::ModelCache::default());

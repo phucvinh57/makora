@@ -35,7 +35,7 @@ use llama_cpp_2::{send_logs_to_tracing, LogOptions};
 use serde::Deserialize;
 use tracing::{debug, info, warn};
 
-use crate::store::Category;
+use crate::domain::types::Category;
 
 /// Offload used when the model's GPU memory footprint could not be measured (see
 /// [`fitted_model_params`]). CPU-only always loads, just slower than a GPU-fit config would be.

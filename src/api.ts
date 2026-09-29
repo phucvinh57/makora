@@ -135,7 +135,7 @@ export function modelDownloadStatus(): Promise<ModelDownloadStatus> {
   return invoke("model_download_status");
 }
 
-export function categorizeWithAi(
+export function categorize(
   recheck = false,
   model?: string,
 ): Promise<AiCategorizeOutcome> {

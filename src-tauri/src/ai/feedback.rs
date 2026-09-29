@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 
 use crate::category::url_location;
-use crate::store::LabeledActivity;
+use crate::domain::types::LabeledActivity;
 
 use super::llm::{Example, Verdict};
 
