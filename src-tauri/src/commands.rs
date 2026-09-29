@@ -3,7 +3,7 @@ use crate::ai::llm::{self, ActivityText, ModelCache};
 use crate::category::url_location;
 use crate::store::{
     ActivityStats, AiReviewGroupPage, AiReviewPage, CategorizationResetOutcome, Category, CategoryFilter,
-    CategorySourceFilter, CategoryStore, FeedbackStats, HistoryReader, NewCategory, ReviewFilter, SessionFilter,
+    CategorySourceFilter, CategoryStore, FeedbackStats, HistoryStore, NewCategory, ReviewFilter, SessionFilter,
     SessionRow,
 };
 use chrono::{DateTime, Utc};
@@ -22,7 +22,7 @@ pub struct SessionsPage {
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn list_sessions(
-    reader: State<HistoryReader>,
+    reader: State<Box<dyn HistoryStore>>,
     page: i64,
     page_size: i64,
     search: Option<String>,
@@ -60,7 +60,7 @@ fn parse_category_source_filter(source: Option<&str>) -> Result<CategorySourceFi
 
 #[tauri::command]
 pub fn activity_stats(
-    reader: State<HistoryReader>,
+    reader: State<Box<dyn HistoryStore>>,
     start: String,
     end: String,
 ) -> Result<ActivityStats, String> {
@@ -81,13 +81,13 @@ fn parse_category_filter(category: Option<&str>) -> Result<CategoryFilter, Strin
 }
 
 #[tauri::command]
-pub fn list_categories(categories: State<CategoryStore>) -> Result<Vec<Category>, String> {
+pub fn list_categories(categories: State<Box<dyn CategoryStore>>) -> Result<Vec<Category>, String> {
     categories.list().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn set_session_row_category(
-    categories: State<CategoryStore>,
+    categories: State<Box<dyn CategoryStore>>,
     session_id: i64,
     category_id: Option<i64>,
 ) -> Result<(), String> {
@@ -98,7 +98,7 @@ pub fn set_session_row_category(
 
 #[tauri::command]
 pub fn set_sessions_category(
-    categories: State<CategoryStore>,
+    categories: State<Box<dyn CategoryStore>>,
     session_ids: Vec<i64>,
     category_id: i64,
 ) -> Result<(), String> {
@@ -109,7 +109,7 @@ pub fn set_sessions_category(
 
 #[tauri::command]
 pub fn create_category(
-    categories: State<CategoryStore>,
+    categories: State<Box<dyn CategoryStore>>,
     name: String,
     color: String,
     description: Option<String>,
@@ -127,7 +127,7 @@ pub fn create_category(
 
 #[tauri::command]
 pub fn update_category(
-    categories: State<CategoryStore>,
+    categories: State<Box<dyn CategoryStore>>,
     id: i64,
     name: String,
     color: String,
@@ -149,13 +149,13 @@ pub fn update_category(
 }
 
 #[tauri::command]
-pub fn delete_category(categories: State<CategoryStore>, id: i64) -> Result<(), String> {
+pub fn delete_category(categories: State<Box<dyn CategoryStore>>, id: i64) -> Result<(), String> {
     categories.delete(id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn reset_categorization(
-    categories: State<CategoryStore>,
+    categories: State<Box<dyn CategoryStore>>,
 ) -> Result<CategorizationResetOutcome, String> {
     categories
         .reset_categorization()
@@ -226,7 +226,7 @@ pub async fn categorize(
     app: AppHandle,
     state: State<'_, AiCategorizeState>,
     models: State<'_, ModelCache>,
-    categories: State<'_, CategoryStore>,
+    categories: State<'_, Box<dyn CategoryStore>>,
     model: Option<String>,
     recheck: Option<bool>,
 ) -> Result<AiCategorizeOutcome, String> {
@@ -268,7 +268,7 @@ pub async fn categorize(
                 labeled += 1;
             }
             match app
-                .state::<CategoryStore>()
+                .state::<Box<dyn CategoryStore>>()
                 .assign_ai(&[(pending[index].id, answer, confidence)])
             {
                 Ok(n) => changed += n,
@@ -327,7 +327,7 @@ pub fn unload_ai_model(models: State<ModelCache>) {
 
 #[tauri::command]
 pub fn list_ai_review(
-    categories: State<CategoryStore>,
+    categories: State<Box<dyn CategoryStore>>,
     page: i64,
     page_size: i64,
     filter: ReviewFilter,
@@ -339,7 +339,7 @@ pub fn list_ai_review(
 
 #[tauri::command]
 pub fn list_ai_review_groups(
-    categories: State<CategoryStore>,
+    categories: State<Box<dyn CategoryStore>>,
     page: i64,
     page_size: i64,
     filter: ReviewFilter,
@@ -351,7 +351,7 @@ pub fn list_ai_review_groups(
 
 #[tauri::command]
 pub fn accept_ai_labels(
-    categories: State<CategoryStore>,
+    categories: State<Box<dyn CategoryStore>>,
     activity_ids: Vec<i64>,
 ) -> Result<(), String> {
     categories
@@ -362,7 +362,7 @@ pub fn accept_ai_labels(
 /// Pins activities to `category_id`; `None` rejects their AI label.
 #[tauri::command]
 pub fn set_activities_category(
-    categories: State<CategoryStore>,
+    categories: State<Box<dyn CategoryStore>>,
     activity_ids: Vec<i64>,
     category_id: Option<i64>,
 ) -> Result<(), String> {
@@ -372,7 +372,7 @@ pub fn set_activities_category(
 }
 
 #[tauri::command]
-pub fn ai_feedback_stats(categories: State<CategoryStore>) -> Result<FeedbackStats, String> {
+pub fn ai_feedback_stats(categories: State<Box<dyn CategoryStore>>) -> Result<FeedbackStats, String> {
     categories.feedback_stats().map_err(|e| e.to_string())
 }
 

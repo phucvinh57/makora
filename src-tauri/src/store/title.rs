@@ -1,19 +1,8 @@
 use crate::category::{exe_file_name, normalized_domain, url_key};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[repr(u8)]
-pub enum TitleQuality {
-    Empty = 0,
-    Placeholder = 1,
-    Real = 2,
-}
-
-pub fn title_quality(title: &str, app_name: &str, url: Option<&str>) -> TitleQuality {
-    let title = title.trim();
-    if title.is_empty() {
-        return TitleQuality::Empty;
-    }
-
+/// Whether `title` is just the app name, the URL, or the domain repeated back — a placeholder a
+/// window shows before its real title loads, not a title worth keeping.
+fn is_placeholder(title: &str, app_name: &str, url: Option<&str>) -> bool {
     let folded = title.to_ascii_lowercase();
     let mut placeholders = Vec::new();
     if let Some(url) = url.map(str::trim).filter(|url| !url.is_empty()) {
@@ -38,18 +27,16 @@ pub fn title_quality(title: &str, app_name: &str, url: Option<&str>) -> TitleQua
         placeholders.push(app_name.to_ascii_lowercase());
         placeholders.push(exe_file_name(app_name).to_ascii_lowercase());
     }
-
-    if placeholders.iter().any(|candidate| candidate == &folded) {
-        TitleQuality::Placeholder
-    } else {
-        TitleQuality::Real
-    }
+    placeholders.iter().any(|candidate| candidate == &folded)
 }
 
+/// `""` when `title` is empty or just a placeholder — nothing worth keeping as the activity's
+/// title.
 pub fn canonical_title(title: &str, app_name: &str, url: Option<&str>) -> String {
     let trimmed = title.trim();
-    match title_quality(trimmed, app_name, url) {
-        TitleQuality::Empty | TitleQuality::Placeholder => String::new(),
-        TitleQuality::Real => trimmed.to_string(),
+    if trimmed.is_empty() || is_placeholder(trimmed, app_name, url) {
+        String::new()
+    } else {
+        trimmed.to_string()
     }
 }

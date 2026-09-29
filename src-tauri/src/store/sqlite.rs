@@ -3,13 +3,13 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use rusqlite_migration::{Migrations, M};
 
-use crate::category::{category_key, url_key, KeyKind};
+use crate::category::{category_key, url_path, KeyKind};
 use crate::focus::AppInfo;
 
-use super::title::{canonical_title, title_quality};
+use super::title::canonical_title;
 use super::SessionStore;
 
 pub type SharedConnection = Arc<Mutex<Connection>>;
@@ -101,6 +101,90 @@ fn migrations() -> Migrations<'static> {
         // How sure the model was of `ai_category_id`, from 0 to 1. NULL for labels made before
         // it was recorded; the review queue treats those as uncertain.
         M::up("ALTER TABLE activities ADD COLUMN ai_confidence REAL;"),
+        // Normalizes to 3NF: `sources` pulls the app/site identity out of `activities` (it
+        // depended on key_kind+key, not on the activity); `path` replaces `url`/`url_key` with
+        // the one fact that isn't already in the source's key; `display_title` is dropped since
+        // it never held more than the source name and URL already give; AI suggestion and
+        // rejection move to `ai_labels`, one row per activity, since the two were never set at
+        // once; and `sessions` keeps only the timestamps, since every other column it had was
+        // copied from its activity.
+        M::up(
+            "CREATE TABLE sources (
+            id   INTEGER PRIMARY KEY,
+            kind TEXT NOT NULL CHECK(kind IN ('exe','domain')),
+            key  TEXT NOT NULL,
+            name TEXT NOT NULL,
+            UNIQUE(kind, key)
+        );
+        INSERT INTO sources (kind, key, name)
+        SELECT kind, key, name FROM (
+            SELECT key_kind AS kind, key,
+                   CASE WHEN key_kind = 'domain' THEN key ELSE app_name END AS name,
+                   MAX(last_seen)
+            FROM activities
+            GROUP BY key_kind, key
+        );
+
+        UPDATE activities SET category_id = (
+            SELECT category_id FROM sessions
+            WHERE sessions.activity_id = activities.id AND category_id IS NOT NULL
+            ORDER BY start_time DESC LIMIT 1
+        )
+        WHERE category_id IS NULL AND EXISTS (
+            SELECT 1 FROM sessions
+            WHERE sessions.activity_id = activities.id AND category_id IS NOT NULL
+        );
+
+        CREATE TABLE activities_new (
+            id          INTEGER PRIMARY KEY,
+            source_id   INTEGER NOT NULL REFERENCES sources(id),
+            path        TEXT NOT NULL DEFAULT '',
+            title       TEXT NOT NULL DEFAULT '',
+            category_id INTEGER REFERENCES categories(id)
+        );
+        INSERT INTO activities_new (id, source_id, path, title, category_id)
+        SELECT a.id, src.id,
+               CASE WHEN a.url_key IS NOT NULL
+                         AND substr(a.url_key, 1, length(src.key)) = src.key
+                    THEN substr(a.url_key, length(src.key) + 1)
+                    ELSE '' END,
+               a.title, a.category_id
+        FROM activities a
+        JOIN sources src ON src.kind = a.key_kind AND src.key = a.key;
+
+        CREATE TABLE ai_labels (
+            activity_id INTEGER PRIMARY KEY REFERENCES activities(id),
+            category_id INTEGER NOT NULL REFERENCES categories(id),
+            confidence  REAL,
+            rejected    INTEGER NOT NULL DEFAULT 0 CHECK(rejected IN (0, 1))
+        );
+        INSERT INTO ai_labels (activity_id, category_id, confidence, rejected)
+        SELECT id, COALESCE(ai_category_id, ai_rejected_category_id), ai_confidence,
+               CASE WHEN ai_category_id IS NULL THEN 1 ELSE 0 END
+        FROM activities
+        WHERE ai_category_id IS NOT NULL OR ai_rejected_category_id IS NOT NULL;
+
+        CREATE TABLE sessions_new (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            activity_id INTEGER NOT NULL REFERENCES activities(id),
+            start_time  TEXT NOT NULL,
+            end_time    TEXT
+        );
+        INSERT INTO sessions_new (id, activity_id, start_time, end_time)
+        SELECT id, activity_id, start_time, end_time FROM sessions
+        WHERE activity_id IS NOT NULL;
+
+        DROP TABLE sessions;
+        DROP TABLE activities;
+        ALTER TABLE sessions_new RENAME TO sessions;
+        ALTER TABLE activities_new RENAME TO activities;
+
+        CREATE UNIQUE INDEX idx_activities_identity ON activities(source_id, path, title);
+        CREATE INDEX idx_activities_category ON activities(category_id);
+        CREATE INDEX idx_ai_labels_category ON ai_labels(category_id);
+        CREATE INDEX idx_sessions_start_time ON sessions(start_time);
+        CREATE INDEX idx_sessions_activity ON sessions(activity_id);",
+        ),
     ])
 }
 
@@ -125,7 +209,7 @@ pub fn open_connection(path: &Path) -> Result<SharedConnection> {
 /// `user_version` the 28 migrations this schema replaced ended at. Such a database already
 /// has the squashed schema, so it is stamped as migrated instead of being run again.
 const LEGACY_SCHEMA_VERSION: i64 = 28;
-const LATEST_SCHEMA_VERSION: i64 = 5;
+const LATEST_SCHEMA_VERSION: i64 = 6;
 
 fn migrate(conn: &mut Connection) -> Result<()> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
@@ -138,7 +222,14 @@ fn migrate(conn: &mut Connection) -> Result<()> {
              open it with an older release first, or delete it"
         );
     }
-    migrations().to_latest(conn)?;
+    // `PRAGMA foreign_keys` is a no-op inside a transaction, and rusqlite_migration wraps each
+    // migration in one, so it has to be toggled out here. Off because migration 6 drops a table
+    // still referenced by a table it just created (the reference resolves once the replacement
+    // is renamed into its place); on again before the connection does any real work.
+    conn.pragma_update(None, "foreign_keys", false)?;
+    let result = migrations().to_latest(conn);
+    conn.pragma_update(None, "foreign_keys", true)?;
+    result?;
     Ok(())
 }
 
@@ -148,46 +239,35 @@ fn parse_time(value: &str) -> Option<DateTime<Utc>> {
         .map(|time| time.with_timezone(&Utc))
 }
 
-fn upsert_activity(
-    tx: &rusqlite::Transaction<'_>,
-    key_kind: KeyKind,
-    key: &str,
-    url_key_value: Option<&str>,
-    title: &str,
-    display_title: &str,
-    app_name: &str,
-    url: Option<&str>,
-    seen: &str,
-) -> Result<i64> {
+fn upsert_source(tx: &Transaction<'_>, kind: KeyKind, key: &str, name: &str) -> Result<i64> {
     tx.execute(
-        "INSERT INTO activities
-            (key_kind, key, url_key, title, display_title, app_name, url, first_seen, last_seen)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
-         ON CONFLICT DO NOTHING",
-        params![
-            key_kind.as_str(),
-            key,
-            url_key_value,
-            title,
-            display_title,
-            app_name,
-            url,
-            seen
-        ],
+        "INSERT INTO sources (kind, key, name) VALUES (?1, ?2, ?3) ON CONFLICT DO NOTHING",
+        params![kind.as_str(), key, name],
     )?;
     let id: i64 = tx.query_row(
-        "SELECT id FROM activities WHERE key_kind = ?1 AND key = ?2
-         AND COALESCE(url_key, '') = COALESCE(?3, '') AND title = ?4",
-        params![key_kind.as_str(), key, url_key_value, title],
+        "SELECT id FROM sources WHERE kind = ?1 AND key = ?2",
+        params![kind.as_str(), key],
         |row| row.get(0),
     )?;
+    if !name.is_empty() {
+        tx.execute(
+            "UPDATE sources SET name = ?1 WHERE id = ?2 AND name = ''",
+            params![name, id],
+        )?;
+    }
+    Ok(id)
+}
+
+fn upsert_activity(tx: &Transaction<'_>, source_id: i64, path: &str, title: &str) -> Result<i64> {
     tx.execute(
-        "UPDATE activities SET first_seen = MIN(first_seen, ?1), last_seen = MAX(last_seen, ?1),
-                display_title = CASE WHEN length(?2) > length(display_title) THEN ?2 ELSE display_title END,
-                app_name = CASE WHEN app_name = '' THEN ?3 ELSE app_name END,
-                url = COALESCE(url, ?4)
-         WHERE id = ?5",
-        params![seen, display_title, app_name, url, id],
+        "INSERT INTO activities (source_id, path, title) VALUES (?1, ?2, ?3)
+         ON CONFLICT DO NOTHING",
+        params![source_id, path, title],
+    )?;
+    let id: i64 = tx.query_row(
+        "SELECT id FROM activities WHERE source_id = ?1 AND path = ?2 AND title = ?3",
+        params![source_id, path, title],
+        |row| row.get(0),
     )?;
     Ok(id)
 }
@@ -222,6 +302,14 @@ impl SqliteStore {
     }
 }
 
+/// The source name: the domain itself for a browser tab, or the app's display name.
+fn source_name(key_kind: KeyKind, key: &str, app_name: &str) -> String {
+    match key_kind {
+        KeyKind::Domain => key.to_string(),
+        KeyKind::Exe => app_name.to_string(),
+    }
+}
+
 impl SessionStore for SqliteStore {
     fn start_session(
         &mut self,
@@ -231,29 +319,20 @@ impl SessionStore for SqliteStore {
         at: DateTime<Utc>,
     ) -> Result<i64> {
         let (key_kind, key) = category_key(&app.exe_path, url);
-        let url_key_value = url.and_then(url_key);
+        let path = url.map(url_path).unwrap_or_default();
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let canonical = canonical_title(window_title, &app.app_name, url);
-        let activity_id = upsert_activity(
-            &tx,
-            key_kind,
-            &key,
-            url_key_value.as_deref(),
-            &canonical,
-            window_title,
-            &app.app_name,
-            url,
-            &at.to_rfc3339(),
-        )?;
-        let previous: Option<(i64, Option<i64>, Option<String>)> = tx
+        let source_id = upsert_source(&tx, key_kind, &key, &source_name(key_kind, &key, &app.app_name))?;
+        let activity_id = upsert_activity(&tx, source_id, &path, &canonical)?;
+        let previous: Option<(i64, i64, Option<String>)> = tx
             .query_row(
                 "SELECT id, activity_id, end_time FROM sessions ORDER BY id DESC LIMIT 1",
                 [],
-                |row| Ok((row.get::<_, i64>(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
-        if let Some((id, Some(previous_activity), Some(end_time))) = previous {
+        if let Some((id, previous_activity, Some(end_time))) = previous {
             let within_gap = parse_time(&end_time)
                 .map(|end| at.signed_duration_since(end).num_milliseconds())
                 .is_some_and(|gap| (0..=MERGE_GAP_SECONDS * 1000).contains(&gap));
@@ -267,89 +346,73 @@ impl SessionStore for SqliteStore {
             }
         }
         tx.execute(
-            "INSERT INTO sessions (app_name, exe_path, window_title, url, category_key, category_key_kind, url_key, start_time, activity_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![app.app_name, app.exe_path, window_title, url, key, key_kind.as_str(), url_key_value, at.to_rfc3339(), activity_id],
+            "INSERT INTO sessions (activity_id, start_time) VALUES (?1, ?2)",
+            params![activity_id, at.to_rfc3339()],
         )?;
         let id = tx.last_insert_rowid();
         tx.commit()?;
         Ok(id)
     }
 
-    fn refine_title(&mut self, id: i64, window_title: &str) -> Result<()> {
+    fn refine_title(
+        &mut self,
+        id: i64,
+        app: &AppInfo,
+        window_title: &str,
+        url: Option<&str>,
+    ) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        let current: Option<(String, String, String, Option<String>, i64)> = tx
+        let old_activity_id: Option<i64> = tx
             .query_row(
-                "SELECT s.window_title, s.app_name, s.exe_path, s.url, s.activity_id
-                 FROM sessions s WHERE s.id = ?1",
+                "SELECT activity_id FROM sessions WHERE id = ?1",
                 params![id],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
+                |row| row.get(0),
             )
             .optional()?;
-        let Some((current_title, app_name, exe_path, url, old_activity_id)) = current else {
+        let Some(old_activity_id) = old_activity_id else {
             tx.commit()?;
             return Ok(());
         };
-        if title_quality(window_title, &app_name, url.as_deref())
-            <= title_quality(&current_title, &app_name, url.as_deref())
-        {
+        let current_title: String = tx.query_row(
+            "SELECT title FROM activities WHERE id = ?1",
+            params![old_activity_id],
+            |row| row.get(0),
+        )?;
+        let canonical = canonical_title(window_title, &app.app_name, url);
+        if canonical.is_empty() || !current_title.is_empty() {
             tx.commit()?;
             return Ok(());
         }
-        let (key_kind, key) = category_key(&exe_path, url.as_deref());
-        let canonical = canonical_title(window_title, &app_name, url.as_deref());
-        let target_id = upsert_activity(
-            &tx,
-            key_kind,
-            &key,
-            url.as_deref().and_then(url_key).as_deref(),
-            &canonical,
-            window_title,
-            &app_name,
-            url.as_deref(),
-            &Utc::now().to_rfc3339(),
+        let (key_kind, key) = category_key(&app.exe_path, url);
+        let path = url.map(url_path).unwrap_or_default();
+        let source_id = upsert_source(&tx, key_kind, &key, &source_name(key_kind, &key, &app.app_name))?;
+        let target_id = upsert_activity(&tx, source_id, &path, &canonical)?;
+        let old_pin: Option<i64> = tx.query_row(
+            "SELECT category_id FROM activities WHERE id = ?1",
+            params![old_activity_id],
+            |row| row.get(0),
         )?;
-        if target_id != old_activity_id {
-            let old_pin: Option<i64> = tx.query_row(
-                "SELECT category_id FROM activities WHERE id = ?1",
-                params![old_activity_id],
-                |row| row.get(0),
-            )?;
-            let target_pin: Option<i64> = tx.query_row(
-                "SELECT category_id FROM activities WHERE id = ?1",
-                params![target_id],
-                |row| row.get(0),
-            )?;
-            if old_pin.is_some() && target_pin.is_some() && old_pin != target_pin {
-                tx.commit()?;
-                return Ok(());
-            }
-            if let Some(old_pin) = old_pin {
-                tx.execute(
-                    "UPDATE activities SET category_id = COALESCE(category_id, ?1) WHERE id = ?2",
-                    params![old_pin, target_id],
-                )?;
-            }
+        let target_pin: Option<i64> = tx.query_row(
+            "SELECT category_id FROM activities WHERE id = ?1",
+            params![target_id],
+            |row| row.get(0),
+        )?;
+        if old_pin.is_some() && target_pin.is_some() && old_pin != target_pin {
+            tx.commit()?;
+            return Ok(());
+        }
+        if let Some(old_pin) = old_pin {
             tx.execute(
-                "UPDATE sessions SET window_title = ?1, activity_id = ?2 WHERE id = ?3",
-                params![window_title, target_id, id],
-            )?;
-            prune_orphan_activity(&tx, old_activity_id)?;
-        } else {
-            tx.execute(
-                "UPDATE sessions SET window_title = ?1 WHERE id = ?2",
-                params![window_title, id],
+                "UPDATE activities SET category_id = COALESCE(category_id, ?1) WHERE id = ?2",
+                params![old_pin, target_id],
             )?;
         }
+        tx.execute(
+            "UPDATE sessions SET activity_id = ?1 WHERE id = ?2",
+            params![target_id, id],
+        )?;
+        prune_orphan_activity(&tx, old_activity_id)?;
         tx.commit()?;
         Ok(())
     }
@@ -387,7 +450,7 @@ impl SessionStore for SqliteStore {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let ids: Vec<i64> = tx
-            .prepare("SELECT DISTINCT activity_id FROM sessions WHERE end_time IS NULL AND activity_id IS NOT NULL")?
+            .prepare("SELECT DISTINCT activity_id FROM sessions WHERE end_time IS NULL")?
             .query_map([], |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         tx.execute("DELETE FROM sessions WHERE end_time IS NULL", [])?;
@@ -400,10 +463,23 @@ impl SessionStore for SqliteStore {
 }
 
 fn prune_orphan_activity(tx: &rusqlite::Transaction<'_>, id: i64) -> Result<()> {
+    let source_id: Option<i64> = tx
+        .query_row(
+            "SELECT source_id FROM activities WHERE id = ?1 AND category_id IS NULL
+             AND NOT EXISTS (SELECT 1 FROM sessions WHERE activity_id = ?1)",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(source_id) = source_id else {
+        return Ok(());
+    };
+    tx.execute("DELETE FROM ai_labels WHERE activity_id = ?1", params![id])?;
+    tx.execute("DELETE FROM activities WHERE id = ?1", params![id])?;
     tx.execute(
-        "DELETE FROM activities WHERE id = ?1 AND category_id IS NULL
-         AND NOT EXISTS (SELECT 1 FROM sessions WHERE activity_id = ?1)",
-        params![id],
+        "DELETE FROM sources WHERE id = ?1
+         AND NOT EXISTS (SELECT 1 FROM activities WHERE source_id = ?1)",
+        params![source_id],
     )?;
     Ok(())
 }

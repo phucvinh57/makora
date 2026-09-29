@@ -15,7 +15,10 @@ use tauri::Manager;
 use tracing::{error, info};
 
 use crate::focus::{FocusWatcher, PlatformFocusWatcher, SessionTracker, WatchEvent};
-use crate::store::{open_connection, CategoryStore, HistoryReader, SqliteStore};
+use crate::store::{
+    open_connection, CategoryStore, HistoryStore, SqliteCategoryStore, SqliteHistoryStore,
+    SqliteStore,
+};
 
 type SharedTracker = Arc<Mutex<SessionTracker<SqliteStore>>>;
 
@@ -26,6 +29,7 @@ pub fn run() {
             tray::show_main_window(app);
         }));
 
+    // Do not autostart on dev mode
     if !cfg!(debug_assertions) {
         builder = builder.plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -61,7 +65,7 @@ pub fn run() {
             commands::ai_feedback_stats,
         ])
         .setup(|app| {
-            let data_dir = app_data_dir(app.handle())?;
+            let data_dir = app.path().app_data_dir()?;
             match logging::init(&data_dir) {
                 Ok(Some(dir)) => info!(directory = %dir.display(), "writing logs"),
                 Ok(None) => {}
@@ -78,10 +82,10 @@ pub fn run() {
             let tracker: SharedTracker = Arc::new(Mutex::new(
                 SessionTracker::new(store).context("initializing session tracker")?,
             ));
-
-            app.manage(HistoryReader::new(conn.clone()));
-            app.manage(CategoryStore::new(conn));
             ai::llm::set_download_root(data_dir.join("models"));
+
+            app.manage(Box::new(SqliteHistoryStore::new(conn.clone())) as Box<dyn HistoryStore>);
+            app.manage(Box::new(SqliteCategoryStore::new(conn)) as Box<dyn CategoryStore>);
             app.manage(commands::AiCategorizeState::default());
             app.manage(commands::ModelDownloadState::default());
             app.manage(ai::llm::ModelCache::default());
@@ -141,10 +145,4 @@ pub fn run() {
                 }
             }
         });
-}
-
-fn app_data_dir(app: &tauri::AppHandle) -> anyhow::Result<std::path::PathBuf> {
-    app.path()
-        .app_data_dir()
-        .context("could not resolve a per-user application data directory")
 }

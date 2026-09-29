@@ -1,9 +1,10 @@
 export interface SessionRow {
   id: number;
-  activity_id: number | null;
+  activity_id: number;
   app_name: string;
-  exe_path: string;
-  window_title: string;
+  source_kind: KeyKind;
+  source_key: string;
+  title: string;
   url: string | null;
   start_time: string;
   end_time: string | null;

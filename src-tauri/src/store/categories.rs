@@ -3,6 +3,7 @@ use rusqlite::{named_params, params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use super::sqlite::SharedConnection;
+use super::CategoryStore;
 use crate::category::CategoryTree;
 
 #[derive(Debug, Clone, Serialize)]
@@ -19,7 +20,6 @@ pub struct CategorizationResetOutcome {
     pub sessions_cleared: i64,
 }
 
-/// Fields for a category that does not exist yet.
 #[derive(Debug, Clone)]
 pub struct NewCategory {
     pub name: String,
@@ -124,11 +124,6 @@ pub struct FeedbackStats {
     pub reviewed_seconds: f64,
 }
 
-/// An activity no session of which is pinned on its own: the only ones an AI label can show
-/// through for, since a session pin outranks it.
-const NO_SESSION_PIN: &str = "NOT EXISTS (SELECT 1 FROM sessions s
-                                          WHERE s.activity_id = a.id AND s.category_id IS NOT NULL)";
-
 /// Labels the model was at least this sure of are left out of the default review queue.
 const CONFIDENT: f64 = 0.85;
 
@@ -136,7 +131,10 @@ const CONFIDENT: f64 = 0.85;
 const SECONDS: &str =
     "COALESCE(SUM((julianday(s.end_time) - julianday(s.start_time)) * 86400.0), 0.0)";
 
-pub struct CategoryStore {
+/// Rebuilds the browsable URL for a domain activity, `NULL` for an exe one.
+const ACTIVITY_URL: &str = "CASE WHEN src.kind = 'domain' THEN 'https://' || src.key || a.path END";
+
+pub struct SqliteCategoryStore {
     conn: SharedConnection,
 }
 
@@ -181,19 +179,13 @@ pub(super) fn load_category_tree(conn: &rusqlite::Connection) -> Result<Category
     Ok(CategoryTree::new(categories))
 }
 
-/// Pins one activity and every session of it. Clearing a pin also rejects the AI label that
-/// would otherwise show through, so "Uncategorized" sticks and the model learns from it.
-fn pin_activity(
-    tx: &rusqlite::Transaction<'_>,
-    activity_id: i64,
-    category_id: Option<i64>,
-) -> Result<()> {
+/// Pins one activity to `category_id` (or unpins with `None`). Unpinning also rejects the AI
+/// label it carries, if any, so "Uncategorized" sticks and the model learns from it.
+fn pin_activity(tx: &rusqlite::Transaction<'_>, activity_id: i64, category_id: Option<i64>) -> Result<()> {
     if category_id.is_none() {
         tx.execute(
-            "UPDATE activities
-             SET ai_rejected_category_id = ai_category_id, ai_category_id = NULL,
-                 ai_confidence = NULL
-             WHERE id = ?1 AND ai_category_id IS NOT NULL",
+            "UPDATE ai_labels SET rejected = 1, confidence = NULL
+             WHERE activity_id = ?1 AND rejected = 0",
             params![activity_id],
         )?;
     }
@@ -201,21 +193,48 @@ fn pin_activity(
         "UPDATE activities SET category_id = ?1 WHERE id = ?2",
         params![category_id, activity_id],
     )?;
-    tx.execute(
-        "UPDATE sessions SET category_id = ?1 WHERE activity_id = ?2",
-        params![category_id, activity_id],
-    )?;
     Ok(())
 }
 
-impl CategoryStore {
+impl SqliteCategoryStore {
     pub fn new(conn: SharedConnection) -> Self {
         Self { conn }
     }
 
+    /// The `WHERE` clause for pending AI labels under `filter`, or `None` when the category
+    /// filter can match nothing. Binds `:uncertain` and `:confident`.
+    fn pending_clause(conn: &rusqlite::Connection, filter: &ReviewFilter) -> Result<Option<String>> {
+        let scope = match filter.category {
+            Some(id) => {
+                let ids = load_category_tree(conn)?.descendants(id);
+                if ids.is_empty() {
+                    return Ok(None);
+                }
+                // Ids are integers, so inlining them is safe.
+                let ids = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+                format!("AND l.category_id IN ({ids})")
+            }
+            None => String::new(),
+        };
+        let only = match &filter.activities {
+            Some(ids) => format!(
+                "AND a.id IN ({})",
+                ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
+            ),
+            None => String::new(),
+        };
+        Ok(Some(format!(
+            "a.category_id IS NULL AND l.rejected = 0
+             {scope} {only}
+             AND (:uncertain = 0 OR l.confidence IS NULL OR l.confidence < :confident)"
+        )))
+    }
+}
+
+impl CategoryStore for SqliteCategoryStore {
     /// Every category, flat — the caller (the UI) assembles the tree from `parent_id`.
     /// Siblings come out in the order they should be shown under their parent.
-    pub fn list(&self) -> Result<Vec<Category>> {
+    fn list(&self) -> Result<Vec<Category>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, name, color, parent_id, description FROM categories
@@ -235,13 +254,12 @@ impl CategoryStore {
         Ok(rows)
     }
 
-    #[allow(dead_code)]
-    pub fn get(&self, id: i64) -> Result<Option<Category>> {
+    fn get(&self, id: i64) -> Result<Option<Category>> {
         let conn = self.conn.lock().unwrap();
         get_category(&conn, id)
     }
 
-    pub fn create(&self, new: &NewCategory) -> Result<Category> {
+    fn create(&self, new: &NewCategory) -> Result<Category> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO categories (name, color, parent_id, description)
@@ -259,7 +277,7 @@ impl CategoryStore {
     }
 
     /// Replaces every editable field.
-    pub fn update(&self, id: i64, new: &NewCategory) -> Result<Category> {
+    fn update(&self, id: i64, new: &NewCategory) -> Result<Category> {
         let conn = self.conn.lock().unwrap();
         if let Some(parent_id) = new.parent_id {
             // Re-parenting a category under itself or under one of its own descendants would
@@ -291,7 +309,7 @@ impl CategoryStore {
 
     /// Deletes a category *and everything nested under it* — a subcategory has no meaning
     /// without its parent, so the whole branch goes, taking its pins with it.
-    pub fn delete(&self, id: i64) -> Result<()> {
+    fn delete(&self, id: i64) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let doomed = load_category_tree(&tx)?.deletion_order(id);
@@ -307,11 +325,7 @@ impl CategoryStore {
             .join(",");
         tx.execute_batch(&format!(
             "UPDATE activities SET category_id = NULL WHERE category_id IN ({ids});
-             UPDATE activities SET ai_category_id = NULL, ai_confidence = NULL
-                 WHERE ai_category_id IN ({ids});
-             UPDATE activities SET ai_rejected_category_id = NULL
-                 WHERE ai_rejected_category_id IN ({ids});
-             UPDATE sessions SET category_id = NULL WHERE category_id IN ({ids});
+             DELETE FROM ai_labels WHERE category_id IN ({ids});
              DELETE FROM categories WHERE id IN ({ids});"
         ))?;
         tx.commit()?;
@@ -319,21 +333,21 @@ impl CategoryStore {
     }
 
     /// Pins the activity behind each session row to `category_id` (or unpins with `None`).
-    pub fn assign_sessions(&self, session_ids: &[i64], category_id: Option<i64>) -> Result<()> {
+    fn assign_sessions(&self, session_ids: &[i64], category_id: Option<i64>) -> Result<()> {
         if session_ids.is_empty() {
             return Ok(());
         }
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         for session_id in session_ids {
-            let activity_id: Option<Option<i64>> = tx
+            let activity_id: Option<i64> = tx
                 .query_row(
                     "SELECT activity_id FROM sessions WHERE id = ?1",
                     params![session_id],
                     |row| row.get(0),
                 )
                 .optional()?;
-            if let Some(Some(activity_id)) = activity_id {
+            if let Some(activity_id) = activity_id {
                 pin_activity(&tx, activity_id, category_id)?;
             }
         }
@@ -342,7 +356,7 @@ impl CategoryStore {
     }
 
     /// Like [`assign_sessions`](Self::assign_sessions), for activities picked directly.
-    pub fn assign_activities(&self, activity_ids: &[i64], category_id: Option<i64>) -> Result<()> {
+    fn assign_activities(&self, activity_ids: &[i64], category_id: Option<i64>) -> Result<()> {
         if activity_ids.is_empty() {
             return Ok(());
         }
@@ -356,26 +370,21 @@ impl CategoryStore {
     }
 
     /// Turns each activity's AI label into a manual pin.
-    pub fn accept_ai_labels(&self, activity_ids: &[i64]) -> Result<()> {
+    fn accept_ai_labels(&self, activity_ids: &[i64]) -> Result<()> {
         if activity_ids.is_empty() {
             return Ok(());
         }
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         for activity_id in activity_ids {
-            let accepted = tx.execute(
-                "UPDATE activities SET category_id = ai_category_id
-                 WHERE id = ?1 AND category_id IS NULL AND ai_category_id IS NOT NULL",
+            tx.execute(
+                "UPDATE activities SET category_id = (
+                     SELECT category_id FROM ai_labels WHERE activity_id = ?1 AND rejected = 0
+                 )
+                 WHERE id = ?1 AND category_id IS NULL
+                   AND EXISTS (SELECT 1 FROM ai_labels WHERE activity_id = ?1 AND rejected = 0)",
                 params![activity_id],
             )?;
-            if accepted > 0 {
-                tx.execute(
-                    "UPDATE sessions
-                     SET category_id = (SELECT category_id FROM activities WHERE id = ?1)
-                     WHERE activity_id = ?1",
-                    params![activity_id],
-                )?;
-            }
         }
         tx.commit()?;
         Ok(())
@@ -383,23 +392,19 @@ impl CategoryStore {
 
     /// Clears every pinned category in one transaction while keeping the taxonomy and
     /// tracking history intact.
-    pub fn reset_categorization(&self) -> Result<CategorizationResetOutcome> {
+    fn reset_categorization(&self) -> Result<CategorizationResetOutcome> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
 
         let sessions_cleared: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM sessions s LEFT JOIN activities a ON a.id = s.activity_id
-             WHERE COALESCE(a.category_id, s.category_id, a.ai_category_id) IS NOT NULL",
+            "SELECT COUNT(*) FROM sessions s JOIN activities a ON a.id = s.activity_id
+             LEFT JOIN ai_labels l ON l.activity_id = a.id AND l.rejected = 0
+             WHERE COALESCE(a.category_id, l.category_id) IS NOT NULL",
             [],
             |row| row.get(0),
         )?;
-        tx.execute(
-            "UPDATE activities
-             SET category_id = NULL, ai_category_id = NULL, ai_rejected_category_id = NULL,
-                 ai_confidence = NULL",
-            [],
-        )?;
-        tx.execute("UPDATE sessions SET category_id = NULL", [])?;
+        tx.execute("DELETE FROM ai_labels", [])?;
+        tx.execute("UPDATE activities SET category_id = NULL", [])?;
 
         tx.commit()?;
         Ok(CategorizationResetOutcome { sessions_cleared })
@@ -408,19 +413,19 @@ impl CategoryStore {
     /// Activities for the LLM to label, most recently seen first. Normally those with neither a
     /// pin nor an AI label nor a rejected one; with `recheck`, those carrying an AI label the
     /// user has not confirmed.
-    pub fn get_activities_to_label(&self, recheck: bool) -> Result<Vec<UncategorizedActivity>> {
+    fn get_activities_to_label(&self, recheck: bool) -> Result<Vec<UncategorizedActivity>> {
         let wanted = if recheck {
-            "a.ai_category_id IS NOT NULL"
+            "EXISTS (SELECT 1 FROM ai_labels l WHERE l.activity_id = a.id AND l.rejected = 0)"
         } else {
-            "a.ai_category_id IS NULL AND a.ai_rejected_category_id IS NULL"
+            "NOT EXISTS (SELECT 1 FROM ai_labels l WHERE l.activity_id = a.id)"
         };
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(&format!(
-            "SELECT a.id, a.key_kind, a.key, a.app_name, a.url,
-                    COALESCE(NULLIF(a.display_title, ''), a.title)
+            "SELECT a.id, src.kind, src.key, src.name, {ACTIVITY_URL}, a.title
              FROM activities a
-             WHERE a.category_id IS NULL AND {wanted} AND {NO_SESSION_PIN}
-             ORDER BY a.last_seen DESC"
+             JOIN sources src ON src.id = a.source_id
+             WHERE a.category_id IS NULL AND {wanted}
+             ORDER BY (SELECT MAX(start_time) FROM sessions WHERE activity_id = a.id) DESC"
         ))?;
         let rows = stmt
             .query_map([], |row| {
@@ -440,7 +445,7 @@ impl CategoryStore {
     /// Stores AI labels as `(activity_id, category_id, confidence)`; `None` clears a label the
     /// model no longer stands by. A manual pin made in the meantime is untouched: reads prefer it over
     /// the AI label. Returns how many labels actually changed.
-    pub fn assign_ai(&self, labels: &[(i64, Option<i64>, f64)]) -> Result<usize> {
+    fn assign_ai(&self, labels: &[(i64, Option<i64>, f64)]) -> Result<usize> {
         if labels.is_empty() {
             return Ok(0);
         }
@@ -448,27 +453,39 @@ impl CategoryStore {
         let tx = conn.transaction()?;
         let mut changed = 0;
         {
-            let mut set = tx.prepare(
-                "UPDATE activities SET ai_category_id = ?2
-                 WHERE id = ?1 AND category_id IS NULL AND ai_category_id IS NOT ?2
-                   AND EXISTS (SELECT 1 FROM categories WHERE id = ?2)",
+            let mut is_unpinned = tx.prepare(
+                "SELECT 1 FROM activities WHERE id = ?1 AND category_id IS NULL",
+            )?;
+            let mut category_exists = tx.prepare("SELECT 1 FROM categories WHERE id = ?1")?;
+            let mut current = tx.prepare(
+                "SELECT category_id FROM ai_labels WHERE activity_id = ?1 AND rejected = 0",
             )?;
             // Not counted as a change: a re-check that lands on the same category only
             // refreshes how sure the model was.
-            let mut confidence_stmt = tx.prepare(
-                "UPDATE activities SET ai_confidence = ?2
-                 WHERE id = ?1 AND category_id IS NULL AND ai_category_id IS NOT NULL",
+            let mut upsert = tx.prepare(
+                "INSERT INTO ai_labels (activity_id, category_id, confidence, rejected)
+                 VALUES (?1, ?2, ?3, 0)
+                 ON CONFLICT(activity_id) DO UPDATE
+                     SET category_id = excluded.category_id, confidence = excluded.confidence,
+                         rejected = 0",
             )?;
             let mut clear = tx.prepare(
-                "UPDATE activities SET ai_category_id = NULL, ai_confidence = NULL
-                 WHERE id = ?1 AND category_id IS NULL AND ai_category_id IS NOT NULL",
+                "DELETE FROM ai_labels WHERE activity_id = ?1 AND rejected = 0",
             )?;
             for (activity_id, category_id, confidence) in labels {
+                if !is_unpinned.exists(params![activity_id])? {
+                    continue;
+                }
                 changed += match category_id {
                     Some(category_id) => {
-                        let n = set.execute(params![activity_id, category_id])?;
-                        confidence_stmt.execute(params![activity_id, confidence])?;
-                        n
+                        if !category_exists.exists(params![category_id])? {
+                            continue;
+                        }
+                        let before: Option<i64> = current
+                            .query_row(params![activity_id], |row| row.get(0))
+                            .optional()?;
+                        upsert.execute(params![activity_id, category_id, confidence])?;
+                        usize::from(before != Some(*category_id))
                     }
                     None => clear.execute(params![activity_id])?,
                 };
@@ -479,15 +496,19 @@ impl CategoryStore {
     }
 
     /// Every activity the user has pinned or rejected an AI label for, newest first.
-    pub fn labeled_activities(&self) -> Result<Vec<LabeledActivity>> {
+    fn labeled_activities(&self) -> Result<Vec<LabeledActivity>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT key_kind, key, app_name, url, COALESCE(NULLIF(display_title, ''), title),
-                    category_id, ai_category_id, ai_rejected_category_id
-             FROM activities
-             WHERE category_id IS NOT NULL OR ai_rejected_category_id IS NOT NULL
-             ORDER BY last_seen DESC",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT src.kind, src.key, src.name, {ACTIVITY_URL}, a.title,
+                    a.category_id,
+                    CASE WHEN l.rejected = 0 THEN l.category_id END,
+                    CASE WHEN l.rejected = 1 THEN l.category_id END
+             FROM activities a
+             JOIN sources src ON src.id = a.source_id
+             LEFT JOIN ai_labels l ON l.activity_id = a.id
+             WHERE a.category_id IS NOT NULL OR l.rejected = 1
+             ORDER BY (SELECT MAX(start_time) FROM sessions WHERE activity_id = a.id) DESC"
+        ))?;
         let rows = stmt
             .query_map([], |row| {
                 Ok(LabeledActivity {
@@ -505,38 +526,9 @@ impl CategoryStore {
         Ok(rows)
     }
 
-    /// The `WHERE` clause for pending AI labels under `filter`, or `None` when the category
-    /// filter can match nothing. Binds `:uncertain` and `:confident`.
-    fn pending_clause(conn: &rusqlite::Connection, filter: &ReviewFilter) -> Result<Option<String>> {
-        let scope = match filter.category {
-            Some(id) => {
-                let ids = load_category_tree(conn)?.descendants(id);
-                if ids.is_empty() {
-                    return Ok(None);
-                }
-                // Ids are integers, so inlining them is safe.
-                let ids = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
-                format!("AND a.ai_category_id IN ({ids})")
-            }
-            None => String::new(),
-        };
-        let only = match &filter.activities {
-            Some(ids) => format!(
-                "AND a.id IN ({})",
-                ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
-            ),
-            None => String::new(),
-        };
-        Ok(Some(format!(
-            "a.category_id IS NULL AND a.ai_category_id IS NOT NULL AND {NO_SESSION_PIN}
-             {scope} {only}
-             AND (:uncertain = 0 OR a.ai_confidence IS NULL OR a.ai_confidence < :confident)"
-        )))
-    }
-
     /// AI labels awaiting review, longest-tracked first so the ones that matter come up first.
     /// Filtering by a category includes everything under it.
-    pub fn ai_review_page(
+    fn ai_review_page(
         &self,
         page: i64,
         page_size: i64,
@@ -553,6 +545,7 @@ impl CategoryStore {
             &format!(
                 "SELECT COUNT(*) FROM (
                      SELECT a.id FROM activities a
+                     JOIN ai_labels l ON l.activity_id = a.id
                      LEFT JOIN sessions s ON s.activity_id = a.id AND s.end_time IS NOT NULL
                      WHERE {pending}
                      GROUP BY a.id
@@ -565,10 +558,12 @@ impl CategoryStore {
             |row| row.get(0),
         )?;
         let mut stmt = conn.prepare(&format!(
-            "SELECT a.id, a.app_name, a.url, COALESCE(NULLIF(a.display_title, ''), a.title),
+            "SELECT a.id, src.name, {ACTIVITY_URL}, a.title,
                     cat.id, cat.name, cat.color, {SECONDS}, COUNT(s.id)
              FROM activities a
-             JOIN categories cat ON cat.id = a.ai_category_id
+             JOIN sources src ON src.id = a.source_id
+             JOIN ai_labels l ON l.activity_id = a.id
+             JOIN categories cat ON cat.id = l.category_id
              LEFT JOIN sessions s ON s.activity_id = a.id AND s.end_time IS NOT NULL
              WHERE {pending}
              GROUP BY a.id
@@ -603,7 +598,7 @@ impl CategoryStore {
 
     /// The pending AI labels folded into one row per source and suggested category, the
     /// longest-tracked first. `filter.activities` is ignored: a group picks its own members.
-    pub fn ai_review_groups(
+    fn ai_review_groups(
         &self,
         page: i64,
         page_size: i64,
@@ -621,14 +616,16 @@ impl CategoryStore {
             });
         };
         let grouped = format!(
-            "SELECT a.key_kind, a.key, MIN(a.app_name), cat.id, cat.name, cat.color,
-                    COUNT(DISTINCT a.id), {SECONDS}, MIN(a.ai_confidence),
+            "SELECT src.kind, src.key, MIN(src.name), cat.id, cat.name, cat.color,
+                    COUNT(DISTINCT a.id), {SECONDS}, MIN(l.confidence),
                     GROUP_CONCAT(DISTINCT a.id)
              FROM activities a
-             JOIN categories cat ON cat.id = a.ai_category_id
+             JOIN sources src ON src.id = a.source_id
+             JOIN ai_labels l ON l.activity_id = a.id
+             JOIN categories cat ON cat.id = l.category_id
              LEFT JOIN sessions s ON s.activity_id = a.id AND s.end_time IS NOT NULL
              WHERE {pending}
-             GROUP BY a.key_kind, a.key, cat.id
+             GROUP BY src.id, cat.id
              HAVING {SECONDS} >= :min"
         );
         let total: i64 = conn.query_row(
@@ -640,7 +637,7 @@ impl CategoryStore {
             |row| row.get(0),
         )?;
         let mut stmt = conn.prepare(&format!(
-            "{grouped} ORDER BY 8 DESC, a.key_kind, a.key LIMIT :limit OFFSET :offset"
+            "{grouped} ORDER BY 8 DESC, src.kind, src.key LIMIT :limit OFFSET :offset"
         ))?;
         let groups = stmt
             .query_map(
@@ -669,22 +666,22 @@ impl CategoryStore {
         Ok(AiReviewGroupPage { groups, total })
     }
 
-    pub fn feedback_stats(&self) -> Result<FeedbackStats> {
+    fn feedback_stats(&self) -> Result<FeedbackStats> {
         let conn = self.conn.lock().unwrap();
         let mut stats = conn.query_row(
-            &format!(
-                "SELECT
-                   COALESCE(SUM(category_id IS NOT NULL AND (
-                       ai_category_id != category_id
-                       OR (ai_category_id IS NULL AND ai_rejected_category_id IS NOT NULL))), 0),
-                   COALESCE(SUM(category_id IS NOT NULL AND ai_category_id = category_id), 0),
-                   COALESCE(SUM(category_id IS NOT NULL AND ai_category_id IS NULL
-                                AND ai_rejected_category_id IS NULL), 0),
-                   COALESCE(SUM(category_id IS NULL AND ai_rejected_category_id IS NOT NULL), 0),
-                   COALESCE(SUM(category_id IS NULL AND ai_category_id IS NOT NULL
-                                AND {NO_SESSION_PIN}), 0)
-                 FROM activities a"
-            ),
+            "SELECT
+               COALESCE(SUM(a.category_id IS NOT NULL AND (
+                   (l.rejected = 0 AND l.category_id != a.category_id)
+                   OR (l.activity_id IS NULL AND rej.activity_id IS NOT NULL))), 0),
+               COALESCE(SUM(a.category_id IS NOT NULL AND l.rejected = 0
+                            AND l.category_id = a.category_id), 0),
+               COALESCE(SUM(a.category_id IS NOT NULL AND l.activity_id IS NULL
+                            AND rej.activity_id IS NULL), 0),
+               COALESCE(SUM(a.category_id IS NULL AND rej.activity_id IS NOT NULL), 0),
+               COALESCE(SUM(a.category_id IS NULL AND l.activity_id IS NOT NULL), 0)
+             FROM activities a
+             LEFT JOIN ai_labels l ON l.activity_id = a.id AND l.rejected = 0
+             LEFT JOIN ai_labels rej ON rej.activity_id = a.id AND rej.rejected = 1",
             [],
             |row| {
                 Ok(FeedbackStats {
@@ -699,20 +696,19 @@ impl CategoryStore {
         )?;
         // Time, not rows: a few long activities matter more than many short ones.
         let (pending, reviewed) = conn.query_row(
-            &format!(
-                "SELECT COALESCE(SUM(CASE WHEN pending THEN secs END), 0.0),
-                        COALESCE(SUM(CASE WHEN reviewed THEN secs END), 0.0)
-                 FROM (
-                   SELECT (a.category_id IS NULL AND a.ai_category_id IS NOT NULL
-                           AND {NO_SESSION_PIN}) AS pending,
-                          ((a.ai_category_id IS NOT NULL AND a.category_id IS NOT NULL)
-                           OR a.ai_rejected_category_id IS NOT NULL) AS reviewed,
-                          (SELECT COALESCE(SUM((julianday(s.end_time) - julianday(s.start_time))
-                                               * 86400.0), 0.0)
-                           FROM sessions s
-                           WHERE s.activity_id = a.id AND s.end_time IS NOT NULL) AS secs
-                   FROM activities a)"
-            ),
+            "SELECT COALESCE(SUM(CASE WHEN pending THEN secs END), 0.0),
+                    COALESCE(SUM(CASE WHEN reviewed THEN secs END), 0.0)
+             FROM (
+               SELECT (a.category_id IS NULL AND l.activity_id IS NOT NULL) AS pending,
+                      ((l.activity_id IS NOT NULL AND a.category_id IS NOT NULL)
+                       OR rej.activity_id IS NOT NULL) AS reviewed,
+                      (SELECT COALESCE(SUM((julianday(s.end_time) - julianday(s.start_time))
+                                           * 86400.0), 0.0)
+                       FROM sessions s
+                       WHERE s.activity_id = a.id AND s.end_time IS NOT NULL) AS secs
+               FROM activities a
+               LEFT JOIN ai_labels l ON l.activity_id = a.id AND l.rejected = 0
+               LEFT JOIN ai_labels rej ON rej.activity_id = a.id AND rej.rejected = 1)",
             [],
             |row| Ok((row.get::<_, f64>(0)?, row.get::<_, f64>(1)?)),
         )?;

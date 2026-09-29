@@ -51,11 +51,6 @@ const MIN_COLUMN_WIDTHS: Record<keyof typeof DEFAULT_COLUMN_WIDTHS, number> = {
 
 type ResizableColumn = keyof typeof DEFAULT_COLUMN_WIDTHS;
 
-function exeFileName(exePath: string): string {
-  const segments = exePath.split(/[\\/]/);
-  return (segments[segments.length - 1] || exePath).toLowerCase();
-}
-
 function openSite(url: string) {
   void openUrl(url).catch((error) => {
     toast.error("Could not open site", { description: String(error) });
@@ -271,7 +266,7 @@ export function SessionsTable({
                         {row.app_name}
                       </TooltipTrigger>
                       <TooltipContent className="cursor-text">
-                        {exeFileName(row.exe_path)}
+                        {row.source_key}
                       </TooltipContent>
                     </Tooltip>
                   </TableCell>
@@ -317,18 +312,17 @@ export function SessionsTable({
                           {categoryOptions(categories)}
                         </SelectContent>
                       </Select>
-                      {row.category_source === "ai" &&
-                        row.activity_id !== null && (
-                          <Button
-                            size="icon-xs"
-                            variant="ghost"
-                            aria-label="Accept AI label"
-                            title="Accept this AI label"
-                            onClick={() => onAcceptAiLabel(row)}
-                          >
-                            <Check />
-                          </Button>
-                        )}
+                      {row.category_source === "ai" && (
+                        <Button
+                          size="icon-xs"
+                          variant="ghost"
+                          aria-label="Accept AI label"
+                          title="Accept this AI label"
+                          onClick={() => onAcceptAiLabel(row)}
+                        >
+                          <Check />
+                        </Button>
+                      )}
                     </div>
                   </TableCell>
                   <TableCell
@@ -356,12 +350,11 @@ export function SessionsTable({
                   <TableCell className="truncate">
                     <Tooltip>
                       <TooltipTrigger className="block w-full truncate text-left">
-                        {row.window_title}
+                        {row.title || row.url || row.app_name}
                       </TooltipTrigger>
                       <TooltipContent className="max-w-lg cursor-text whitespace-pre-wrap wrap-break-word">
-                        {row.url
-                          ? `${row.window_title}\n${row.url}`
-                          : row.window_title}
+                        {[row.title, row.url].filter(Boolean).join("\n") ||
+                          row.app_name}
                       </TooltipContent>
                     </Tooltip>
                   </TableCell>

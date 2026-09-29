@@ -172,14 +172,14 @@ function HistoryPage() {
         ? categoryPath(category, categories)
         : "category";
       toast.success(`Set to ${categoryName}`, {
-        description: row.window_title,
+        description: row.title ?? row.url ?? row.app_name,
       });
     },
     onError: (err) => toast.error(String(err)),
   });
 
   const acceptAiMutation = useMutation({
-    mutationFn: (row: SessionRow) => acceptAiLabels([row.activity_id!]),
+    mutationFn: (row: SessionRow) => acceptAiLabels([row.activity_id]),
     onSuccess: invalidateSessions,
     onError: (err) => toast.error(String(err)),
   });

@@ -128,6 +128,23 @@ pub fn url_key(url: &str) -> Option<String> {
     Some(key)
 }
 
+/// What `url_key` gives after the domain, so an activity's `path` column can be rebuilt without
+/// storing the domain a second time. `""` when the URL has neither path nor query.
+pub fn url_path(url: &str) -> String {
+    let Some(key) = url_key(url) else {
+        return String::new();
+    };
+    let Some(domain) = normalized_domain(url) else {
+        return String::new();
+    };
+    key.strip_prefix(&domain).unwrap_or("").to_string()
+}
+
+/// Rebuilds a browsable URL from a domain source's key and an activity's `path`.
+pub fn source_url(key: &str, path: &str) -> String {
+    format!("https://{key}{path}")
+}
+
 /// `domain/path` with the scheme, `www.`, query and fragment dropped — what a page is about
 /// without the tracking noise.
 pub fn url_location(url: &str) -> Option<String> {

@@ -1,16 +1,20 @@
 use anyhow::Result;
 use serde::Serialize;
 
+use crate::category::source_url;
+
 use super::categories::load_category_tree;
 use super::sqlite::SharedConnection;
+use super::HistoryStore;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionRow {
     pub id: i64,
-    pub activity_id: Option<i64>,
+    pub activity_id: i64,
     pub app_name: String,
-    pub exe_path: String,
-    pub window_title: String,
+    pub source_kind: String,
+    pub source_key: String,
+    pub title: String,
     pub url: Option<String>,
     pub start_time: String,
     pub end_time: Option<String>,
@@ -55,33 +59,37 @@ pub struct DailyStat {
 
 const TOP_APPS_LIMIT: i64 = 15;
 
-pub struct HistoryReader {
+/// `sessions` joined out to its activity, source and resolved category. A manual pin
+/// (`a.category_id`) always wins over a pending AI label (`l.category_id`, only when not
+/// rejected).
+const JOIN: &str = "FROM sessions s
+     JOIN activities a ON a.id = s.activity_id
+     JOIN sources src ON src.id = a.source_id
+     LEFT JOIN ai_labels l ON l.activity_id = a.id AND l.rejected = 0
+     LEFT JOIN categories cat ON cat.id = COALESCE(a.category_id, l.category_id)";
+
+pub struct SqliteHistoryStore {
     conn: SharedConnection,
 }
 
-impl HistoryReader {
+impl SqliteHistoryStore {
     pub fn new(conn: SharedConnection) -> Self {
         Self { conn }
     }
+}
 
-    pub fn count_sessions(&self, filter: &SessionFilter) -> Result<i64> {
+impl HistoryStore for SqliteHistoryStore {
+    fn count_sessions(&self, filter: &SessionFilter) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
         let category_ids = expanded_category_ids(&conn, filter)?;
         let (where_sql, binds) = filter.to_sql(category_ids.as_deref());
-        let sql = format!(
-            "SELECT COUNT(*)
-             FROM sessions s
-             LEFT JOIN activities a ON a.id = s.activity_id
-             LEFT JOIN categories cat
-                    ON cat.id = COALESCE(a.category_id, s.category_id, a.ai_category_id)
-             WHERE {where_sql}"
-        );
+        let sql = format!("SELECT COUNT(*) {JOIN} WHERE {where_sql}");
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             binds.iter().map(|b| b.as_ref()).collect();
         Ok(conn.query_row(&sql, param_refs.as_slice(), |row| row.get(0))?)
     }
 
-    pub fn list_sessions(
+    fn list_sessions(
         &self,
         limit: i64,
         offset: i64,
@@ -91,18 +99,15 @@ impl HistoryReader {
         let category_ids = expanded_category_ids(&conn, filter)?;
         let (where_sql, mut binds) = filter.to_sql(category_ids.as_deref());
         let sql = format!(
-            "SELECT s.id, s.activity_id, s.app_name, s.exe_path,
-                    COALESCE(NULLIF(a.display_title, ''), s.window_title), s.url, s.start_time, s.end_time,
-                    cat.id, cat.name, cat.color, (a.category_id IS NOT NULL OR s.category_id IS NOT NULL),
+            "SELECT s.id, s.activity_id, src.name, src.kind, src.key, a.path, a.title,
+                    s.start_time, s.end_time,
+                    cat.id, cat.name, cat.color, a.category_id IS NOT NULL,
                     CASE
-                      WHEN a.category_id IS NOT NULL OR s.category_id IS NOT NULL THEN 'manual'
-                      WHEN a.ai_category_id IS NOT NULL THEN 'ai'
+                      WHEN a.category_id IS NOT NULL THEN 'manual'
+                      WHEN l.category_id IS NOT NULL THEN 'ai'
                       ELSE NULL
                     END
-             FROM sessions s
-             LEFT JOIN activities a ON a.id = s.activity_id
-             LEFT JOIN categories cat
-                    ON cat.id = COALESCE(a.category_id, s.category_id, a.ai_category_id)
+             {JOIN}
              WHERE {where_sql}
              ORDER BY s.start_time DESC
              LIMIT ? OFFSET ?"
@@ -115,27 +120,32 @@ impl HistoryReader {
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt
             .query_map(param_refs.as_slice(), |row| {
+                let source_kind: String = row.get(3)?;
+                let source_key: String = row.get(4)?;
+                let path: String = row.get(5)?;
+                let url = (source_kind == "domain").then(|| source_url(&source_key, &path));
                 Ok(SessionRow {
                     id: row.get(0)?,
                     activity_id: row.get(1)?,
                     app_name: row.get(2)?,
-                    exe_path: row.get(3)?,
-                    window_title: row.get(4)?,
-                    url: row.get(5)?,
-                    start_time: row.get(6)?,
-                    end_time: row.get(7)?,
-                    category_id: row.get(8)?,
-                    category_name: row.get(9)?,
-                    category_color: row.get(10)?,
-                    category_is_pinned: row.get(11)?,
-                    category_source: row.get(12)?,
+                    source_kind,
+                    source_key,
+                    title: row.get(6)?,
+                    url,
+                    start_time: row.get(7)?,
+                    end_time: row.get(8)?,
+                    category_id: row.get(9)?,
+                    category_name: row.get(10)?,
+                    category_color: row.get(11)?,
+                    category_is_pinned: row.get(12)?,
+                    category_source: row.get(13)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
-    pub fn activity_stats(&self, start: &str, end: &str) -> Result<ActivityStats> {
+    fn activity_stats(&self, start: &str, end: &str) -> Result<ActivityStats> {
         const DURATION: &str = "(julianday(s.end_time) - julianday(s.start_time)) * 86400.0";
         let conn = self.conn.lock().unwrap();
 
@@ -149,14 +159,9 @@ impl HistoryReader {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
 
-        let category_join = "             LEFT JOIN activities a ON a.id = s.activity_id
-             LEFT JOIN categories cat
-                    ON cat.id = COALESCE(a.category_id, s.category_id, a.ai_category_id)";
-
         let mut stmt = conn.prepare(&format!(
             "SELECT cat.id, cat.name, cat.color, COALESCE(SUM({DURATION}), 0.0), COUNT(*)
-             FROM sessions s
-             {category_join}
+             {JOIN}
              WHERE s.end_time IS NOT NULL AND s.start_time >= ?1 AND s.start_time < ?2
              GROUP BY cat.id
              ORDER BY 4 DESC"
@@ -174,27 +179,22 @@ impl HistoryReader {
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
         let mut stmt = conn.prepare(&format!(
-            "SELECT s.category_key_kind, s.category_key, MIN(s.app_name), cat.color,
+            "SELECT src.kind, src.name, cat.color,
                     COALESCE(SUM({DURATION}), 0.0), COUNT(*)
-             FROM sessions s
-             {category_join}
+             {JOIN}
              WHERE s.end_time IS NOT NULL AND s.start_time >= ?1 AND s.start_time < ?2
-             GROUP BY s.category_key_kind, s.category_key
-             ORDER BY 5 DESC
+             GROUP BY src.id
+             ORDER BY 4 DESC
              LIMIT ?3"
         ))?;
         let apps = stmt
             .query_map(rusqlite::params![start, end, TOP_APPS_LIMIT], |row| {
-                let kind: String = row.get(0)?;
-                let key: String = row.get(1)?;
-                let app_name: String = row.get(2)?;
-                let label = if kind == "domain" { key } else { app_name };
                 Ok(AppStat {
-                    label,
-                    kind,
-                    category_color: row.get(3)?,
-                    total_seconds: row.get(4)?,
-                    session_count: row.get(5)?,
+                    kind: row.get(0)?,
+                    label: row.get(1)?,
+                    category_color: row.get(2)?,
+                    total_seconds: row.get(3)?,
+                    session_count: row.get(4)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -265,7 +265,7 @@ impl SessionFilter {
             .filter(|s| !s.is_empty())
         {
             clauses.push(
-                "(s.app_name LIKE ? ESCAPE '\\' OR s.window_title LIKE ? ESCAPE '\\' OR s.url LIKE ? ESCAPE '\\')"
+                "(src.name LIKE ? ESCAPE '\\' OR a.title LIKE ? ESCAPE '\\' OR (src.key || a.path) LIKE ? ESCAPE '\\')"
                     .to_string(),
             );
             let pattern = format!("%{}%", term.replace('%', "\\%").replace('_', "\\_"));
@@ -301,12 +301,11 @@ impl SessionFilter {
         match self.source {
             CategorySourceFilter::All => {}
             CategorySourceFilter::Manual => {
-                clauses.push("COALESCE(a.category_id, s.category_id) IS NOT NULL".to_string());
+                clauses.push("a.category_id IS NOT NULL".to_string());
             }
-            CategorySourceFilter::Ai => clauses.push(
-                "COALESCE(a.category_id, s.category_id) IS NULL AND a.ai_category_id IS NOT NULL"
-                    .to_string(),
-            ),
+            CategorySourceFilter::Ai => {
+                clauses.push("a.category_id IS NULL AND l.category_id IS NOT NULL".to_string())
+            }
         }
 
         if let Some(start) = &self.start {
