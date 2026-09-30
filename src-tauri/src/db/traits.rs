@@ -1,5 +1,5 @@
-//! The repository layer's public interface, one trait per table or read-model, gathered here so
-//! the whole surface can be read in one place. Each trait is implemented for [`SqliteConnection`]
+//! The repository layer's public interface, one trait per table, gathered here so the whole
+//! surface can be read in one place. Each trait is implemented for [`SqliteConnection`]
 //! in the sibling module of the same name (`ActivitiesRepo` in `activities.rs`, and so on); that
 //! module also re-exports its trait so callers keep writing `db::activities::ActivitiesRepo`.
 
@@ -9,7 +9,6 @@ use super::models::{
     ActivityRow, AiLabelRow, CategoryChanges, CategoryRow, NewActivityRow, NewCategoryRow, NewSessionRow,
     NewSourceRow, SessionRow, SourceRow,
 };
-use super::{history, review};
 
 pub trait ActivitiesRepo {
     fn get(&mut self, id: i64) -> QueryResult<Option<ActivityRow>>;
@@ -92,54 +91,4 @@ pub trait SourcesRepo {
     /// Deletes every source among `ids` that nothing in `activities` points to any more, in one
     /// query.
     fn delete_unused_many(&mut self, ids: &[i64]) -> QueryResult<()>;
-}
-
-pub trait HistoryRepo {
-    fn get_session_count(&mut self, query: &history::SessionQuery) -> QueryResult<i64>;
-    fn get_sessions(
-        &mut self,
-        limit: i64,
-        offset: i64,
-        query: &history::SessionQuery,
-    ) -> QueryResult<Vec<history::SessionListRow>>;
-    fn get_totals(&mut self, start: &str, end: &str) -> QueryResult<history::TotalsRow>;
-    fn get_category_stats(&mut self, start: &str, end: &str) -> QueryResult<Vec<history::CategoryStatRow>>;
-    fn get_app_stats(&mut self, start: &str, end: &str) -> QueryResult<Vec<history::AppStatRow>>;
-    fn get_daily_stats(&mut self, start: &str, end: &str) -> QueryResult<Vec<history::DailyStatRow>>;
-}
-
-pub trait ReviewRepo {
-    /// Activities for the LLM to label, most recently seen first. Normally those with neither a
-    /// pin nor an AI label nor a rejected one; with `recheck`, those carrying an AI label the user
-    /// has not confirmed.
-    fn get_activities_to_label(&mut self, recheck: bool) -> QueryResult<Vec<review::ActivityToLabelRow>>;
-    /// Every activity the user has pinned or rejected an AI label for, newest first.
-    fn get_labeled_activities(&mut self) -> QueryResult<Vec<review::LabeledActivityRow>>;
-    /// AI labels awaiting review, longest-tracked first so the ones that matter come up first.
-    /// `Ok(None)` when the category scope matches nothing.
-    #[allow(clippy::too_many_arguments)]
-    fn get_review_page(
-        &mut self,
-        page: i64,
-        page_size: i64,
-        category: &review::CategoryScope,
-        activity_ids: Option<&[i64]>,
-        uncertain_only: bool,
-        confident: f64,
-        min_seconds: f64,
-    ) -> QueryResult<Option<(Vec<review::ReviewRow>, i64)>>;
-    /// The pending AI labels folded into one row per source and suggested category, longest-tracked
-    /// first. `Ok(None)` when the category scope matches nothing.
-    fn get_review_groups(
-        &mut self,
-        page: i64,
-        page_size: i64,
-        category: &review::CategoryScope,
-        uncertain_only: bool,
-        confident: f64,
-        min_seconds: f64,
-    ) -> QueryResult<Option<(Vec<review::ReviewGroupRow>, i64)>>;
-    fn get_feedback_counts(&mut self) -> QueryResult<review::FeedbackCountsRow>;
-    /// Time, not rows: a few long activities matter more than many short ones.
-    fn get_feedback_seconds(&mut self) -> QueryResult<review::FeedbackSecondsRow>;
 }

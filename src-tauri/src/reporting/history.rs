@@ -7,26 +7,20 @@ use diesel::sql_types::{BigInt, Bool, Double, Nullable, Text};
 use diesel::sqlite::SqliteConnection;
 use diesel::{sql_query, QueryResult, QueryableByName, RunQueryDsl};
 
-use super::sql::{bind_all, in_clause, Param};
+use crate::db::sql::{bind_all, Param};
 
-/// `sessions` joined out to its activity, source and resolved category. A manual pin
-/// (`a.category_id`) always wins over a pending AI label (`l.category_id`, only when not
-/// rejected).
+use super::CategoryScope;
+
+/// `sessions` joined out to its activity, source and resolved category. The category comes from
+/// the `activity_category` view (`ac`): a manual pin wins over an AI suggestion the user has not
+/// rejected, and `ac.source` says which of the two it was.
 const JOIN: &str = "FROM sessions s
      JOIN activities a ON a.id = s.activity_id
      JOIN sources src ON src.id = a.source_id
-     LEFT JOIN ai_labels l ON l.activity_id = a.id AND l.rejected = 0
-     LEFT JOIN categories cat ON cat.id = COALESCE(a.category_id, l.category_id)";
+     LEFT JOIN activity_category ac ON ac.activity_id = a.id
+     LEFT JOIN categories cat ON cat.id = ac.category_id";
 
 const TOP_APPS_LIMIT: i64 = 15;
-
-/// Which category ids a session's resolved category must fall under.
-pub enum CategoryScope {
-    Any,
-    Uncategorized,
-    /// Already expanded to include every descendant; an empty list matches nothing.
-    Ids(Vec<i64>),
-}
 
 pub enum SourceScope {
     Any,
@@ -63,20 +57,15 @@ fn where_clause(query: &SessionQuery) -> (String, Vec<Param>) {
         }
     }
 
-    match &query.category {
-        CategoryScope::Any => {}
-        CategoryScope::Uncategorized => clauses.push("cat.id IS NULL".to_string()),
-        CategoryScope::Ids(ids) => {
-            let (clause, ids_binds) = in_clause("cat.id", ids, "0=1");
-            clauses.push(clause);
-            binds.extend(ids_binds);
-        }
+    if let Some((clause, category_binds)) = query.category.clause("cat.id") {
+        clauses.push(clause);
+        binds.extend(category_binds);
     }
 
     match query.source {
         SourceScope::Any => {}
-        SourceScope::Manual => clauses.push("a.category_id IS NOT NULL".to_string()),
-        SourceScope::Ai => clauses.push("a.category_id IS NULL AND l.category_id IS NOT NULL".to_string()),
+        SourceScope::Manual => clauses.push("ac.source = 'manual'".to_string()),
+        SourceScope::Ai => clauses.push("ac.source = 'ai'".to_string()),
     }
 
     if let Some(start) = &query.start {
@@ -173,7 +162,14 @@ pub struct DailyStatRow {
     pub total_seconds: f64,
 }
 
-pub use super::traits::HistoryRepo;
+pub trait HistoryRepo {
+    fn get_session_count(&mut self, query: &SessionQuery) -> QueryResult<i64>;
+    fn get_sessions(&mut self, limit: i64, offset: i64, query: &SessionQuery) -> QueryResult<Vec<SessionListRow>>;
+    fn get_totals(&mut self, start: &str, end: &str) -> QueryResult<TotalsRow>;
+    fn get_category_stats(&mut self, start: &str, end: &str) -> QueryResult<Vec<CategoryStatRow>>;
+    fn get_app_stats(&mut self, start: &str, end: &str) -> QueryResult<Vec<AppStatRow>>;
+    fn get_daily_stats(&mut self, start: &str, end: &str) -> QueryResult<Vec<DailyStatRow>>;
+}
 
 impl HistoryRepo for SqliteConnection {
     fn get_session_count(&mut self, query: &SessionQuery) -> QueryResult<i64> {
@@ -189,12 +185,8 @@ impl HistoryRepo for SqliteConnection {
             "SELECT s.id, s.activity_id, src.name AS app_name, src.kind AS source_kind,
                     src.key AS source_key, a.path, a.title, s.start_time, s.end_time,
                     cat.id AS category_id, cat.name AS category_name, cat.color AS category_color,
-                    a.category_id IS NOT NULL AS category_is_pinned,
-                    CASE
-                      WHEN a.category_id IS NOT NULL THEN 'manual'
-                      WHEN l.category_id IS NOT NULL THEN 'ai'
-                      ELSE NULL
-                    END AS category_source
+                    COALESCE(ac.source = 'manual', 0) AS category_is_pinned,
+                    ac.source AS category_source
              {JOIN}
              WHERE {where_sql}
              ORDER BY s.start_time DESC
@@ -234,8 +226,20 @@ impl HistoryRepo for SqliteConnection {
 
     fn get_app_stats(&mut self, start: &str, end: &str) -> QueryResult<Vec<AppStatRow>> {
         const DURATION: &str = "(julianday(s.end_time) - julianday(s.start_time)) * 86400.0";
+        // A source can span several categories; it takes the colour of the one it spent the most
+        // time in (ties broken by category id) rather than whichever row SQLite happens to keep.
         sql_query(format!(
-            "SELECT src.kind, src.name AS label, cat.color AS category_color,
+            "SELECT src.kind, src.name AS label,
+                    (SELECT c2.color
+                     FROM sessions s2
+                     JOIN activities a2 ON a2.id = s2.activity_id
+                     JOIN activity_category ac2 ON ac2.activity_id = a2.id
+                     JOIN categories c2 ON c2.id = ac2.category_id
+                     WHERE a2.source_id = src.id AND s2.end_time IS NOT NULL
+                       AND s2.start_time >= ? AND s2.start_time < ?
+                     GROUP BY c2.id
+                     ORDER BY SUM((julianday(s2.end_time) - julianday(s2.start_time)) * 86400.0) DESC, c2.id
+                     LIMIT 1) AS category_color,
                     COALESCE(SUM({DURATION}), 0.0) AS total_seconds, COUNT(*) AS session_count
              {JOIN}
              WHERE s.end_time IS NOT NULL AND s.start_time >= ? AND s.start_time < ?
@@ -243,6 +247,8 @@ impl HistoryRepo for SqliteConnection {
              ORDER BY total_seconds DESC
              LIMIT ?"
         ))
+        .bind::<Text, _>(start)
+        .bind::<Text, _>(end)
         .bind::<Text, _>(start)
         .bind::<Text, _>(end)
         .bind::<BigInt, _>(TOP_APPS_LIMIT)

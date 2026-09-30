@@ -1,6 +1,7 @@
-//! Hand-written to match `db/migrations/*.sql` (the schema after migration 6). There is no
+//! Hand-written to match `db/migrations/*.sql` (the tables after migration 7). There is no
 //! `diesel print-schema` step: this crate does not keep a `DATABASE_URL` around to generate
-//! against, and the table set is small enough to maintain by hand.
+//! against, and the table set is small enough to maintain by hand. The `activity_category` view
+//! is not declared here: only the raw-SQL read models in [`crate::reporting`] use it.
 
 diesel::table! {
     categories (id) {

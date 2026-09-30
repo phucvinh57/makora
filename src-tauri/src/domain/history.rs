@@ -3,7 +3,8 @@
 use anyhow::Result;
 use diesel::sqlite::SqliteConnection;
 
-use crate::db::{self, Db};
+use crate::db::Db;
+use crate::reporting::{self, CategoryScope};
 use crate::shared::time::{self, TimeRange};
 use crate::tracking::domain::source_key::{source_url, KeyKind};
 
@@ -31,8 +32,8 @@ impl HistorySvc for SqliteHistory {
         let offset = page.max(0) * page_size;
         let mut conn = self.db.lock().unwrap();
         let query = to_session_query(&mut conn, filter)?;
-        let rows = db::history::HistoryRepo::get_sessions(&mut *conn, page_size, offset, &query)?;
-        let total = db::history::HistoryRepo::get_session_count(&mut *conn, &query)?;
+        let rows = reporting::history::HistoryRepo::get_sessions(&mut *conn, page_size, offset, &query)?;
+        let total = reporting::history::HistoryRepo::get_session_count(&mut *conn, &query)?;
         Ok(SessionsPage {
             rows: rows.into_iter().map(to_session_row).collect(),
             total,
@@ -43,10 +44,10 @@ impl HistorySvc for SqliteHistory {
         let (start, end) = (time::to_db(range.start), time::to_db(range.end));
         let (start, end) = (start.as_str(), end.as_str());
         let mut conn = self.db.lock().unwrap();
-        let totals = db::history::HistoryRepo::get_totals(&mut *conn, start, end)?;
-        let categories = db::history::HistoryRepo::get_category_stats(&mut *conn, start, end)?;
-        let apps = db::history::HistoryRepo::get_app_stats(&mut *conn, start, end)?;
-        let daily = db::history::HistoryRepo::get_daily_stats(&mut *conn, start, end)?;
+        let totals = reporting::history::HistoryRepo::get_totals(&mut *conn, start, end)?;
+        let categories = reporting::history::HistoryRepo::get_category_stats(&mut *conn, start, end)?;
+        let apps = reporting::history::HistoryRepo::get_app_stats(&mut *conn, start, end)?;
+        let daily = reporting::history::HistoryRepo::get_daily_stats(&mut *conn, start, end)?;
         Ok(ActivityStats {
             total_seconds: totals.total_seconds,
             session_count: totals.session_count,
@@ -57,7 +58,7 @@ impl HistorySvc for SqliteHistory {
     }
 }
 
-fn to_session_query(conn: &mut SqliteConnection, filter: &SessionFilter) -> Result<db::history::SessionQuery> {
+fn to_session_query(conn: &mut SqliteConnection, filter: &SessionFilter) -> Result<reporting::history::SessionQuery> {
     let search = filter
         .search
         .as_deref()
@@ -65,17 +66,17 @@ fn to_session_query(conn: &mut SqliteConnection, filter: &SessionFilter) -> Resu
         .filter(|s| !s.is_empty())
         .map(String::from);
     let category = match &filter.category {
-        CategoryFilter::All => db::history::CategoryScope::Any,
-        CategoryFilter::Uncategorized => db::history::CategoryScope::Uncategorized,
+        CategoryFilter::All => CategoryScope::Any,
+        CategoryFilter::Uncategorized => CategoryScope::Uncategorized,
         // Picking a parent means "this category and everything filed under it".
-        CategoryFilter::Category(id) => db::history::CategoryScope::Ids(load_tree(conn)?.descendants((*id).into())),
+        CategoryFilter::Category(id) => CategoryScope::Ids(load_tree(conn)?.descendants((*id).into())),
     };
     let source = match filter.source {
-        CategorySourceFilter::All => db::history::SourceScope::Any,
-        CategorySourceFilter::Manual => db::history::SourceScope::Manual,
-        CategorySourceFilter::Ai => db::history::SourceScope::Ai,
+        CategorySourceFilter::All => reporting::history::SourceScope::Any,
+        CategorySourceFilter::Manual => reporting::history::SourceScope::Manual,
+        CategorySourceFilter::Ai => reporting::history::SourceScope::Ai,
     };
-    Ok(db::history::SessionQuery {
+    Ok(reporting::history::SessionQuery {
         search,
         category,
         source,
@@ -84,7 +85,7 @@ fn to_session_query(conn: &mut SqliteConnection, filter: &SessionFilter) -> Resu
     })
 }
 
-fn to_session_row(row: db::history::SessionListRow) -> SessionRow {
+fn to_session_row(row: reporting::history::SessionListRow) -> SessionRow {
     let source_kind = KeyKind::from_db(&row.source_kind);
     let url = (source_kind == KeyKind::Domain).then(|| source_url(&row.source_key, &row.path));
     SessionRow {
@@ -105,7 +106,7 @@ fn to_session_row(row: db::history::SessionListRow) -> SessionRow {
     }
 }
 
-fn to_category_stat(row: db::history::CategoryStatRow) -> CategoryStat {
+fn to_category_stat(row: reporting::history::CategoryStatRow) -> CategoryStat {
     CategoryStat {
         category_id: row.category_id.map(Into::into),
         name: row.name,
@@ -115,7 +116,7 @@ fn to_category_stat(row: db::history::CategoryStatRow) -> CategoryStat {
     }
 }
 
-fn to_app_stat(row: db::history::AppStatRow) -> AppStat {
+fn to_app_stat(row: reporting::history::AppStatRow) -> AppStat {
     AppStat {
         label: row.label,
         kind: KeyKind::from_db(&row.kind),
@@ -125,7 +126,7 @@ fn to_app_stat(row: db::history::AppStatRow) -> AppStat {
     }
 }
 
-fn to_daily_stat(row: db::history::DailyStatRow) -> DailyStat {
+fn to_daily_stat(row: reporting::history::DailyStatRow) -> DailyStat {
     DailyStat {
         day: row.day,
         total_seconds: row.total_seconds,

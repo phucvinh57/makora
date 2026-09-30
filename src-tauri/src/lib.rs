@@ -5,6 +5,7 @@ mod db;
 mod domain;
 mod focus;
 mod logging;
+mod reporting;
 mod shared;
 mod taxonomy;
 mod tracking;

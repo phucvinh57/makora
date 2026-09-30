@@ -1,17 +1,16 @@
 //! Repository layer: typed Diesel access to the SQLite database, and nothing else. Every
 //! function here reads or writes rows; the rules for *when* to read or write them (merging
-//! sessions, pinning precedence, the review queue, …) live in [`crate::domain`].
+//! sessions, pinning precedence, …) live in [`crate::domain`] and [`crate::categorization`].
+//! The read models behind the history and review pages are in [`crate::reporting`].
 
 pub mod activities;
 pub mod ai_labels;
 pub mod categories;
-pub mod history;
 mod migrate;
 pub mod models;
-pub mod review;
 pub mod schema;
 pub mod sessions;
-mod sql;
+pub(crate) mod sql;
 pub mod sources;
 mod traits;
 
