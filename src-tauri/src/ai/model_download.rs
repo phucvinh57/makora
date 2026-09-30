@@ -8,16 +8,95 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use anyhow::{anyhow, bail, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::info;
 
 const REGISTRY: &str = "https://registry.ollama.ai";
 const MODEL_LAYER: &str = "application/vnd.ollama.image.model";
 const CHUNK: usize = 256 * 1024;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ModelDownloadError {
+    #[error("a model download is already running")]
+    AlreadyRunning,
+    #[error(transparent)]
+    Failed(#[from] anyhow::Error),
+}
+
+/// Guards against two downloads at once, carries the stop request, and holds enough progress
+/// for a page that reloaded mid-download to resync instead of losing track of it.
+#[derive(Default)]
+pub struct ModelDownloadState {
+    running: AtomicBool,
+    cancel: AtomicBool,
+    model: Mutex<String>,
+    downloaded: AtomicU64,
+    total: AtomicU64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModelDownloadStatus {
+    pub running: bool,
+    pub model: String,
+    pub downloaded: u64,
+    pub total: u64,
+}
+
+/// Clears the running flag however the download ends, panics included.
+struct RunGuard<'a>(&'a AtomicBool);
+
+impl Drop for RunGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+impl ModelDownloadState {
+    pub fn status(&self) -> ModelDownloadStatus {
+        ModelDownloadStatus {
+            running: self.running.load(Ordering::Acquire),
+            model: self.model.lock().expect("model download state poisoned").clone(),
+            downloaded: self.downloaded.load(Ordering::Acquire),
+            total: self.total.load(Ordering::Acquire),
+        }
+    }
+
+    /// Asks a running download to stop.
+    pub fn cancel(&self) {
+        self.cancel.store(true, Ordering::Release);
+    }
+
+    /// Downloads `model` into `root`, calling `on_progress(downloaded, total)` as bytes arrive.
+    /// Returns `false` when the user stopped it; the partial file is kept for resuming.
+    pub fn run(
+        &self,
+        root: &Path,
+        model: &str,
+        on_progress: &mut dyn FnMut(u64, u64),
+    ) -> Result<bool, ModelDownloadError> {
+        if self.running.swap(true, Ordering::AcqRel) {
+            return Err(ModelDownloadError::AlreadyRunning);
+        }
+        let _running = RunGuard(&self.running);
+        self.cancel.store(false, Ordering::Release);
+        *self.model.lock().expect("model download state poisoned") = model.to_string();
+        self.downloaded.store(0, Ordering::Release);
+        self.total.store(0, Ordering::Release);
+
+        let mut progress = |downloaded: u64, total: u64| {
+            self.downloaded.store(downloaded, Ordering::Release);
+            self.total.store(total, Ordering::Release);
+            on_progress(downloaded, total);
+        };
+        download(root, model, &self.cancel, &mut progress)?;
+        Ok(!self.cancel.load(Ordering::Acquire))
+    }
+}
 
 #[derive(Deserialize)]
 struct Manifest {

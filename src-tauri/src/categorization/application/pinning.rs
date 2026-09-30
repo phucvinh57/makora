@@ -1,6 +1,7 @@
 //! The ways a person or the model can change how activities are categorized. Each use case loads
 //! the [`ActivityClassification`]s it concerns, asks them to change, and saves the difference,
-//! all in one transaction; the rules themselves are in [`super::domain::classification`].
+//! all in one transaction; the rules themselves are in
+//! [`crate::categorization::domain::classification`].
 
 use std::collections::HashSet;
 
@@ -8,11 +9,10 @@ use anyhow::Result;
 use diesel::sqlite::SqliteConnection;
 use diesel::{Connection, QueryResult};
 
+use crate::categorization::store;
 use crate::db::{self, Db};
 use crate::domain::types::AiVerdict;
 use crate::shared::ids::{raw, ActivityId, CategoryId, SessionId};
-
-use super::store;
 
 pub trait ClassificationSvc: Send + Sync {
     /// Pins the activity behind each session row to `category_id` (or unpins with `None`).

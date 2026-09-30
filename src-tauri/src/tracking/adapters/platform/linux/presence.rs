@@ -11,7 +11,7 @@ use zbus::message::Type as MessageType;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 use zbus::MatchRule;
 
-use crate::focus::model::{PresenceEvent, WatchEvent};
+use crate::tracking::adapters::model::{PresenceEvent, WatchEvent};
 
 const LOGIN_SERVICE: &str = "org.freedesktop.login1";
 const MANAGER_PATH: &str = "/org/freedesktop/login1";

@@ -6,9 +6,9 @@ use chrono::Utc;
 use serde::Deserialize;
 use tiny_http::{Method, Response, Server};
 
+use crate::tracking::domain::events::{BrowserKind, TabChange};
 use crate::tracking::domain::source_key::strip_query_and_fragment;
-
-use super::{BrowserKind, SessionTracker, TabEvent};
+use crate::tracking::ports::SessionTracker;
 
 pub const PORT: u16 = 47632;
 
@@ -54,18 +54,29 @@ fn handle_request(request: &mut tiny_http::Request, tracker: &Arc<Mutex<Box<dyn 
         Err(_) => return 400,
     };
 
-    let event = TabEvent {
-        browser: BrowserKind::from_wire(&dto.browser),
+    let change = TabChange {
+        browser: browser_from_wire(&dto.browser),
         url: strip_query_and_fragment(&dto.url),
         title: dto.title,
-        timestamp: Utc::now(),
+        at: Utc::now(),
     };
 
-    if let Err(err) = tracker.lock().unwrap().handle_tab_event(event) {
+    if let Err(err) = tracker.lock().unwrap().handle_tab(change) {
         tracing::error!(error = format!("{err:#}"), "failed to record tab event");
         return 500;
     }
     204
+}
+
+/// The browser names the extension sends; anything else is a browser we cannot tell apart.
+fn browser_from_wire(value: &str) -> BrowserKind {
+    match value {
+        "chrome" => BrowserKind::Chrome,
+        "edge" => BrowserKind::Edge,
+        "firefox" => BrowserKind::Firefox,
+        "brave" => BrowserKind::Brave,
+        _ => BrowserKind::Other,
+    }
 }
 
 fn has_allowed_extension_origin(request: &tiny_http::Request) -> bool {

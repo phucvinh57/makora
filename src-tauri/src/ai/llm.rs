@@ -35,6 +35,8 @@ use llama_cpp_2::{send_logs_to_tracing, LogOptions};
 use serde::Deserialize;
 use tracing::{debug, info, warn};
 
+use crate::categorization::domain::feedback::{Example, Verdict};
+use crate::categorization::ports::{ActivityText, Classifier};
 use crate::domain::types::Category;
 use crate::shared::confidence::Confidence;
 use crate::shared::ids::CategoryId;
@@ -57,32 +59,32 @@ const MAX_URL_CHARS: usize = 200;
 const MAX_EXAMPLE_CHARS: usize = 80;
 const NONE_ANSWER: &str = "None";
 
-/// What the model is shown about one activity.
-#[derive(Debug, Clone)]
-pub struct ActivityText {
-    pub app_name: String,
-    /// `domain/path` of the page, when the activity is a browser tab.
-    pub url: Option<String>,
-    pub title: String,
-    /// What the user already decided about similar activities.
-    pub examples: Vec<Example>,
+/// The [`Classifier`] backed by the in-process llama.cpp model held in a [`ModelCache`].
+pub struct LlamaClassifier {
+    cache: ModelCache,
 }
 
-/// One decision of the user, shown to the model as a worked example.
-#[derive(Debug, Clone)]
-pub struct Example {
-    pub app_name: String,
-    pub url: Option<String>,
-    pub title: String,
-    pub verdict: Verdict,
+impl LlamaClassifier {
+    pub fn new(cache: ModelCache) -> Self {
+        Self { cache }
+    }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum Verdict {
-    /// The activity belongs to this category.
-    Is(CategoryId),
-    /// The model suggested this category and the user rejected it.
-    Not(CategoryId),
+impl Classifier for LlamaClassifier {
+    fn default_model(&self) -> &str {
+        DEFAULT_MODEL
+    }
+
+    fn classify(
+        &self,
+        model: &str,
+        taxonomy: &[Category],
+        global: &[Example],
+        activities: &[ActivityText],
+        on_answer: &mut dyn FnMut(usize, Option<CategoryId>, Confidence) -> bool,
+    ) -> Result<()> {
+        classify(&self.cache, model, taxonomy, global, activities, on_answer)
+    }
 }
 
 /// How many layers of `path` to put on GPU, and any tensor placement overrides, so the model

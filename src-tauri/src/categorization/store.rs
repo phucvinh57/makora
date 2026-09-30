@@ -116,6 +116,11 @@ pub fn release_categories(conn: &mut SqliteConnection, category_ids: &[i64]) -> 
     db::ai_labels::AiLabelsRepo::delete_for_categories(conn, category_ids)
 }
 
+/// Drops the AI labels of activities that are about to be deleted.
+pub fn discard_labels(conn: &mut SqliteConnection, activity_ids: &[i64]) -> QueryResult<()> {
+    db::ai_labels::AiLabelsRepo::delete_for_activities(conn, activity_ids)
+}
+
 /// Clears every pin and every AI label. Returns how many were removed.
 pub fn clear_all(conn: &mut SqliteConnection) -> QueryResult<usize> {
     let labels = db::ai_labels::AiLabelsRepo::delete_all(conn)?;

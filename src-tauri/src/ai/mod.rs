@@ -1,5 +1,5 @@
-//! Local LLM categorization: inference, feedback examples, and model downloads.
+//! Local LLM infrastructure: inference behind the categorization
+//! [`Classifier`](crate::categorization::ports::Classifier) port, and model downloads.
 
-pub mod feedback;
 pub mod llm;
 pub mod model_download;

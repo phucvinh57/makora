@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { InvokeArgs } from "@tauri-apps/api/core";
 import {
   disable as disableAutostart,
   enable as enableAutostart,
@@ -18,6 +19,57 @@ import type {
   SessionsPage,
 } from "./types";
 
+/** Why a command failed, stable enough to branch on. */
+export type ApiErrorCode =
+  | "name_taken"
+  | "parent_missing"
+  | "cycle"
+  | "not_found"
+  | "already_running"
+  | "invalid_input"
+  | "internal";
+
+/**
+ * A failed command. `String(error)` gives just the message, so it can be shown as it is;
+ * `code` says what went wrong.
+ */
+export class ApiError extends Error {
+  readonly code: ApiErrorCode;
+
+  constructor(code: ApiErrorCode, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.code = code;
+  }
+
+  override toString(): string {
+    return this.message;
+  }
+}
+
+function isWireError(
+  value: unknown,
+): value is { code: ApiErrorCode; message: string } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { code?: unknown }).code === "string" &&
+    typeof (value as { message?: unknown }).message === "string"
+  );
+}
+
+/** Invokes a command, turning whatever it rejects with into an `ApiError`. */
+async function call<T>(command: string, args?: InvokeArgs): Promise<T> {
+  try {
+    return await invoke<T>(command, args);
+  } catch (raw) {
+    // Tauri itself rejects with a bare string, e.g. for arguments it cannot read.
+    throw isWireError(raw)
+      ? new ApiError(raw.code, raw.message)
+      : new ApiError("internal", String(raw));
+  }
+}
+
 export function listSessions(
   page: number,
   pageSize: number,
@@ -27,7 +79,7 @@ export function listSessions(
   start?: string,
   end?: string,
 ): Promise<SessionsPage> {
-  return invoke("list_sessions", {
+  return call("list_sessions", {
     page,
     pageSize,
     search,
@@ -42,29 +94,29 @@ export function activityStats(
   start: string,
   end: string,
 ): Promise<ActivityStats> {
-  return invoke("activity_stats", { start, end });
+  return call("activity_stats", { start, end });
 }
 
 export function listCategories(): Promise<Category[]> {
-  return invoke("list_categories");
+  return call("list_categories");
 }
 
 export function setSessionRowCategory(
   sessionId: number,
   categoryId: number | null,
 ): Promise<void> {
-  return invoke("set_session_row_category", { sessionId, categoryId });
+  return call("set_session_row_category", { sessionId, categoryId });
 }
 
 export function setSessionsCategory(
   sessionIds: number[],
   categoryId: number,
 ): Promise<void> {
-  return invoke("set_sessions_category", { sessionIds, categoryId });
+  return call("set_sessions_category", { sessionIds, categoryId });
 }
 
 export function resetCategorization(): Promise<CategorizationResetOutcome> {
-  return invoke("reset_categorization");
+  return call("reset_categorization");
 }
 
 export function createCategory(
@@ -73,7 +125,7 @@ export function createCategory(
   description: string | null,
   parentId: number | null,
 ): Promise<Category> {
-  return invoke("create_category", { name, color, description, parentId });
+  return call("create_category", { name, color, description, parentId });
 }
 
 export function updateCategory(
@@ -83,11 +135,11 @@ export function updateCategory(
   description: string | null,
   parentId: number | null,
 ): Promise<void> {
-  return invoke("update_category", { id, name, color, description, parentId });
+  return call("update_category", { id, name, color, description, parentId });
 }
 
 export function deleteCategory(id: number): Promise<void> {
-  return invoke("delete_category", { id });
+  return call("delete_category", { id });
 }
 
 export function isAutostartEnabled(): Promise<boolean> {
@@ -99,47 +151,47 @@ export function setAutostartEnabled(enabled: boolean): Promise<void> {
 }
 
 export function cancelCategorize(): Promise<void> {
-  return invoke("cancel_categorize");
+  return call("cancel_categorize");
 }
 
 export function categorizeStatus(): Promise<AiCategorizeStatus> {
-  return invoke("categorize_status");
+  return call("categorize_status");
 }
 
 export function aiModelLoaded(): Promise<boolean> {
-  return invoke("ai_model_loaded");
+  return call("ai_model_loaded");
 }
 
 export function unloadAiModel(): Promise<void> {
-  return invoke("unload_ai_model");
+  return call("unload_ai_model");
 }
 
 export function aiModelInstalled(model: string): Promise<boolean> {
-  return invoke("ai_model_installed", { model });
+  return call("ai_model_installed", { model });
 }
 
 export function listInstalledAiModels(): Promise<string[]> {
-  return invoke("list_installed_ai_models");
+  return call("list_installed_ai_models");
 }
 
 /** Resolves `false` when the user stopped the download. */
 export function downloadAiModel(model: string): Promise<boolean> {
-  return invoke("download_ai_model", { model });
+  return call("download_ai_model", { model });
 }
 
 export function cancelModelDownload(): Promise<void> {
-  return invoke("cancel_model_download");
+  return call("cancel_model_download");
 }
 
 export function modelDownloadStatus(): Promise<ModelDownloadStatus> {
-  return invoke("model_download_status");
+  return call("model_download_status");
 }
 
 export function categorize(
   recheck = false,
   model?: string,
 ): Promise<AiCategorizeOutcome> {
-  return invoke("categorize", { model, recheck });
+  return call("categorize", { model, recheck });
 }
 
 export function listAiReview(
@@ -147,7 +199,7 @@ export function listAiReview(
   pageSize: number,
   filter: ReviewFilter = {},
 ): Promise<AiReviewPage> {
-  return invoke("list_ai_review", { page, pageSize, filter });
+  return call("list_ai_review", { page, pageSize, filter });
 }
 
 export function listAiReviewGroups(
@@ -155,11 +207,11 @@ export function listAiReviewGroups(
   pageSize: number,
   filter: ReviewFilter = {},
 ): Promise<AiReviewGroupPage> {
-  return invoke("list_ai_review_groups", { page, pageSize, filter });
+  return call("list_ai_review_groups", { page, pageSize, filter });
 }
 
 export function acceptAiLabels(activityIds: number[]): Promise<void> {
-  return invoke("accept_ai_labels", { activityIds });
+  return call("accept_ai_labels", { activityIds });
 }
 
 /** Pins activities to a category; `null` rejects their AI label. */
@@ -167,9 +219,9 @@ export function setActivitiesCategory(
   activityIds: number[],
   categoryId: number | null,
 ): Promise<void> {
-  return invoke("set_activities_category", { activityIds, categoryId });
+  return call("set_activities_category", { activityIds, categoryId });
 }
 
 export function aiFeedbackStats(): Promise<FeedbackStats> {
-  return invoke("ai_feedback_stats");
+  return call("ai_feedback_stats");
 }

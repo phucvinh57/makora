@@ -1,44 +1,36 @@
-//! Turns focus/tab events into `sessions` rows: opens one when an app or tab gains focus,
-//! closes it when it loses focus, and folds a browser's tab-title update into the row already
-//! open for that tab.
+//! Records blocks of activity in SQLite: opens a session when an app or tab gains focus, closes
+//! or drops it when it loses focus, and folds a refined title into the session already open.
+//! What counts as a block is decided by [`super::domain::session_policy`].
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use diesel::sqlite::SqliteConnection;
 use diesel::{Connection, QueryResult};
 
 use crate::categorization::store as classifications;
-use crate::db::models::{ActivityRow, NewActivityRow, NewSessionRow, NewSourceRow};
+use crate::db::models::NewSessionRow;
 use crate::db::{self, Db};
-use crate::focus::AppInfo;
 use crate::shared::ids::SessionId;
 use crate::shared::time;
-use crate::tracking::domain::source_key::{url_path, SourceKey};
-use crate::tracking::domain::title::canonical_title;
 
-/// A focus or tab change that is undone within a second never was activity: a page redirects,
-/// a browser reports a tab before its title has loaded and corrects itself, a window flashes
-/// past on the way somewhere else. Rows that short are deleted instead of closed, so no query
-/// downstream has to filter by duration.
-const MIN_SESSION_SECONDS: i64 = 1;
-/// A block that reopens within this long of closing is the same activity resuming (alt-tab
-/// away and back, a window manager hiccup), not a new one starting.
-const MERGE_GAP_SECONDS: i64 = 2;
+use super::domain::events::FocusedApp;
+use super::domain::session_policy::{is_noise, should_merge};
+use super::domain::source_key::{url_path, SourceKey};
+use super::domain::title::canonical_title;
+use super::ports::SessionRecorder;
+use super::store::{ensure_activity, ensure_source, prune_orphans};
 
-pub use super::traits::TrackingSvc;
-
-pub struct SqliteTracking {
+pub struct SqliteSessionRecorder {
     db: Db,
 }
 
-impl SqliteTracking {
+impl SqliteSessionRecorder {
     pub fn new(db: Db) -> Self {
         Self { db }
     }
 }
 
-impl TrackingSvc for SqliteTracking {
-    fn start(&self, app: &AppInfo, window_title: &str, url: Option<&str>, at: DateTime<Utc>) -> Result<SessionId> {
+impl SessionRecorder for SqliteSessionRecorder {
+    fn start(&self, app: &FocusedApp, window_title: &str, url: Option<&str>, at: DateTime<Utc>) -> Result<SessionId> {
         let source = SourceKey::of(&app.exe_path, url);
         let path = url.map(url_path).unwrap_or_default();
         let canonical = canonical_title(window_title, &app.app_name, url);
@@ -50,7 +42,7 @@ impl TrackingSvc for SqliteTracking {
             if let Some(last) = db::sessions::SessionsRepo::get_last(conn)? {
                 if last.activity_id == activity.id {
                     if let Some(end_time) = &last.end_time {
-                        if within_merge_gap(end_time, at) {
+                        if time::parse_db(end_time).is_some_and(|closed_at| should_merge(closed_at, at)) {
                             db::sessions::SessionsRepo::reopen(conn, last.id)?;
                             return Ok(last.id);
                         }
@@ -79,7 +71,9 @@ impl TrackingSvc for SqliteTracking {
             let Some(session) = db::sessions::SessionsRepo::get(conn, id)? else {
                 return Ok(());
             };
-            if is_too_short(&session.start_time, at) {
+            // A start time that is missing or unreadable is a reason to keep the row, not to
+            // throw it away.
+            if time::parse_db(&session.start_time).is_some_and(|started_at| is_noise(started_at, at)) {
                 db::sessions::SessionsRepo::delete(conn, id)?;
                 prune_orphans(conn, &[session.activity_id])?;
                 return Ok(());
@@ -89,7 +83,7 @@ impl TrackingSvc for SqliteTracking {
         .map_err(Into::into)
     }
 
-    fn refine_title(&self, id: SessionId, app: &AppInfo, window_title: &str, url: Option<&str>) -> Result<()> {
+    fn refine_title(&self, id: SessionId, app: &FocusedApp, window_title: &str, url: Option<&str>) -> Result<()> {
         let id = i64::from(id);
         let mut conn = self.db.lock().unwrap();
         conn.transaction(|conn| -> QueryResult<()> {
@@ -138,67 +132,4 @@ impl TrackingSvc for SqliteTracking {
         })
         .map_err(Into::into)
     }
-}
-
-/// Finds the source by its key, or creates it. An existing source keeps its name unless it
-/// never had one — a domain's or app's display name can only improve, never be blanked.
-fn ensure_source(conn: &mut SqliteConnection, source: &SourceKey, name: &str) -> QueryResult<i64> {
-    if let Some(existing) = db::sources::SourcesRepo::get_by_key(conn, source.kind.as_str(), &source.key)? {
-        if existing.name.is_empty() && !name.is_empty() {
-            db::sources::SourcesRepo::set_name(conn, existing.id, name)?;
-        }
-        return Ok(existing.id);
-    }
-    let inserted = db::sources::SourcesRepo::insert(
-        conn,
-        &NewSourceRow {
-            kind: source.kind.as_str(),
-            key: &source.key,
-            name,
-        },
-    )?;
-    Ok(inserted.id)
-}
-
-/// Finds the activity by its identity (source, path, title), or creates it.
-fn ensure_activity(conn: &mut SqliteConnection, source_id: i64, path: &str, title: &str) -> QueryResult<ActivityRow> {
-    if let Some(existing) = db::activities::ActivitiesRepo::get_by_identity(conn, source_id, path, title)? {
-        return Ok(existing);
-    }
-    db::activities::ActivitiesRepo::insert(conn, &NewActivityRow { source_id, path, title })
-}
-
-/// Deletes every activity among `activity_ids` (and its source, if nothing else uses it) that
-/// has no category pin and no session referencing it any more, in a handful of queries
-/// regardless of how many ids are given.
-fn prune_orphans(conn: &mut SqliteConnection, activity_ids: &[i64]) -> QueryResult<()> {
-    if activity_ids.is_empty() {
-        return Ok(());
-    }
-    let prunable = db::activities::ActivitiesRepo::get_prunable_many(conn, activity_ids)?;
-    if prunable.is_empty() {
-        return Ok(());
-    }
-    let ids: Vec<i64> = prunable.iter().map(|activity| activity.id).collect();
-    let source_ids: Vec<i64> = prunable.iter().map(|activity| activity.source_id).collect();
-
-    db::ai_labels::AiLabelsRepo::delete_for_activities(conn, &ids)?;
-    db::activities::ActivitiesRepo::delete_many(conn, &ids)?;
-    db::sources::SourcesRepo::delete_unused_many(conn, &source_ids)?;
-    Ok(())
-}
-
-fn within_merge_gap(closed_at: &str, resumed_at: DateTime<Utc>) -> bool {
-    time::parse_db(closed_at)
-        .map(|end| resumed_at.signed_duration_since(end).num_milliseconds())
-        .is_some_and(|gap| (0..=MERGE_GAP_SECONDS * 1000).contains(&gap))
-}
-
-/// A row whose `start_time` is missing or unparseable is left alone — an unreadable timestamp
-/// is a reason to keep the row, not to throw it away.
-fn is_too_short(start_time: &str, at: DateTime<Utc>) -> bool {
-    let Some(start) = time::parse_db(start_time) else {
-        return false;
-    };
-    at.signed_duration_since(start).num_milliseconds() < MIN_SESSION_SECONDS * 1000
 }

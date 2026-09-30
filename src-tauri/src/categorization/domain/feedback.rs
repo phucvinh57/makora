@@ -7,9 +7,25 @@
 use std::collections::HashMap;
 
 use crate::domain::types::LabeledActivity;
+use crate::shared::ids::CategoryId;
 use crate::tracking::domain::source_key::{url_location, KeyKind};
 
-use super::llm::{Example, Verdict};
+/// One decision of the user, shown to the model as a worked example.
+#[derive(Debug, Clone)]
+pub struct Example {
+    pub app_name: String,
+    pub url: Option<String>,
+    pub title: String,
+    pub verdict: Verdict,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Verdict {
+    /// The activity belongs to this category.
+    Is(CategoryId),
+    /// The model suggested this category and the user rejected it.
+    Not(CategoryId),
+}
 
 /// Corrections and rejections shown to the model for every activity.
 const GLOBAL_EXAMPLES: usize = 10;

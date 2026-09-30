@@ -9,9 +9,9 @@ use crate::db::Db;
 use crate::reporting::{self, CategoryScope};
 use crate::shared::confidence::Confidence;
 use crate::shared::ids::{raw, ActivityId, CategoryId};
+use crate::taxonomy::store::load_tree;
 use crate::tracking::domain::source_key::KeyKind;
 
-use super::categories::load_tree;
 use super::types::{
     AiReviewGroup, AiReviewGroupPage, AiReviewPage, AiReviewRow, FeedbackStats, LabeledActivity,
     ReviewFilter, UncategorizedActivity,

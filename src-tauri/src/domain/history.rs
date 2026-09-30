@@ -6,9 +6,9 @@ use diesel::sqlite::SqliteConnection;
 use crate::db::Db;
 use crate::reporting::{self, CategoryScope};
 use crate::shared::time::{self, TimeRange};
+use crate::taxonomy::store::load_tree;
 use crate::tracking::domain::source_key::{source_url, KeyKind};
 
-use super::categories::load_tree;
 use super::types::{
     ActivityStats, AppStat, CategoryFilter, CategorySource, CategorySourceFilter, CategoryStat, DailyStat,
     SessionFilter, SessionRow, SessionsPage,

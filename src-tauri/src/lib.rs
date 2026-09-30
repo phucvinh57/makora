@@ -1,15 +1,13 @@
 mod ai;
 mod categorization;
-mod commands;
 mod db;
 mod domain;
-mod focus;
+mod host;
 mod logging;
 mod reporting;
 mod shared;
 mod taxonomy;
 mod tracking;
-mod tray;
 
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -19,9 +17,19 @@ use chrono::Utc;
 use tauri::Manager;
 use tracing::{error, info};
 
+use crate::ai::llm::{LlamaClassifier, ModelCache};
+use crate::ai::model_download::ModelDownloadState;
+use crate::categorization::application::ai_run::AiRunState;
+use crate::categorization::ports::Classifier;
 use crate::categorization::{ClassificationSvc, SqliteClassification};
-use crate::domain::{CategorySvc, HistorySvc, LabelingSvc, SqliteCategories, SqliteHistory, SqliteLabeling, SqliteTracking};
-use crate::focus::{ActivitySessionTracker, FocusWatcher, PlatformFocusWatcher, SessionTracker, WatchEvent};
+use crate::domain::{HistorySvc, LabelingSvc, SqliteHistory, SqliteLabeling};
+use crate::taxonomy::{CategorySvc, SqliteCategories};
+use crate::tracking::adapters::model::WatchEvent;
+use crate::tracking::adapters::platform::PlatformFocusWatcher;
+use crate::tracking::adapters::watcher::FocusWatcher;
+use crate::tracking::application::SqliteSessionRecorder;
+use crate::tracking::domain::focus_machine::FocusStateMachine;
+use crate::tracking::ports::{SessionRecorder, SessionTracker};
 
 type SharedTracker = Arc<Mutex<Box<dyn SessionTracker>>>;
 
@@ -29,7 +37,7 @@ pub fn run() {
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            tray::show_main_window(app);
+            host::tray::show_main_window(app);
         }));
 
     // Do not autostart on dev mode
@@ -42,30 +50,30 @@ pub fn run() {
 
     builder
         .invoke_handler(tauri::generate_handler![
-            commands::list_sessions,
-            commands::activity_stats,
-            commands::list_categories,
-            commands::set_session_row_category,
-            commands::set_sessions_category,
-            commands::create_category,
-            commands::update_category,
-            commands::delete_category,
-            commands::reset_categorization,
-            commands::categorize,
-            commands::categorize_status,
-            commands::cancel_categorize,
-            commands::ai_model_loaded,
-            commands::unload_ai_model,
-            commands::download_ai_model,
-            commands::model_download_status,
-            commands::cancel_model_download,
-            commands::ai_model_installed,
-            commands::list_installed_ai_models,
-            commands::list_ai_review,
-            commands::list_ai_review_groups,
-            commands::accept_ai_labels,
-            commands::set_activities_category,
-            commands::ai_feedback_stats,
+            host::commands::reporting::list_sessions,
+            host::commands::reporting::activity_stats,
+            host::commands::reporting::list_ai_review,
+            host::commands::reporting::list_ai_review_groups,
+            host::commands::reporting::ai_feedback_stats,
+            host::commands::taxonomy::list_categories,
+            host::commands::taxonomy::create_category,
+            host::commands::taxonomy::update_category,
+            host::commands::taxonomy::delete_category,
+            host::commands::categorization::set_session_row_category,
+            host::commands::categorization::set_sessions_category,
+            host::commands::categorization::set_activities_category,
+            host::commands::categorization::accept_ai_labels,
+            host::commands::categorization::reset_categorization,
+            host::commands::categorization::categorize,
+            host::commands::categorization::categorize_status,
+            host::commands::categorization::cancel_categorize,
+            host::commands::models::ai_model_loaded,
+            host::commands::models::unload_ai_model,
+            host::commands::models::download_ai_model,
+            host::commands::models::model_download_status,
+            host::commands::models::cancel_model_download,
+            host::commands::models::ai_model_installed,
+            host::commands::models::list_installed_ai_models,
         ])
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
@@ -81,8 +89,8 @@ pub fn run() {
             let conn = db::open_sqlite(&db_path).map_err(|err| {
                 anyhow::anyhow!("opening database at {}: {err:#}", db_path.display())
             })?;
-            let tracking: Box<dyn domain::TrackingSvc> = Box::new(SqliteTracking::new(conn.clone()));
-            let session_tracker = ActivitySessionTracker::new(tracking).context("initializing session tracker")?;
+            let recorder: Box<dyn SessionRecorder> = Box::new(SqliteSessionRecorder::new(conn.clone()));
+            let session_tracker = FocusStateMachine::new(recorder).context("initializing session tracker")?;
             let tracker: SharedTracker = Arc::new(Mutex::new(Box::new(session_tracker) as Box<dyn SessionTracker>));
             ai::llm::set_download_root(data_dir.join("models"));
 
@@ -90,14 +98,16 @@ pub fn run() {
             app.manage(Box::new(SqliteCategories::new(conn.clone())) as Box<dyn CategorySvc>);
             app.manage(Box::new(SqliteClassification::new(conn.clone())) as Box<dyn ClassificationSvc>);
             app.manage(Box::new(SqliteLabeling::new(conn)) as Box<dyn LabelingSvc>);
-            app.manage(commands::AiCategorizeState::default());
-            app.manage(commands::ModelDownloadState::default());
-            app.manage(ai::llm::ModelCache::default());
+            app.manage(AiRunState::default());
+            app.manage(ModelDownloadState::default());
+            let models = ModelCache::default();
+            app.manage(Box::new(LlamaClassifier::new(models.clone())) as Box<dyn Classifier>);
+            app.manage(models);
             app.manage(tracker.clone());
             let (tx, rx) = mpsc::channel::<WatchEvent>();
 
             #[cfg(target_os = "linux")]
-            crate::focus::platform::start_presence_watcher(tx.clone())
+            crate::tracking::adapters::platform::start_presence_watcher(tx.clone())
                 .context("starting presence watcher")?;
 
             let mut watcher = PlatformFocusWatcher::new();
@@ -110,10 +120,10 @@ pub fn run() {
                     for event in rx {
                         let result = match event {
                             WatchEvent::Focus(event) => {
-                                event_tracker.lock().unwrap().handle_event(event)
+                                event_tracker.lock().unwrap().handle_focus(event.into())
                             }
                             WatchEvent::Presence(event) => {
-                                event_tracker.lock().unwrap().handle_presence_event(event)
+                                event_tracker.lock().unwrap().handle_presence(event.into())
                             }
                         };
                         if let Err(err) = result {
@@ -123,10 +133,10 @@ pub fn run() {
                 })
                 .context("spawning activity-tracker thread")?;
 
-            focus::ingest::spawn(tracker).context("starting tab-ingest server")?;
-            info!(port = focus::ingest::PORT, "listening for tab events");
+            tracking::adapters::ingest::spawn(tracker).context("starting tab-ingest server")?;
+            info!(port = tracking::adapters::ingest::PORT, "listening for tab events");
 
-            tray::build(app.handle())?;
+            host::tray::build(app.handle())?;
 
             Ok(())
         })
