@@ -1,5 +1,6 @@
 use crate::ai::feedback::FeedbackIndex;
 use crate::ai::llm::{self, ActivityText, ModelCache};
+use crate::categorization::ClassificationSvc;
 use crate::domain::types::{
     ActivityStats, AiReviewGroupPage, AiReviewPage, AiVerdict, Category,
     CategoryFilter, CategorySourceFilter, FeedbackStats, NewCategory, ReviewFilter, SessionFilter,
@@ -85,22 +86,22 @@ pub fn list_categories(categories: State<Box<dyn CategorySvc>>) -> Result<Vec<Ca
 
 #[tauri::command]
 pub fn set_session_row_category(
-    categories: State<Box<dyn CategorySvc>>,
+    classification: State<Box<dyn ClassificationSvc>>,
     session_id: SessionId,
     category_id: Option<CategoryId>,
 ) -> Result<(), String> {
-    categories
+    classification
         .assign_sessions(&[session_id], category_id)
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn set_sessions_category(
-    categories: State<Box<dyn CategorySvc>>,
+    classification: State<Box<dyn ClassificationSvc>>,
     session_ids: Vec<SessionId>,
     category_id: CategoryId,
 ) -> Result<(), String> {
-    categories
+    classification
         .assign_sessions(&session_ids, Some(category_id))
         .map_err(|e| e.to_string())
 }
@@ -158,9 +159,11 @@ pub struct CategorizationResetOutcome {
 }
 
 #[tauri::command]
-pub fn reset_categorization(categories: State<Box<dyn CategorySvc>>) -> Result<CategorizationResetOutcome, String> {
-    categories
-        .reset_categorization()
+pub fn reset_categorization(
+    classification: State<Box<dyn ClassificationSvc>>,
+) -> Result<CategorizationResetOutcome, String> {
+    classification
+        .reset()
         .map(|labels_cleared| CategorizationResetOutcome { labels_cleared })
         .map_err(|error| error.to_string())
 }
@@ -278,7 +281,7 @@ pub async fn categorize(
                 category_id: answer,
                 confidence,
             };
-            match app.state::<Box<dyn LabelingSvc>>().assign_ai(&[verdict]) {
+            match app.state::<Box<dyn ClassificationSvc>>().assign_ai(&[verdict]) {
                 Ok(n) => changed += n,
                 Err(err) => {
                     warn!(%err, "saving AI label");
@@ -358,18 +361,21 @@ pub fn list_ai_review_groups(
 }
 
 #[tauri::command]
-pub fn accept_ai_labels(labeling: State<Box<dyn LabelingSvc>>, activity_ids: Vec<ActivityId>) -> Result<(), String> {
-    labeling.accept_ai_labels(&activity_ids).map_err(|e| e.to_string())
+pub fn accept_ai_labels(
+    classification: State<Box<dyn ClassificationSvc>>,
+    activity_ids: Vec<ActivityId>,
+) -> Result<(), String> {
+    classification.accept_ai_labels(&activity_ids).map_err(|e| e.to_string())
 }
 
 /// Pins activities to `category_id`; `None` rejects their AI label.
 #[tauri::command]
 pub fn set_activities_category(
-    categories: State<Box<dyn CategorySvc>>,
+    classification: State<Box<dyn ClassificationSvc>>,
     activity_ids: Vec<ActivityId>,
     category_id: Option<CategoryId>,
 ) -> Result<(), String> {
-    categories
+    classification
         .assign_activities(&activity_ids, category_id)
         .map_err(|e| e.to_string())
 }

@@ -9,15 +9,14 @@ use super::schema::ai_labels;
 pub use super::traits::AiLabelsRepo;
 
 impl AiLabelsRepo for SqliteConnection {
-    fn get_active_many(&mut self, activity_ids: &[i64]) -> QueryResult<Vec<AiLabelRow>> {
+    fn get_many(&mut self, activity_ids: &[i64]) -> QueryResult<Vec<AiLabelRow>> {
         ai_labels::table
             .filter(ai_labels::activity_id.eq_any(activity_ids))
-            .filter(ai_labels::rejected.eq(false))
             .select(AiLabelRow::as_select())
             .load(self)
     }
 
-    fn upsert_many(&mut self, labels: &[(i64, i64, f64)]) -> QueryResult<()> {
+    fn upsert_many(&mut self, labels: &[(i64, i64, Option<f64>)]) -> QueryResult<()> {
         if labels.is_empty() {
             return Ok(());
         }

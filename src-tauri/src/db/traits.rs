@@ -15,14 +15,10 @@ pub trait ActivitiesRepo {
     fn get(&mut self, id: i64) -> QueryResult<Option<ActivityRow>>;
     fn get_by_identity(&mut self, source_id: i64, path: &str, title: &str) -> QueryResult<Option<ActivityRow>>;
     fn insert(&mut self, new: &NewActivityRow<'_>) -> QueryResult<ActivityRow>;
-    /// The subset of `ids` that are currently unpinned, in one query.
-    fn filter_unpinned(&mut self, ids: &[i64]) -> QueryResult<Vec<i64>>;
+    /// `(id, category_id)` for each of `ids` that exists; `None` means unpinned. One query.
+    fn get_pins_many(&mut self, ids: &[i64]) -> QueryResult<Vec<(i64, Option<i64>)>>;
     /// Pins every activity in `ids` to `category_id`, or unpins them with `None`, in one query.
     fn set_category_many(&mut self, ids: &[i64], category_id: Option<i64>) -> QueryResult<()>;
-    /// Pins `id` to `category_id` only if it is not already pinned. Returns whether it changed.
-    fn set_category_if_unpinned(&mut self, id: i64, category_id: i64) -> QueryResult<bool>;
-    /// Pins every activity in `ids` that is not already pinned to `category_id`, in one query.
-    fn set_category_many_if_unpinned(&mut self, ids: &[i64], category_id: i64) -> QueryResult<()>;
     /// Unpins every activity currently pinned to one of `category_ids` — used when those
     /// categories are about to be deleted.
     fn unpin_categories(&mut self, category_ids: &[i64]) -> QueryResult<()>;
@@ -35,12 +31,12 @@ pub trait ActivitiesRepo {
 }
 
 pub trait AiLabelsRepo {
-    /// The active (non-rejected) labels among `activity_ids`, in one query.
-    fn get_active_many(&mut self, activity_ids: &[i64]) -> QueryResult<Vec<AiLabelRow>>;
+    /// The labels among `activity_ids`, rejected ones included, in one query.
+    fn get_many(&mut self, activity_ids: &[i64]) -> QueryResult<Vec<AiLabelRow>>;
     /// Sets the AI label for every `(activity_id, category_id, confidence)` in `labels`,
     /// replacing whatever was there (rejected or not), in one query. `activity_id` is the
     /// table's primary key, so this is insert-or-overwrite per row.
-    fn upsert_many(&mut self, labels: &[(i64, i64, f64)]) -> QueryResult<()>;
+    fn upsert_many(&mut self, labels: &[(i64, i64, Option<f64>)]) -> QueryResult<()>;
     /// Removes the active (non-rejected) labels for `activity_ids`, leaving them with none.
     /// Returns how many were actually removed.
     fn clear_active_many(&mut self, activity_ids: &[i64]) -> QueryResult<usize>;

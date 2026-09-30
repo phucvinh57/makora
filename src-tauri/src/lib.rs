@@ -1,4 +1,5 @@
 mod ai;
+mod categorization;
 mod commands;
 mod db;
 mod domain;
@@ -17,6 +18,7 @@ use chrono::Utc;
 use tauri::Manager;
 use tracing::{error, info};
 
+use crate::categorization::{ClassificationSvc, SqliteClassification};
 use crate::domain::{CategorySvc, HistorySvc, LabelingSvc, SqliteCategories, SqliteHistory, SqliteLabeling, SqliteTracking};
 use crate::focus::{ActivitySessionTracker, FocusWatcher, PlatformFocusWatcher, SessionTracker, WatchEvent};
 
@@ -85,6 +87,7 @@ pub fn run() {
 
             app.manage(Box::new(SqliteHistory::new(conn.clone())) as Box<dyn HistorySvc>);
             app.manage(Box::new(SqliteCategories::new(conn.clone())) as Box<dyn CategorySvc>);
+            app.manage(Box::new(SqliteClassification::new(conn.clone())) as Box<dyn ClassificationSvc>);
             app.manage(Box::new(SqliteLabeling::new(conn)) as Box<dyn LabelingSvc>);
             app.manage(commands::AiCategorizeState::default());
             app.manage(commands::ModelDownloadState::default());

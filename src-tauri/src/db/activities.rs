@@ -34,11 +34,10 @@ impl ActivitiesRepo for SqliteConnection {
             .get_result(self)
     }
 
-    fn filter_unpinned(&mut self, ids: &[i64]) -> QueryResult<Vec<i64>> {
+    fn get_pins_many(&mut self, ids: &[i64]) -> QueryResult<Vec<(i64, Option<i64>)>> {
         activities::table
             .filter(activities::id.eq_any(ids))
-            .filter(activities::category_id.is_null())
-            .select(activities::id)
+            .select((activities::id, activities::category_id))
             .load(self)
     }
 
@@ -46,28 +45,6 @@ impl ActivitiesRepo for SqliteConnection {
         diesel::update(activities::table.filter(activities::id.eq_any(ids)))
             .set(activities::category_id.eq(category_id))
             .execute(self)?;
-        Ok(())
-    }
-
-    fn set_category_if_unpinned(&mut self, id: i64, category_id: i64) -> QueryResult<bool> {
-        let updated = diesel::update(
-            activities::table
-                .find(id)
-                .filter(activities::category_id.is_null()),
-        )
-        .set(activities::category_id.eq(category_id))
-        .execute(self)?;
-        Ok(updated > 0)
-    }
-
-    fn set_category_many_if_unpinned(&mut self, ids: &[i64], category_id: i64) -> QueryResult<()> {
-        diesel::update(
-            activities::table
-                .filter(activities::id.eq_any(ids))
-                .filter(activities::category_id.is_null()),
-        )
-        .set(activities::category_id.eq(category_id))
-        .execute(self)?;
         Ok(())
     }
 

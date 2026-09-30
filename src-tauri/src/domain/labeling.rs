@@ -1,11 +1,9 @@
-//! AI category suggestions: which activities still need one, storing what the model comes back
-//! with, and the review queue the user judges them through.
-
-use std::collections::{HashMap, HashSet};
+//! AI category suggestions, read side: which activities still need one, what the user has
+//! judged so far, and the review queue they judge through. Storing and changing the labels is
+//! [`crate::categorization`]'s job.
 
 use anyhow::Result;
 use diesel::sqlite::SqliteConnection;
-use diesel::Connection;
 
 use crate::db::{self, Db};
 use crate::shared::confidence::Confidence;
@@ -14,8 +12,8 @@ use crate::tracking::domain::source_key::KeyKind;
 
 use super::categories::load_tree;
 use super::types::{
-    AiReviewGroup, AiReviewGroupPage, AiReviewPage, AiReviewRow, AiVerdict, FeedbackStats,
-    LabeledActivity, ReviewFilter, UncategorizedActivity,
+    AiReviewGroup, AiReviewGroupPage, AiReviewPage, AiReviewRow, FeedbackStats, LabeledActivity,
+    ReviewFilter, UncategorizedActivity,
 };
 
 /// Labels the model was at least this sure of are left out of the default review queue.
@@ -47,100 +45,6 @@ impl LabelingSvc for SqliteLabeling {
                 title: row.title,
             })
             .collect())
-    }
-
-    fn assign_ai(&self, verdicts: &[AiVerdict]) -> Result<usize> {
-        if verdicts.is_empty() {
-            return Ok(0);
-        }
-        let labels: Vec<(i64, Option<i64>, f64)> = verdicts
-            .iter()
-            .map(|verdict| {
-                (
-                    verdict.activity_id.into(),
-                    verdict.category_id.map(Into::into),
-                    verdict.confidence.get(),
-                )
-            })
-            .collect();
-        let labels = labels.as_slice();
-        let mut conn = self.db.lock().unwrap();
-        conn.transaction(|conn| -> diesel::QueryResult<usize> {
-            let activity_ids: Vec<i64> = labels.iter().map(|&(activity_id, ..)| activity_id).collect();
-            let unpinned: HashSet<i64> = db::activities::ActivitiesRepo::filter_unpinned(conn, &activity_ids)?
-                .into_iter()
-                .collect();
-
-            let wanted_categories: Vec<i64> = labels.iter().filter_map(|&(_, category_id, _)| category_id).collect();
-            let existing_categories: HashSet<i64> = db::categories::CategoriesRepo::filter_existing(conn, &wanted_categories)?
-                .into_iter()
-                .collect();
-
-            // A repeated activity_id keeps only its last entry — same as the sequential loop
-            // this replaced. `upsert_many` runs as one statement, and SQLite rejects an
-            // `ON CONFLICT DO UPDATE` that targets the same row twice in one statement.
-            let mut to_upsert_by_id: HashMap<i64, (i64, f64)> = HashMap::new();
-            let mut to_clear_ids: HashSet<i64> = HashSet::new();
-            for &(activity_id, category_id, confidence) in labels {
-                if !unpinned.contains(&activity_id) {
-                    continue;
-                }
-                match category_id {
-                    Some(category_id) if existing_categories.contains(&category_id) => {
-                        to_clear_ids.remove(&activity_id);
-                        to_upsert_by_id.insert(activity_id, (category_id, confidence));
-                    }
-                    Some(_) => {}
-                    None => {
-                        to_upsert_by_id.remove(&activity_id);
-                        to_clear_ids.insert(activity_id);
-                    }
-                }
-            }
-            let to_upsert: Vec<(i64, i64, f64)> = to_upsert_by_id
-                .into_iter()
-                .map(|(activity_id, (category_id, confidence))| (activity_id, category_id, confidence))
-                .collect();
-            let to_clear: Vec<i64> = to_clear_ids.into_iter().collect();
-
-            // Not counted as a change: a re-check that lands on the same category only
-            // refreshes how sure the model was.
-            let upsert_ids: Vec<i64> = to_upsert.iter().map(|&(activity_id, ..)| activity_id).collect();
-            let before: HashMap<i64, i64> = db::ai_labels::AiLabelsRepo::get_active_many(conn, &upsert_ids)?
-                .into_iter()
-                .map(|label| (label.activity_id, label.category_id))
-                .collect();
-            let changed = to_upsert
-                .iter()
-                .filter(|&&(activity_id, category_id, _)| before.get(&activity_id).copied() != Some(category_id))
-                .count();
-
-            db::ai_labels::AiLabelsRepo::upsert_many(conn, &to_upsert)?;
-            let cleared = db::ai_labels::AiLabelsRepo::clear_active_many(conn, &to_clear)?;
-
-            Ok(changed + cleared)
-        })
-        .map_err(Into::into)
-    }
-
-    fn accept_ai_labels(&self, activity_ids: &[ActivityId]) -> Result<()> {
-        if activity_ids.is_empty() {
-            return Ok(());
-        }
-        let activity_ids = raw(activity_ids);
-        let mut conn = self.db.lock().unwrap();
-        conn.transaction(|conn| -> diesel::QueryResult<()> {
-            let labels = db::ai_labels::AiLabelsRepo::get_active_many(conn, &activity_ids)?;
-            let mut by_category: HashMap<i64, Vec<i64>> = HashMap::new();
-            for label in labels {
-                by_category.entry(label.category_id).or_default().push(label.activity_id);
-            }
-            for (category_id, ids) in by_category {
-                db::activities::ActivitiesRepo::set_category_many_if_unpinned(conn, &ids, category_id)?;
-            }
-            Ok(())
-        })
-        .map_err(Into::into)
     }
 
     fn get_labeled_activities(&self) -> Result<Vec<LabeledActivity>> {

@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use diesel::sqlite::SqliteConnection;
 use diesel::{Connection, QueryResult};
 
+use crate::categorization::store as classifications;
 use crate::db::models::{ActivityRow, NewActivityRow, NewSessionRow, NewSourceRow};
 use crate::db::{self, Db};
 use crate::focus::AppInfo;
@@ -108,14 +109,17 @@ impl TrackingSvc for SqliteTracking {
             let source_id = ensure_source(conn, &source, &source.display_name(&app.app_name))?;
             let target = ensure_activity(conn, source_id, &path, &canonical)?;
 
-            let old_pin = old_activity.category_id;
-            let target_pin = target.category_id;
-            if old_pin.is_some() && target_pin.is_some() && old_pin != target_pin {
+            // The session moves onto the target activity, so the user's pin moves with it —
+            // unless the target already has a different one, in which case it stays put.
+            let before = classifications::load_many(conn, &[old_activity.id.into(), target.id.into()])?;
+            let mut after = before.clone();
+            let Some((old, [target_classification])) = after.split_first_mut() else {
+                return Ok(());
+            };
+            if old.carry_pin_into(target_classification).is_err() {
                 return Ok(());
             }
-            if let (Some(old_pin), None) = (old_pin, target_pin) {
-                db::activities::ActivitiesRepo::set_category_if_unpinned(conn, target.id, old_pin)?;
-            }
+            classifications::save_changes(conn, &before, &after)?;
 
             db::sessions::SessionsRepo::reassign_activity(conn, id, target.id)?;
             prune_orphans(conn, &[old_activity.id])?;

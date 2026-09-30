@@ -1,15 +1,15 @@
-//! The category taxonomy and the manual pins on activities. Pinning always wins over an AI
-//! label ([`super::labeling`]); unpinning rejects whatever AI label the activity was carrying,
-//! so "uncategorized" sticks and the model learns from it.
+//! The category taxonomy: creating, editing and deleting categories. Filing activities under
+//! them is [`crate::categorization`]'s job.
 
 use anyhow::{anyhow, bail, Result};
 use diesel::result::{DatabaseErrorKind, Error as DieselError};
 use diesel::sqlite::SqliteConnection;
 use diesel::Connection;
 
+use crate::categorization;
 use crate::db::models::{CategoryChanges, CategoryRow, NewCategoryRow};
 use crate::db::{self, Db};
-use crate::shared::ids::{raw, ActivityId, CategoryId, SessionId};
+use crate::shared::ids::CategoryId;
 use crate::taxonomy::domain::CategoryTree;
 
 use super::types::{Category, NewCategory};
@@ -83,59 +83,11 @@ impl CategorySvc for SqliteCategories {
             if doomed.is_empty() {
                 bail!("category {id} does not exist");
             }
-            db::activities::ActivitiesRepo::unpin_categories(conn, &doomed)?;
-            db::ai_labels::AiLabelsRepo::delete_for_categories(conn, &doomed)?;
+            // The branch's pins and AI labels go with it, in the same transaction.
+            categorization::store::release_categories(conn, &doomed)?;
             db::categories::CategoriesRepo::delete_many(conn, &doomed)?;
             Ok(())
         })
-    }
-
-    fn assign_sessions(&self, session_ids: &[SessionId], category_id: Option<CategoryId>) -> Result<()> {
-        if session_ids.is_empty() {
-            return Ok(());
-        }
-        let session_ids = raw(session_ids);
-        let category_id = category_id.map(i64::from);
-        let mut conn = self.db.lock().unwrap();
-        conn.transaction(|conn| -> diesel::QueryResult<()> {
-            let activity_ids = db::sessions::SessionsRepo::get_activity_ids_for(conn, &session_ids)?;
-            if activity_ids.is_empty() {
-                return Ok(());
-            }
-            if category_id.is_none() {
-                db::ai_labels::AiLabelsRepo::reject_active_many(conn, &activity_ids)?;
-            }
-            db::activities::ActivitiesRepo::set_category_many(conn, &activity_ids, category_id)
-        })
-        .map_err(Into::into)
-    }
-
-    fn assign_activities(&self, activity_ids: &[ActivityId], category_id: Option<CategoryId>) -> Result<()> {
-        if activity_ids.is_empty() {
-            return Ok(());
-        }
-        let activity_ids = raw(activity_ids);
-        let category_id = category_id.map(i64::from);
-        let mut conn = self.db.lock().unwrap();
-        conn.transaction(|conn| -> diesel::QueryResult<()> {
-            // Unpinning also rejects the AI label each activity carries, if any, so
-            // "Uncategorized" sticks and the model learns from it.
-            if category_id.is_none() {
-                db::ai_labels::AiLabelsRepo::reject_active_many(conn, &activity_ids)?;
-            }
-            db::activities::ActivitiesRepo::set_category_many(conn, &activity_ids, category_id)
-        })
-        .map_err(Into::into)
-    }
-
-    fn reset_categorization(&self) -> Result<usize> {
-        let mut conn = self.db.lock().unwrap();
-        conn.transaction(|conn| -> diesel::QueryResult<usize> {
-            let labels = db::ai_labels::AiLabelsRepo::delete_all(conn)?;
-            let pins = db::activities::ActivitiesRepo::clear_all_pins(conn)?;
-            Ok(labels + pins)
-        })
-        .map_err(Into::into)
     }
 }
 
