@@ -13,3 +13,4 @@
 .tanstack/tmp
 
 /browser-extension/dist
+/target

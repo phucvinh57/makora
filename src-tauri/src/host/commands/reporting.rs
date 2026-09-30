@@ -10,7 +10,7 @@ use crate::host::error::IpcError;
 use crate::shared::ids::CategoryId;
 use crate::shared::time::TimeRange;
 
-#[tauri::command]
+#[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
 pub fn list_sessions(
     history: State<Box<dyn HistorySvc>>,
@@ -34,7 +34,7 @@ pub fn list_sessions(
     Ok(history.get_sessions(page, page_size, &filter)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn activity_stats(
     history: State<Box<dyn HistorySvc>>,
     start: String,
@@ -47,7 +47,7 @@ pub fn activity_stats(
     Ok(history.get_activity_stats(&range)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_ai_review(
     labeling: State<Box<dyn LabelingSvc>>,
     page: i64,
@@ -57,7 +57,7 @@ pub fn list_ai_review(
     Ok(labeling.get_review_page(page.max(0), page_size.max(1), &filter)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_ai_review_groups(
     labeling: State<Box<dyn LabelingSvc>>,
     page: i64,
@@ -67,7 +67,7 @@ pub fn list_ai_review_groups(
     Ok(labeling.get_review_groups(page.max(0), page_size.max(1), &filter)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn ai_feedback_stats(labeling: State<Box<dyn LabelingSvc>>) -> Result<FeedbackStats, IpcError> {
     Ok(labeling.get_feedback_stats()?)
 }

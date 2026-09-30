@@ -127,3 +127,6 @@ time shows up as **Uncategorized**.
 - Lock/sleep presence handling is Linux-only; Windows and macOS do not yet have presence watchers.
 - Windows UWP/Store apps currently appear as `ApplicationFrameHost.exe` instead of their underlying app identity.
 - macOS focus delivery and window-title access still need end-to-end testing on macOS hardware.
+
+## Note
+To build llama-cpp-2 with vulkan on Windows, please set `$env:CARGO_TARGET_DIR = "C:\mk"` before every build.

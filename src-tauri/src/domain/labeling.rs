@@ -4,6 +4,7 @@
 
 use anyhow::Result;
 use diesel::sqlite::SqliteConnection;
+use diesel::Connection;
 
 use crate::db::Db;
 use crate::reporting::{self, CategoryScope};
@@ -34,7 +35,7 @@ impl SqliteLabeling {
 
 impl LabelingSvc for SqliteLabeling {
     fn get_activities_to_label(&self, recheck: bool) -> Result<Vec<UncategorizedActivity>> {
-        let mut conn = self.db.lock().unwrap();
+        let mut conn = self.db.read()?;
         Ok(reporting::review::ReviewRepo::get_activities_to_label(&mut *conn, recheck)?
             .into_iter()
             .map(|row| UncategorizedActivity {
@@ -49,7 +50,7 @@ impl LabelingSvc for SqliteLabeling {
     }
 
     fn get_labeled_activities(&self) -> Result<Vec<LabeledActivity>> {
-        let mut conn = self.db.lock().unwrap();
+        let mut conn = self.db.read()?;
         Ok(reporting::review::ReviewRepo::get_labeled_activities(&mut *conn)?
             .into_iter()
             .map(|row| LabeledActivity {
@@ -66,7 +67,7 @@ impl LabelingSvc for SqliteLabeling {
     }
 
     fn get_review_page(&self, page: i64, page_size: i64, filter: &ReviewFilter) -> Result<AiReviewPage> {
-        let mut conn = self.db.lock().unwrap();
+        let mut conn = self.db.read()?;
         let category = resolve_category_scope(&mut conn, filter.category)?;
         let activities = filter.activities.as_deref().map(raw);
         let (rows, total) = reporting::review::ReviewRepo::get_review_page(
@@ -86,7 +87,7 @@ impl LabelingSvc for SqliteLabeling {
     }
 
     fn get_review_groups(&self, page: i64, page_size: i64, filter: &ReviewFilter) -> Result<AiReviewGroupPage> {
-        let mut conn = self.db.lock().unwrap();
+        let mut conn = self.db.read()?;
         let category = resolve_category_scope(&mut conn, filter.category)?;
         let (groups, total) = reporting::review::ReviewRepo::get_review_groups(
             &mut *conn,
@@ -104,17 +105,19 @@ impl LabelingSvc for SqliteLabeling {
     }
 
     fn get_feedback_stats(&self) -> Result<FeedbackStats> {
-        let mut conn = self.db.lock().unwrap();
-        let counts = reporting::review::ReviewRepo::get_feedback_counts(&mut *conn)?;
-        let seconds = reporting::review::ReviewRepo::get_feedback_seconds(&mut *conn)?;
-        Ok(FeedbackStats {
-            corrected: counts.corrected,
-            confirmed: counts.confirmed,
-            pinned: counts.pinned,
-            rejected: counts.rejected,
-            pending_review: counts.pending_review,
-            pending_seconds: seconds.pending_seconds,
-            reviewed_seconds: seconds.reviewed_seconds,
+        let mut conn = self.db.read()?;
+        (*conn).transaction(|conn| {
+            let counts = reporting::review::ReviewRepo::get_feedback_counts(conn)?;
+            let seconds = reporting::review::ReviewRepo::get_feedback_seconds(conn)?;
+            Ok(FeedbackStats {
+                corrected: counts.corrected,
+                confirmed: counts.confirmed,
+                pinned: counts.pinned,
+                rejected: counts.rejected,
+                pending_review: counts.pending_review,
+                pending_seconds: seconds.pending_seconds,
+                reviewed_seconds: seconds.reviewed_seconds,
+            })
         })
     }
 }

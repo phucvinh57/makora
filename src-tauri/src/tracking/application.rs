@@ -34,7 +34,7 @@ impl SessionRecorder for SqliteSessionRecorder {
         let source = SourceKey::of(&app.exe_path, url);
         let path = url.map(url_path).unwrap_or_default();
         let canonical = canonical_title(window_title, &app.app_name, url);
-        let mut conn = self.db.lock().unwrap();
+        let mut conn = self.db.write();
         conn.transaction(|conn| -> QueryResult<i64> {
             let source_id = ensure_source(conn, &source, &source.display_name(&app.app_name))?;
             let activity = ensure_activity(conn, source_id, &path, &canonical)?;
@@ -66,7 +66,7 @@ impl SessionRecorder for SqliteSessionRecorder {
     fn end(&self, id: SessionId, at: DateTime<Utc>) -> Result<()> {
         let id = i64::from(id);
         let end_time = time::to_db(at);
-        let mut conn = self.db.lock().unwrap();
+        let mut conn = self.db.write();
         conn.transaction(|conn| -> QueryResult<()> {
             let Some(session) = db::sessions::SessionsRepo::get(conn, id)? else {
                 return Ok(());
@@ -85,7 +85,7 @@ impl SessionRecorder for SqliteSessionRecorder {
 
     fn refine_title(&self, id: SessionId, app: &FocusedApp, window_title: &str, url: Option<&str>) -> Result<()> {
         let id = i64::from(id);
-        let mut conn = self.db.lock().unwrap();
+        let mut conn = self.db.write();
         conn.transaction(|conn| -> QueryResult<()> {
             let Some(session) = db::sessions::SessionsRepo::get(conn, id)? else {
                 return Ok(());
@@ -123,7 +123,7 @@ impl SessionRecorder for SqliteSessionRecorder {
     }
 
     fn close_dangling(&self) -> Result<()> {
-        let mut conn = self.db.lock().unwrap();
+        let mut conn = self.db.write();
         conn.transaction(|conn| -> QueryResult<()> {
             let activity_ids = db::sessions::SessionsRepo::get_open_activity_ids(conn)?;
             db::sessions::SessionsRepo::delete_open(conn)?;

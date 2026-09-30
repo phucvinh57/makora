@@ -59,7 +59,7 @@ impl ClassificationSvc for SqliteClassification {
         if session_ids.is_empty() {
             return Ok(());
         }
-        let mut conn = self.db.lock().unwrap();
+        let mut conn = self.db.write();
         conn.transaction(|conn| {
             let activity_ids: Vec<ActivityId> =
                 db::sessions::SessionsRepo::get_activity_ids_for(conn, &raw(session_ids))?
@@ -75,7 +75,7 @@ impl ClassificationSvc for SqliteClassification {
         if activity_ids.is_empty() {
             return Ok(());
         }
-        let mut conn = self.db.lock().unwrap();
+        let mut conn = self.db.write();
         conn.transaction(|conn| assign(conn, activity_ids, category_id))
             .map_err(Into::into)
     }
@@ -84,7 +84,7 @@ impl ClassificationSvc for SqliteClassification {
         if verdicts.is_empty() {
             return Ok(0);
         }
-        let mut conn = self.db.lock().unwrap();
+        let mut conn = self.db.write();
         conn.transaction(|conn| {
             // A verdict naming a category that has since been deleted is ignored altogether.
             let wanted: Vec<i64> = verdicts
@@ -131,7 +131,7 @@ impl ClassificationSvc for SqliteClassification {
         if activity_ids.is_empty() {
             return Ok(());
         }
-        let mut conn = self.db.lock().unwrap();
+        let mut conn = self.db.write();
         conn.transaction(|conn| {
             store::modify_many(conn, activity_ids, |classifications| {
                 for classification in classifications {
@@ -144,7 +144,7 @@ impl ClassificationSvc for SqliteClassification {
     }
 
     fn reset(&self) -> Result<usize> {
-        let mut conn = self.db.lock().unwrap();
+        let mut conn = self.db.write();
         conn.transaction(store::clear_all).map_err(Into::into)
     }
 }

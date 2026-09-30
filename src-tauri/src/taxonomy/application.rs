@@ -38,7 +38,7 @@ impl SqliteCategories {
 
 impl CategorySvc for SqliteCategories {
     fn get_list(&self) -> Result<Vec<Category>, TaxonomyError> {
-        let mut conn = self.db.lock().unwrap();
+        let mut conn = self.db.read()?;
         Ok(db::categories::CategoriesRepo::get_list(&mut *conn)?
             .into_iter()
             .map(to_category)
@@ -46,12 +46,12 @@ impl CategorySvc for SqliteCategories {
     }
 
     fn get(&self, id: CategoryId) -> Result<Option<Category>, TaxonomyError> {
-        let mut conn = self.db.lock().unwrap();
+        let mut conn = self.db.read()?;
         Ok(db::categories::CategoriesRepo::get(&mut *conn, id.into())?.map(to_category))
     }
 
     fn create(&self, new: &NewCategory) -> Result<Category, TaxonomyError> {
-        let mut conn = self.db.lock().unwrap();
+        let mut conn = self.db.write();
         let row = db::categories::CategoriesRepo::insert(
             &mut *conn,
             &NewCategoryRow {
@@ -66,7 +66,7 @@ impl CategorySvc for SqliteCategories {
     }
 
     fn update(&self, id: CategoryId, new: &NewCategory) -> Result<Category, TaxonomyError> {
-        let mut conn = self.db.lock().unwrap();
+        let mut conn = self.db.write();
         if let Some(parent_id) = new.parent_id {
             let tree = load_tree(&mut conn)?;
             if parent_id == id || tree.descendants(id.into()).contains(&parent_id.into()) {
@@ -85,7 +85,7 @@ impl CategorySvc for SqliteCategories {
     }
 
     fn delete(&self, id: CategoryId) -> Result<(), TaxonomyError> {
-        let mut conn = self.db.lock().unwrap();
+        let mut conn = self.db.write();
         conn.transaction(|conn| {
             let doomed = load_tree(conn)?.deletion_order(id.into());
             if doomed.is_empty() {

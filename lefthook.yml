@@ -9,4 +9,4 @@ pre-commit:
     - name: check Rust
       root: "src-tauri/"
       glob: "*.{rs,toml}"
-      run: cargo check
+      run: CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$(git rev-parse --show-toplevel)/target}" cargo check

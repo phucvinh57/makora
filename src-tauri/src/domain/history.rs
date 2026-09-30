@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use diesel::sqlite::SqliteConnection;
+use diesel::Connection;
 
 use crate::db::Db;
 use crate::reporting::{self, CategoryScope};
@@ -30,30 +31,35 @@ impl HistorySvc for SqliteHistory {
     fn get_sessions(&self, page: i64, page_size: i64, filter: &SessionFilter) -> Result<SessionsPage> {
         let page_size = page_size.max(1);
         let offset = page.max(0) * page_size;
-        let mut conn = self.db.lock().unwrap();
-        let query = to_session_query(&mut conn, filter)?;
-        let rows = reporting::history::HistoryRepo::get_sessions(&mut *conn, page_size, offset, &query)?;
-        let total = reporting::history::HistoryRepo::get_session_count(&mut *conn, &query)?;
-        Ok(SessionsPage {
-            rows: rows.into_iter().map(to_session_row).collect(),
-            total,
+        let mut conn = self.db.read()?;
+        // One transaction, so the rows and the total come from the same snapshot.
+        (*conn).transaction(|conn| {
+            let query = to_session_query(conn, filter)?;
+            let rows = reporting::history::HistoryRepo::get_sessions(conn, page_size, offset, &query)?;
+            let total = reporting::history::HistoryRepo::get_session_count(conn, &query)?;
+            Ok(SessionsPage {
+                rows: rows.into_iter().map(to_session_row).collect(),
+                total,
+            })
         })
     }
 
     fn get_activity_stats(&self, range: &TimeRange) -> Result<ActivityStats> {
         let (start, end) = (time::to_db(range.start), time::to_db(range.end));
         let (start, end) = (start.as_str(), end.as_str());
-        let mut conn = self.db.lock().unwrap();
-        let totals = reporting::history::HistoryRepo::get_totals(&mut *conn, start, end)?;
-        let categories = reporting::history::HistoryRepo::get_category_stats(&mut *conn, start, end)?;
-        let apps = reporting::history::HistoryRepo::get_app_stats(&mut *conn, start, end)?;
-        let daily = reporting::history::HistoryRepo::get_daily_stats(&mut *conn, start, end)?;
-        Ok(ActivityStats {
-            total_seconds: totals.total_seconds,
-            session_count: totals.session_count,
-            categories: categories.into_iter().map(to_category_stat).collect(),
-            apps: apps.into_iter().map(to_app_stat).collect(),
-            daily: daily.into_iter().map(to_daily_stat).collect(),
+        let mut conn = self.db.read()?;
+        (*conn).transaction(|conn| {
+            let totals = reporting::history::HistoryRepo::get_totals(conn, start, end)?;
+            let categories = reporting::history::HistoryRepo::get_category_stats(conn, start, end)?;
+            let apps = reporting::history::HistoryRepo::get_app_stats(conn, start, end)?;
+            let daily = reporting::history::HistoryRepo::get_daily_stats(conn, start, end)?;
+            Ok(ActivityStats {
+                total_seconds: totals.total_seconds,
+                session_count: totals.session_count,
+                categories: categories.into_iter().map(to_category_stat).collect(),
+                apps: apps.into_iter().map(to_app_stat).collect(),
+                daily: daily.into_iter().map(to_daily_stat).collect(),
+            })
         })
     }
 }

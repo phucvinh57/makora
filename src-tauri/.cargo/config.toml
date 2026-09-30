@@ -1,0 +1,7 @@
+# The default Visual Studio generator runs the vulkan-shaders-gen install step
+# before its build step, so a cold build of llama-cpp-sys-2 fails once and only
+# passes on retry. Ninja orders the steps correctly. The target-specific name
+# keeps this Windows-only; requires ninja on PATH (winget install Ninja-build.Ninja).
+[env]
+CMAKE_GENERATOR_x86_64-pc-windows-msvc = "Ninja"
+CMAKE_OBJECT_PATH_MAX = "1024"

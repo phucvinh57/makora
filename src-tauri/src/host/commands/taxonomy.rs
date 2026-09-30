@@ -5,7 +5,7 @@ use crate::host::error::IpcError;
 use crate::shared::ids::CategoryId;
 use crate::taxonomy::CategorySvc;
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_categories(categories: State<Box<dyn CategorySvc>>) -> Result<Vec<Category>, IpcError> {
     Ok(categories.get_list()?)
 }
