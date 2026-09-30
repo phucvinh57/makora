@@ -3,13 +3,14 @@
 use anyhow::Result;
 use diesel::sqlite::SqliteConnection;
 
-use crate::category::source_url;
 use crate::db::{self, Db};
+use crate::shared::time::{self, TimeRange};
+use crate::tracking::domain::source_key::{source_url, KeyKind};
 
 use super::categories::load_tree;
 use super::types::{
-    ActivityStats, AppStat, CategoryFilter, CategorySourceFilter, CategoryStat, DailyStat, SessionFilter,
-    SessionRow, SessionsPage,
+    ActivityStats, AppStat, CategoryFilter, CategorySource, CategorySourceFilter, CategoryStat, DailyStat,
+    SessionFilter, SessionRow, SessionsPage,
 };
 
 pub use super::traits::HistorySvc;
@@ -38,7 +39,9 @@ impl HistorySvc for SqliteHistory {
         })
     }
 
-    fn get_activity_stats(&self, start: &str, end: &str) -> Result<ActivityStats> {
+    fn get_activity_stats(&self, range: &TimeRange) -> Result<ActivityStats> {
+        let (start, end) = (time::to_db(range.start), time::to_db(range.end));
+        let (start, end) = (start.as_str(), end.as_str());
         let mut conn = self.db.lock().unwrap();
         let totals = db::history::HistoryRepo::get_totals(&mut *conn, start, end)?;
         let categories = db::history::HistoryRepo::get_category_stats(&mut *conn, start, end)?;
@@ -65,7 +68,7 @@ fn to_session_query(conn: &mut SqliteConnection, filter: &SessionFilter) -> Resu
         CategoryFilter::All => db::history::CategoryScope::Any,
         CategoryFilter::Uncategorized => db::history::CategoryScope::Uncategorized,
         // Picking a parent means "this category and everything filed under it".
-        CategoryFilter::Category(id) => db::history::CategoryScope::Ids(load_tree(conn)?.descendants(*id)),
+        CategoryFilter::Category(id) => db::history::CategoryScope::Ids(load_tree(conn)?.descendants((*id).into())),
     };
     let source = match filter.source {
         CategorySourceFilter::All => db::history::SourceScope::Any,
@@ -76,34 +79,35 @@ fn to_session_query(conn: &mut SqliteConnection, filter: &SessionFilter) -> Resu
         search,
         category,
         source,
-        start: filter.start.clone(),
-        end: filter.end.clone(),
+        start: filter.start.map(time::to_db),
+        end: filter.end.map(time::to_db),
     })
 }
 
 fn to_session_row(row: db::history::SessionListRow) -> SessionRow {
-    let url = (row.source_kind == "domain").then(|| source_url(&row.source_key, &row.path));
+    let source_kind = KeyKind::from_db(&row.source_kind);
+    let url = (source_kind == KeyKind::Domain).then(|| source_url(&row.source_key, &row.path));
     SessionRow {
-        id: row.id,
-        activity_id: row.activity_id,
+        id: row.id.into(),
+        activity_id: row.activity_id.into(),
         app_name: row.app_name,
-        source_kind: row.source_kind,
+        source_kind,
         source_key: row.source_key,
         title: row.title,
         url,
         start_time: row.start_time,
         end_time: row.end_time,
-        category_id: row.category_id,
+        category_id: row.category_id.map(Into::into),
         category_name: row.category_name,
         category_color: row.category_color,
         category_is_pinned: row.category_is_pinned,
-        category_source: row.category_source,
+        category_source: row.category_source.as_deref().and_then(CategorySource::from_db),
     }
 }
 
 fn to_category_stat(row: db::history::CategoryStatRow) -> CategoryStat {
     CategoryStat {
-        category_id: row.category_id,
+        category_id: row.category_id.map(Into::into),
         name: row.name,
         color: row.color,
         total_seconds: row.total_seconds,
@@ -114,7 +118,7 @@ fn to_category_stat(row: db::history::CategoryStatRow) -> CategoryStat {
 fn to_app_stat(row: db::history::AppStatRow) -> AppStat {
     AppStat {
         label: row.label,
-        kind: row.kind,
+        kind: KeyKind::from_db(&row.kind),
         category_color: row.category_color,
         total_seconds: row.total_seconds,
         session_count: row.session_count,

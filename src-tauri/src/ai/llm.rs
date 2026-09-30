@@ -36,6 +36,8 @@ use serde::Deserialize;
 use tracing::{debug, info, warn};
 
 use crate::domain::types::Category;
+use crate::shared::confidence::Confidence;
+use crate::shared::ids::CategoryId;
 
 /// Offload used when the model's GPU memory footprint could not be measured (see
 /// [`fitted_model_params`]). CPU-only always loads, just slower than a GPU-fit config would be.
@@ -78,9 +80,9 @@ pub struct Example {
 #[derive(Debug, Clone, Copy)]
 pub enum Verdict {
     /// The activity belongs to this category.
-    Is(i64),
+    Is(CategoryId),
     /// The model suggested this category and the user rejected it.
-    Not(i64),
+    Not(CategoryId),
 }
 
 /// How many layers of `path` to put on GPU, and any tensor placement overrides, so the model
@@ -341,12 +343,12 @@ fn ollama_blob(root: &Path, manifest: &Path) -> Result<PathBuf> {
 /// A category the model may answer with: its "Parent > Child" path and its id.
 struct Choice {
     path: String,
-    id: i64,
+    id: CategoryId,
     description: Option<String>,
 }
 
 fn choices(categories: &[Category]) -> Vec<Choice> {
-    let by_id: HashMap<i64, &Category> = categories.iter().map(|c| (c.id, c)).collect();
+    let by_id: HashMap<CategoryId, &Category> = categories.iter().map(|c| (c.id, c)).collect();
     let mut out: Vec<Choice> = categories
         .iter()
         .map(|category| {
@@ -394,7 +396,7 @@ fn grammar(choices: &[Choice]) -> String {
 
 /// `- App | domain/path | Title => Category`, or `=> not Category` for a rejected suggestion.
 /// `None` when the category has since been deleted.
-fn example_line(example: &Example, paths: &HashMap<i64, &str>) -> Option<String> {
+fn example_line(example: &Example, paths: &HashMap<CategoryId, &str>) -> Option<String> {
     let (negation, id) = match example.verdict {
         Verdict::Is(id) => ("", id),
         Verdict::Not(id) => ("not ", id),
@@ -480,7 +482,7 @@ pub fn classify(
     categories: &[Category],
     global: &[Example],
     activities: &[ActivityText],
-    on_result: impl FnMut(usize, Option<i64>, f64) -> bool,
+    on_result: impl FnMut(usize, Option<CategoryId>, Confidence) -> bool,
 ) -> Result<()> {
     if categories.is_empty() {
         bail!("there are no categories to choose from");
@@ -515,7 +517,7 @@ fn run(
     categories: &[Category],
     global: &[Example],
     activities: &[ActivityText],
-    mut on_result: impl FnMut(usize, Option<i64>, f64) -> bool,
+    mut on_result: impl FnMut(usize, Option<CategoryId>, Confidence) -> bool,
 ) -> Result<()> {
     let threads = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -533,7 +535,7 @@ fn run(
         .map_err(|err| anyhow!("creating inference context: {err}"))?;
 
     let choices = choices(categories);
-    let paths: HashMap<i64, &str> = choices.iter().map(|c| (c.id, c.path.as_str())).collect();
+    let paths: HashMap<CategoryId, &str> = choices.iter().map(|c| (c.id, c.path.as_str())).collect();
     let global_lines: Vec<String> = global
         .iter()
         .filter_map(|example| example_line(example, &paths))
@@ -545,7 +547,7 @@ fn run(
     let bos =
         String::from_utf8_lossy(&model.token_to_piece_bytes(model.token_bos(), 32, true, None)?)
             .into_owned();
-    let by_path: HashMap<&str, i64> = choices.iter().map(|c| (c.path.as_str(), c.id)).collect();
+    let by_path: HashMap<&str, CategoryId> = choices.iter().map(|c| (c.path.as_str(), c.id)).collect();
 
     let mut grammar = LlamaSampler::grammar(model, &grammar(&choices), "root")
         .map_err(|err| anyhow!("building category grammar: {err}"))?;
@@ -643,7 +645,7 @@ fn run(
         let answer = answer.trim();
         debug!(answer, title = %activity.title, "classified");
 
-        if !on_result(index, by_path.get(answer).copied(), confidence) {
+        if !on_result(index, by_path.get(answer).copied(), Confidence::new(confidence)) {
             break;
         }
     }

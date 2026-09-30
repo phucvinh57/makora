@@ -1,4 +1,4 @@
-use crate::category::{exe_file_name, normalized_domain, url_key};
+use super::source_key::{exe_file_name, normalized_domain, url_key};
 
 /// Whether `title` is just the app name, the URL, or the domain repeated back — a placeholder a
 /// window shows before its real title loads, not a title worth keeping.

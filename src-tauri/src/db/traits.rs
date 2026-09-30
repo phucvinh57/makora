@@ -26,8 +26,8 @@ pub trait ActivitiesRepo {
     /// Unpins every activity currently pinned to one of `category_ids` — used when those
     /// categories are about to be deleted.
     fn unpin_categories(&mut self, category_ids: &[i64]) -> QueryResult<()>;
-    /// Clears every manual pin.
-    fn clear_all_pins(&mut self) -> QueryResult<()>;
+    /// Clears every manual pin. Returns how many were cleared.
+    fn clear_all_pins(&mut self) -> QueryResult<usize>;
     /// Every activity among `ids` that is unpinned and no session references any more —
     /// candidates for deletion once their last session goes away.
     fn get_prunable_many(&mut self, ids: &[i64]) -> QueryResult<Vec<ActivityRow>>;
@@ -49,7 +49,8 @@ pub trait AiLabelsRepo {
     fn reject_active_many(&mut self, activity_ids: &[i64]) -> QueryResult<()>;
     fn delete_for_activities(&mut self, activity_ids: &[i64]) -> QueryResult<()>;
     fn delete_for_categories(&mut self, category_ids: &[i64]) -> QueryResult<()>;
-    fn delete_all(&mut self) -> QueryResult<()>;
+    /// Returns how many labels were removed.
+    fn delete_all(&mut self) -> QueryResult<usize>;
 }
 
 pub trait CategoriesRepo {
@@ -59,7 +60,7 @@ pub trait CategoriesRepo {
     fn get(&mut self, id: i64) -> QueryResult<Option<CategoryRow>>;
     /// The subset of `ids` that exist, in one query.
     fn filter_existing(&mut self, ids: &[i64]) -> QueryResult<Vec<i64>>;
-    /// `(id, parent_id)` for every category, to build a [`crate::category::CategoryTree`] from.
+    /// `(id, parent_id)` for every category, to build a [`crate::taxonomy::domain::CategoryTree`] from.
     fn get_parent_pairs(&mut self) -> QueryResult<Vec<(i64, Option<i64>)>>;
     fn insert(&mut self, new: &NewCategoryRow<'_>) -> QueryResult<CategoryRow>;
     /// Replaces every editable field; `Ok(None)` when `id` does not exist.

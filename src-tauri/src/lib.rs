@@ -1,10 +1,12 @@
 mod ai;
-mod category;
 mod commands;
 mod db;
 mod domain;
 mod focus;
 mod logging;
+mod shared;
+mod taxonomy;
+mod tracking;
 mod tray;
 
 use std::sync::mpsc;

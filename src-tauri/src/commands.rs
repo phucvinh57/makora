@@ -1,12 +1,15 @@
 use crate::ai::feedback::FeedbackIndex;
 use crate::ai::llm::{self, ActivityText, ModelCache};
-use crate::category::url_location;
 use crate::domain::types::{
-    ActivityStats, AiReviewGroupPage, AiReviewPage, Category,
+    ActivityStats, AiReviewGroupPage, AiReviewPage, AiVerdict, Category,
     CategoryFilter, CategorySourceFilter, FeedbackStats, NewCategory, ReviewFilter, SessionFilter,
     SessionsPage,
 };
 use crate::domain::{CategorySvc, HistorySvc, LabelingSvc};
+use crate::shared::confidence::Confidence;
+use crate::shared::ids::{ActivityId, CategoryId, SessionId};
+use crate::shared::time::TimeRange;
+use crate::tracking::domain::source_key::url_location;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -32,8 +35,8 @@ pub fn list_sessions(
         search,
         category: parse_category_filter(category.as_deref())?,
         source: parse_category_source_filter(source.as_deref())?,
-        start: start.map(|t| t.to_rfc3339()),
-        end: end.map(|t| t.to_rfc3339()),
+        start,
+        end,
     };
     history
         .get_sessions(page, page_size, &filter)
@@ -55,8 +58,12 @@ pub fn activity_stats(
     start: String,
     end: String,
 ) -> Result<ActivityStats, String> {
+    let range = TimeRange {
+        start: parse_rfc3339(&start)?,
+        end: parse_rfc3339(&end)?,
+    };
     history
-        .get_activity_stats(&start, &end)
+        .get_activity_stats(&range)
         .map_err(|e| e.to_string())
 }
 
@@ -66,7 +73,7 @@ fn parse_category_filter(category: Option<&str>) -> Result<CategoryFilter, Strin
         Some("uncategorized") => Ok(CategoryFilter::Uncategorized),
         Some(id) => id
             .parse::<i64>()
-            .map(CategoryFilter::Category)
+            .map(|id| CategoryFilter::Category(CategoryId::from(id)))
             .map_err(|_| format!("invalid category filter: {id}")),
     }
 }
@@ -79,8 +86,8 @@ pub fn list_categories(categories: State<Box<dyn CategorySvc>>) -> Result<Vec<Ca
 #[tauri::command]
 pub fn set_session_row_category(
     categories: State<Box<dyn CategorySvc>>,
-    session_id: i64,
-    category_id: Option<i64>,
+    session_id: SessionId,
+    category_id: Option<CategoryId>,
 ) -> Result<(), String> {
     categories
         .assign_sessions(&[session_id], category_id)
@@ -90,8 +97,8 @@ pub fn set_session_row_category(
 #[tauri::command]
 pub fn set_sessions_category(
     categories: State<Box<dyn CategorySvc>>,
-    session_ids: Vec<i64>,
-    category_id: i64,
+    session_ids: Vec<SessionId>,
+    category_id: CategoryId,
 ) -> Result<(), String> {
     categories
         .assign_sessions(&session_ids, Some(category_id))
@@ -104,7 +111,7 @@ pub fn create_category(
     name: String,
     color: String,
     description: Option<String>,
-    parent_id: Option<i64>,
+    parent_id: Option<CategoryId>,
 ) -> Result<Category, String> {
     categories
         .create(&NewCategory {
@@ -119,11 +126,11 @@ pub fn create_category(
 #[tauri::command]
 pub fn update_category(
     categories: State<Box<dyn CategorySvc>>,
-    id: i64,
+    id: CategoryId,
     name: String,
     color: String,
     description: Option<String>,
-    parent_id: Option<i64>,
+    parent_id: Option<CategoryId>,
 ) -> Result<(), String> {
     categories
         .update(
@@ -140,14 +147,21 @@ pub fn update_category(
 }
 
 #[tauri::command]
-pub fn delete_category(categories: State<Box<dyn CategorySvc>>, id: i64) -> Result<(), String> {
+pub fn delete_category(categories: State<Box<dyn CategorySvc>>, id: CategoryId) -> Result<(), String> {
     categories.delete(id).map_err(|e| e.to_string())
 }
 
+#[derive(Serialize)]
+pub struct CategorizationResetOutcome {
+    /// Manual pins and AI labels removed.
+    pub labels_cleared: usize,
+}
+
 #[tauri::command]
-pub fn reset_categorization(categories: State<Box<dyn CategorySvc>>) -> Result<(), String> {
+pub fn reset_categorization(categories: State<Box<dyn CategorySvc>>) -> Result<CategorizationResetOutcome, String> {
     categories
         .reset_categorization()
+        .map(|labels_cleared| CategorizationResetOutcome { labels_cleared })
         .map_err(|error| error.to_string())
 }
 
@@ -246,7 +260,7 @@ pub async fn categorize(
                 app_name: activity.app_name.clone(),
                 url: activity.url.as_deref().and_then(url_location),
                 title: activity.title.clone(),
-                examples: feedback.for_key(&activity.key_kind, &activity.key),
+                examples: feedback.for_key(activity.key_kind, &activity.key),
             })
             .collect();
         let total = texts.len();
@@ -254,15 +268,17 @@ pub async fn categorize(
         app.state::<AiCategorizeState>().total.store(total, Ordering::Release);
         let (mut labeled, mut changed, mut done, mut stopped) = (0, 0, 0, false);
         // Each answer is saved as soon as it arrives, so a stopped run keeps its progress.
-        let mut save = |index: usize, answer: Option<i64>, confidence: f64| {
+        let mut save = |index: usize, answer: Option<CategoryId>, confidence: Confidence| {
             let state = app.state::<AiCategorizeState>();
             if answer.is_some() {
                 labeled += 1;
             }
-            match app
-                .state::<Box<dyn LabelingSvc>>()
-                .assign_ai(&[(pending[index].id, answer, confidence)])
-            {
+            let verdict = AiVerdict {
+                activity_id: pending[index].id,
+                category_id: answer,
+                confidence,
+            };
+            match app.state::<Box<dyn LabelingSvc>>().assign_ai(&[verdict]) {
                 Ok(n) => changed += n,
                 Err(err) => {
                     warn!(%err, "saving AI label");
@@ -342,7 +358,7 @@ pub fn list_ai_review_groups(
 }
 
 #[tauri::command]
-pub fn accept_ai_labels(labeling: State<Box<dyn LabelingSvc>>, activity_ids: Vec<i64>) -> Result<(), String> {
+pub fn accept_ai_labels(labeling: State<Box<dyn LabelingSvc>>, activity_ids: Vec<ActivityId>) -> Result<(), String> {
     labeling.accept_ai_labels(&activity_ids).map_err(|e| e.to_string())
 }
 
@@ -350,8 +366,8 @@ pub fn accept_ai_labels(labeling: State<Box<dyn LabelingSvc>>, activity_ids: Vec
 #[tauri::command]
 pub fn set_activities_category(
     categories: State<Box<dyn CategorySvc>>,
-    activity_ids: Vec<i64>,
-    category_id: Option<i64>,
+    activity_ids: Vec<ActivityId>,
+    category_id: Option<CategoryId>,
 ) -> Result<(), String> {
     categories
         .assign_activities(&activity_ids, category_id)

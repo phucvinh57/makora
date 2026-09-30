@@ -8,11 +8,14 @@ use diesel::sqlite::SqliteConnection;
 use diesel::Connection;
 
 use crate::db::{self, Db};
+use crate::shared::confidence::Confidence;
+use crate::shared::ids::{raw, ActivityId, CategoryId};
+use crate::tracking::domain::source_key::KeyKind;
 
 use super::categories::load_tree;
 use super::types::{
-    AiReviewGroup, AiReviewGroupPage, AiReviewPage, AiReviewRow, FeedbackStats, LabeledActivity,
-    ReviewFilter, UncategorizedActivity,
+    AiReviewGroup, AiReviewGroupPage, AiReviewPage, AiReviewRow, AiVerdict, FeedbackStats,
+    LabeledActivity, ReviewFilter, UncategorizedActivity,
 };
 
 /// Labels the model was at least this sure of are left out of the default review queue.
@@ -36,8 +39,8 @@ impl LabelingSvc for SqliteLabeling {
         Ok(db::review::ReviewRepo::get_activities_to_label(&mut *conn, recheck)?
             .into_iter()
             .map(|row| UncategorizedActivity {
-                id: row.id,
-                key_kind: row.key_kind,
+                id: row.id.into(),
+                key_kind: KeyKind::from_db(&row.key_kind),
                 key: row.key,
                 app_name: row.app_name,
                 url: row.url,
@@ -46,10 +49,21 @@ impl LabelingSvc for SqliteLabeling {
             .collect())
     }
 
-    fn assign_ai(&self, labels: &[(i64, Option<i64>, f64)]) -> Result<usize> {
-        if labels.is_empty() {
+    fn assign_ai(&self, verdicts: &[AiVerdict]) -> Result<usize> {
+        if verdicts.is_empty() {
             return Ok(0);
         }
+        let labels: Vec<(i64, Option<i64>, f64)> = verdicts
+            .iter()
+            .map(|verdict| {
+                (
+                    verdict.activity_id.into(),
+                    verdict.category_id.map(Into::into),
+                    verdict.confidence.get(),
+                )
+            })
+            .collect();
+        let labels = labels.as_slice();
         let mut conn = self.db.lock().unwrap();
         conn.transaction(|conn| -> diesel::QueryResult<usize> {
             let activity_ids: Vec<i64> = labels.iter().map(|&(activity_id, ..)| activity_id).collect();
@@ -109,13 +123,14 @@ impl LabelingSvc for SqliteLabeling {
         .map_err(Into::into)
     }
 
-    fn accept_ai_labels(&self, activity_ids: &[i64]) -> Result<()> {
+    fn accept_ai_labels(&self, activity_ids: &[ActivityId]) -> Result<()> {
         if activity_ids.is_empty() {
             return Ok(());
         }
+        let activity_ids = raw(activity_ids);
         let mut conn = self.db.lock().unwrap();
         conn.transaction(|conn| -> diesel::QueryResult<()> {
-            let labels = db::ai_labels::AiLabelsRepo::get_active_many(conn, activity_ids)?;
+            let labels = db::ai_labels::AiLabelsRepo::get_active_many(conn, &activity_ids)?;
             let mut by_category: HashMap<i64, Vec<i64>> = HashMap::new();
             for label in labels {
                 by_category.entry(label.category_id).or_default().push(label.activity_id);
@@ -133,14 +148,14 @@ impl LabelingSvc for SqliteLabeling {
         Ok(db::review::ReviewRepo::get_labeled_activities(&mut *conn)?
             .into_iter()
             .map(|row| LabeledActivity {
-                key_kind: row.key_kind,
+                key_kind: KeyKind::from_db(&row.key_kind),
                 key: row.key,
                 app_name: row.app_name,
                 url: row.url,
                 title: row.title,
-                category_id: row.category_id,
-                ai_category_id: row.ai_category_id,
-                ai_rejected_category_id: row.ai_rejected_category_id,
+                category_id: row.category_id.map(Into::into),
+                ai_category_id: row.ai_category_id.map(Into::into),
+                ai_rejected_category_id: row.ai_rejected_category_id.map(Into::into),
             })
             .collect())
     }
@@ -148,12 +163,13 @@ impl LabelingSvc for SqliteLabeling {
     fn get_review_page(&self, page: i64, page_size: i64, filter: &ReviewFilter) -> Result<AiReviewPage> {
         let mut conn = self.db.lock().unwrap();
         let category = resolve_category_scope(&mut conn, filter.category)?;
+        let activities = filter.activities.as_deref().map(raw);
         let page_result = db::review::ReviewRepo::get_review_page(
             &mut *conn,
             page,
             page_size,
             &category,
-            filter.activities.as_deref(),
+            activities.as_deref(),
             filter.uncertain_only,
             CONFIDENT,
             filter.min_seconds,
@@ -204,20 +220,20 @@ impl LabelingSvc for SqliteLabeling {
     }
 }
 
-fn resolve_category_scope(conn: &mut SqliteConnection, category: Option<i64>) -> Result<db::review::CategoryScope> {
+fn resolve_category_scope(conn: &mut SqliteConnection, category: Option<CategoryId>) -> Result<db::review::CategoryScope> {
     Ok(match category {
         None => db::review::CategoryScope::Any,
-        Some(id) => db::review::CategoryScope::Ids(load_tree(conn)?.descendants(id)),
+        Some(id) => db::review::CategoryScope::Ids(load_tree(conn)?.descendants(id.into())),
     })
 }
 
 fn to_review_row(row: db::review::ReviewRow) -> AiReviewRow {
     AiReviewRow {
-        activity_id: row.activity_id,
+        activity_id: row.activity_id.into(),
         app_name: row.app_name,
         url: row.url,
         title: row.title,
-        category_id: row.category_id,
+        category_id: row.category_id.into(),
         category_name: row.category_name,
         category_color: row.category_color,
         total_seconds: row.total_seconds,
@@ -227,15 +243,20 @@ fn to_review_row(row: db::review::ReviewRow) -> AiReviewRow {
 
 fn to_review_group(row: db::review::ReviewGroupRow) -> AiReviewGroup {
     AiReviewGroup {
-        key_kind: row.key_kind,
+        key_kind: KeyKind::from_db(&row.key_kind),
         key: row.key,
         app_name: row.app_name,
-        category_id: row.category_id,
+        category_id: row.category_id.into(),
         category_name: row.category_name,
         category_color: row.category_color,
         activity_count: row.activity_count,
         total_seconds: row.total_seconds,
-        min_confidence: row.min_confidence,
-        activity_ids: row.activity_ids.split(',').filter_map(|id| id.parse().ok()).collect(),
+        min_confidence: row.min_confidence.map(Confidence::new),
+        activity_ids: row
+            .activity_ids
+            .split(',')
+            .filter_map(|id| id.parse::<i64>().ok())
+            .map(ActivityId::from)
+            .collect(),
     }
 }

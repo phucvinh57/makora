@@ -2,14 +2,19 @@
 //! what [`crate::domain`]'s services take and return; how they map onto rows is
 //! [`crate::db`]'s job.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+
+use crate::shared::confidence::Confidence;
+use crate::shared::ids::{ActivityId, CategoryId, SessionId};
+use crate::tracking::domain::source_key::KeyKind;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Category {
-    pub id: i64,
+    pub id: CategoryId,
     pub name: String,
     pub color: String,
-    pub parent_id: Option<i64>,
+    pub parent_id: Option<CategoryId>,
     pub description: Option<String>,
 }
 
@@ -18,14 +23,14 @@ pub struct NewCategory {
     pub name: String,
     pub color: String,
     pub description: Option<String>,
-    pub parent_id: Option<i64>,
+    pub parent_id: Option<CategoryId>,
 }
 
 /// An activity the LLM is asked to label, as it needs to see it.
 #[derive(Debug, Clone)]
 pub struct UncategorizedActivity {
-    pub id: i64,
-    pub key_kind: String,
+    pub id: ActivityId,
+    pub key_kind: KeyKind,
     pub key: String,
     pub app_name: String,
     pub url: Option<String>,
@@ -36,24 +41,51 @@ pub struct UncategorizedActivity {
 /// are the examples the LLM learns from.
 #[derive(Debug, Clone)]
 pub struct LabeledActivity {
-    pub key_kind: String,
+    pub key_kind: KeyKind,
     pub key: String,
     pub app_name: String,
     pub url: Option<String>,
     pub title: String,
-    pub category_id: Option<i64>,
-    pub ai_category_id: Option<i64>,
-    pub ai_rejected_category_id: Option<i64>,
+    pub category_id: Option<CategoryId>,
+    pub ai_category_id: Option<CategoryId>,
+    pub ai_rejected_category_id: Option<CategoryId>,
+}
+
+/// What the model made of one activity: a category, or `None` when it found none it stands by.
+#[derive(Debug, Clone, Copy)]
+pub struct AiVerdict {
+    pub activity_id: ActivityId,
+    pub category_id: Option<CategoryId>,
+    pub confidence: Confidence,
+}
+
+/// Where a session's resolved category came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CategorySource {
+    Manual,
+    Ai,
+}
+
+impl CategorySource {
+    /// Reads the `manual`/`ai` marker the history query derives.
+    pub fn from_db(value: &str) -> Option<Self> {
+        match value {
+            "manual" => Some(Self::Manual),
+            "ai" => Some(Self::Ai),
+            _ => None,
+        }
+    }
 }
 
 /// An AI label waiting for the user to accept, change or reject it.
 #[derive(Debug, Clone, Serialize)]
 pub struct AiReviewRow {
-    pub activity_id: i64,
+    pub activity_id: ActivityId,
     pub app_name: String,
     pub url: Option<String>,
     pub title: String,
-    pub category_id: i64,
+    pub category_id: CategoryId,
     pub category_name: String,
     pub category_color: String,
     pub total_seconds: f64,
@@ -70,17 +102,17 @@ pub struct AiReviewPage {
 /// decision can cover all of them.
 #[derive(Debug, Clone, Serialize)]
 pub struct AiReviewGroup {
-    pub key_kind: String,
+    pub key_kind: KeyKind,
     pub key: String,
     pub app_name: String,
-    pub category_id: i64,
+    pub category_id: CategoryId,
     pub category_name: String,
     pub category_color: String,
     pub activity_count: i64,
     pub total_seconds: f64,
     /// The least sure the model was about any member; `None` when unknown.
-    pub min_confidence: Option<f64>,
-    pub activity_ids: Vec<i64>,
+    pub min_confidence: Option<Confidence>,
+    pub activity_ids: Vec<ActivityId>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -94,9 +126,9 @@ pub struct AiReviewGroupPage {
 #[serde(default)]
 pub struct ReviewFilter {
     /// Only labels in this category or under it.
-    pub category: Option<i64>,
+    pub category: Option<CategoryId>,
     /// Only these activities, e.g. the members of one group.
-    pub activities: Option<Vec<i64>>,
+    pub activities: Option<Vec<ActivityId>>,
     /// Hide labels the model was confident about.
     pub uncertain_only: bool,
     /// Hide activities (or groups) tracked for less than this, in seconds.
@@ -125,20 +157,20 @@ pub struct SessionsPage {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionRow {
-    pub id: i64,
-    pub activity_id: i64,
+    pub id: SessionId,
+    pub activity_id: ActivityId,
     pub app_name: String,
-    pub source_kind: String,
+    pub source_kind: KeyKind,
     pub source_key: String,
     pub title: String,
     pub url: Option<String>,
     pub start_time: String,
     pub end_time: Option<String>,
-    pub category_id: Option<i64>,
+    pub category_id: Option<CategoryId>,
     pub category_name: Option<String>,
     pub category_color: Option<String>,
     pub category_is_pinned: bool,
-    pub category_source: Option<String>,
+    pub category_source: Option<CategorySource>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -152,7 +184,7 @@ pub struct ActivityStats {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CategoryStat {
-    pub category_id: Option<i64>,
+    pub category_id: Option<CategoryId>,
     pub name: Option<String>,
     pub color: Option<String>,
     pub total_seconds: f64,
@@ -162,7 +194,7 @@ pub struct CategoryStat {
 #[derive(Debug, Clone, Serialize)]
 pub struct AppStat {
     pub label: String,
-    pub kind: String,
+    pub kind: KeyKind,
     pub category_color: Option<String>,
     pub total_seconds: f64,
     pub session_count: i64,
@@ -179,7 +211,7 @@ pub enum CategoryFilter {
     #[default]
     All,
     Uncategorized,
-    Category(i64),
+    Category(CategoryId),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -195,6 +227,8 @@ pub struct SessionFilter {
     pub search: Option<String>,
     pub category: CategoryFilter,
     pub source: CategorySourceFilter,
-    pub start: Option<String>,
-    pub end: Option<String>,
+    /// Sessions that ended after this (a still-open one always qualifies).
+    pub start: Option<DateTime<Utc>>,
+    /// Sessions that started before this.
+    pub end: Option<DateTime<Utc>>,
 }

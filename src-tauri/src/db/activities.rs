@@ -78,11 +78,10 @@ impl ActivitiesRepo for SqliteConnection {
         Ok(())
     }
 
-    fn clear_all_pins(&mut self) -> QueryResult<()> {
+    fn clear_all_pins(&mut self) -> QueryResult<usize> {
         diesel::update(activities::table.filter(activities::category_id.is_not_null()))
             .set(activities::category_id.eq(None::<i64>))
-            .execute(self)?;
-        Ok(())
+            .execute(self)
     }
 
     fn get_prunable_many(&mut self, ids: &[i64]) -> QueryResult<Vec<ActivityRow>> {

@@ -6,7 +6,7 @@ use chrono::Utc;
 use serde::Deserialize;
 use tiny_http::{Method, Response, Server};
 
-use crate::category::strip_query_and_fragment;
+use crate::tracking::domain::source_key::strip_query_and_fragment;
 
 use super::{BrowserKind, SessionTracker, TabEvent};
 

@@ -6,8 +6,8 @@
 
 use std::collections::HashMap;
 
-use crate::category::url_location;
 use crate::domain::types::LabeledActivity;
+use crate::tracking::domain::source_key::{url_location, KeyKind};
 
 use super::llm::{Example, Verdict};
 
@@ -42,7 +42,7 @@ fn classify(activity: &LabeledActivity) -> Option<(Kind, Verdict)> {
 
 pub struct FeedbackIndex {
     global: Vec<Example>,
-    by_key: HashMap<(String, String), Vec<Example>>,
+    by_key: HashMap<(KeyKind, String), Vec<Example>>,
 }
 
 impl FeedbackIndex {
@@ -64,13 +64,13 @@ impl FeedbackIndex {
         ranked.sort_by_key(|(kind, ..)| *kind);
 
         let mut global = Vec::new();
-        let mut by_key: HashMap<(String, String), Vec<Example>> = HashMap::new();
+        let mut by_key: HashMap<(KeyKind, String), Vec<Example>> = HashMap::new();
         for (kind, activity, example) in ranked {
             if matches!(kind, Kind::Corrected | Kind::Rejected) && global.len() < GLOBAL_EXAMPLES {
                 global.push(example.clone());
             }
             let examples = by_key
-                .entry((activity.key_kind.clone(), activity.key.clone()))
+                .entry((activity.key_kind, activity.key.clone()))
                 .or_default();
             if examples.len() < KEY_EXAMPLES {
                 examples.push(example);
@@ -84,9 +84,9 @@ impl FeedbackIndex {
     }
 
     /// The examples that share `key_kind` and `key` with an activity, best first.
-    pub fn for_key(&self, key_kind: &str, key: &str) -> Vec<Example> {
+    pub fn for_key(&self, key_kind: KeyKind, key: &str) -> Vec<Example> {
         self.by_key
-            .get(&(key_kind.to_string(), key.to_string()))
+            .get(&(key_kind, key.to_string()))
             .cloned()
             .unwrap_or_default()
     }

@@ -1,9 +1,11 @@
-use std::cmp::Reverse;
-use std::collections::{HashMap, HashSet};
+//! Where an activity comes from: a domain for a browser tab, an executable for everything else,
+//! plus the URL handling that gets a page down to the part worth remembering.
 
+use serde::Serialize;
 use url::Url;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum KeyKind {
     Exe,
     Domain,
@@ -16,83 +18,44 @@ impl KeyKind {
             Self::Domain => "domain",
         }
     }
-}
 
-#[derive(Debug, Clone)]
-pub(crate) struct CategoryTree {
-    ids: HashSet<i64>,
-    children: HashMap<i64, Vec<i64>>,
-}
-
-impl CategoryTree {
-    pub(crate) fn new<I>(categories: I) -> Self
-    where
-        I: IntoIterator<Item = (i64, Option<i64>)>,
-    {
-        let mut ids = HashSet::new();
-        let mut children: HashMap<i64, Vec<i64>> = HashMap::new();
-        for (id, parent_id) in categories {
-            ids.insert(id);
-            if let Some(parent_id) = parent_id {
-                children.entry(parent_id).or_default().push(id);
-            }
+    /// Reads a `sources.kind` value; the column's `CHECK` allows nothing but these two.
+    pub fn from_db(value: &str) -> Self {
+        match value {
+            "domain" => Self::Domain,
+            _ => Self::Exe,
         }
-        for child_ids in children.values_mut() {
-            child_ids.sort_unstable();
-        }
-        Self { ids, children }
-    }
-
-    pub(crate) fn contains(&self, id: i64) -> bool {
-        self.ids.contains(&id)
-    }
-
-    pub(crate) fn descendants(&self, root: i64) -> Vec<i64> {
-        if !self.contains(root) {
-            return Vec::new();
-        }
-        let mut result = Vec::new();
-        let mut visited = HashSet::new();
-        let mut stack = vec![root];
-        while let Some(id) = stack.pop() {
-            if !visited.insert(id) {
-                continue;
-            }
-            result.push(id);
-            if let Some(children) = self.children.get(&id) {
-                stack.extend(children.iter().rev().copied());
-            }
-        }
-        result
-    }
-
-    pub(crate) fn deletion_order(&self, root: i64) -> Vec<i64> {
-        let descendants = self.descendants(root);
-        let descendant_set: HashSet<_> = descendants.iter().copied().collect();
-        let mut depth = HashMap::new();
-        depth.insert(root, 0usize);
-        let mut stack = vec![root];
-        while let Some(id) = stack.pop() {
-            let next_depth = depth.get(&id).copied().unwrap_or(0) + 1;
-            if let Some(children) = self.children.get(&id) {
-                for child in children {
-                    if descendant_set.contains(child) && !depth.contains_key(child) {
-                        depth.insert(*child, next_depth);
-                        stack.push(*child);
-                    }
-                }
-            }
-        }
-        let mut ordered = descendants;
-        ordered.sort_by_key(|id| (Reverse(depth.get(id).copied().unwrap_or(0)), *id));
-        ordered
     }
 }
 
-pub fn category_key(exe_path: &str, url: Option<&str>) -> (KeyKind, String) {
-    match url.and_then(normalized_domain) {
-        Some(domain) => (KeyKind::Domain, domain),
-        None => (KeyKind::Exe, exe_file_name(exe_path).to_ascii_lowercase()),
+/// What identifies a source: the domain of the tab in focus, or else the executable's file name.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SourceKey {
+    pub kind: KeyKind,
+    pub key: String,
+}
+
+impl SourceKey {
+    pub fn of(exe_path: &str, url: Option<&str>) -> Self {
+        match url.and_then(normalized_domain) {
+            Some(domain) => Self {
+                kind: KeyKind::Domain,
+                key: domain,
+            },
+            None => Self {
+                kind: KeyKind::Exe,
+                key: exe_file_name(exe_path).to_ascii_lowercase(),
+            },
+        }
+    }
+
+    /// The name shown for the source: the domain itself for a browser tab, or the app's display
+    /// name.
+    pub fn display_name(&self, app_name: &str) -> String {
+        match self.kind {
+            KeyKind::Domain => self.key.clone(),
+            KeyKind::Exe => app_name.to_string(),
+        }
     }
 }
 

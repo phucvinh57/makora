@@ -4,8 +4,9 @@ use chrono::{DateTime, Utc};
 
 use anyhow::Result;
 
-use crate::category::exe_file_name;
 use crate::domain::TrackingSvc;
+use crate::shared::ids::SessionId;
+use crate::tracking::domain::source_key::exe_file_name;
 
 use super::model::{AppInfo, BrowserKind, FocusEvent, PresenceEvent, TabEvent};
 
@@ -19,7 +20,7 @@ fn is_ignored(exe_path: &str) -> bool {
 }
 
 struct Current {
-    id: Option<i64>,
+    id: Option<SessionId>,
     app: AppInfo,
     browser: Option<BrowserKind>,
     url: Option<String>,

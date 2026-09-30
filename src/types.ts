@@ -119,7 +119,8 @@ export interface ModelDownloadStatus {
 }
 
 export interface CategorizationResetOutcome {
-  sessions_cleared: number;
+  /** Manual pins and AI labels removed. */
+  labels_cleared: number;
 }
 
 export interface CategoryStat {

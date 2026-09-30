@@ -7,9 +7,10 @@ use diesel::result::{DatabaseErrorKind, Error as DieselError};
 use diesel::sqlite::SqliteConnection;
 use diesel::Connection;
 
-use crate::category::CategoryTree;
 use crate::db::models::{CategoryChanges, CategoryRow, NewCategoryRow};
 use crate::db::{self, Db};
+use crate::shared::ids::{raw, ActivityId, CategoryId, SessionId};
+use crate::taxonomy::domain::CategoryTree;
 
 use super::types::{Category, NewCategory};
 
@@ -31,9 +32,9 @@ impl CategorySvc for SqliteCategories {
         Ok(db::categories::CategoriesRepo::get_list(&mut *conn)?.into_iter().map(to_category).collect())
     }
 
-    fn get(&self, id: i64) -> Result<Option<Category>> {
+    fn get(&self, id: CategoryId) -> Result<Option<Category>> {
         let mut conn = self.db.lock().unwrap();
-        Ok(db::categories::CategoriesRepo::get(&mut *conn, id)?.map(to_category))
+        Ok(db::categories::CategoriesRepo::get(&mut *conn, id.into())?.map(to_category))
     }
 
     fn create(&self, new: &NewCategory) -> Result<Category> {
@@ -43,7 +44,7 @@ impl CategorySvc for SqliteCategories {
             &NewCategoryRow {
                 name: &new.name,
                 color: &new.color,
-                parent_id: new.parent_id,
+                parent_id: new.parent_id.map(Into::into),
                 description: new.description.as_deref(),
             },
         )
@@ -51,23 +52,23 @@ impl CategorySvc for SqliteCategories {
         Ok(to_category(row))
     }
 
-    fn update(&self, id: i64, new: &NewCategory) -> Result<Category> {
+    fn update(&self, id: CategoryId, new: &NewCategory) -> Result<Category> {
         let mut conn = self.db.lock().unwrap();
         if let Some(parent_id) = new.parent_id {
             // Re-parenting a category under itself or under one of its own descendants would
             // cut that whole branch loose from every root.
             let tree = load_tree(&mut conn)?;
-            if parent_id == id || tree.descendants(id).contains(&parent_id) {
+            if parent_id == id || tree.descendants(id.into()).contains(&parent_id.into()) {
                 bail!("a category cannot be moved inside itself");
             }
         }
         let changes = CategoryChanges {
             name: &new.name,
             color: &new.color,
-            parent_id: new.parent_id,
+            parent_id: new.parent_id.map(Into::into),
             description: new.description.as_deref(),
         };
-        let row = db::categories::CategoriesRepo::update(&mut *conn, id, &changes)
+        let row = db::categories::CategoriesRepo::update(&mut *conn, id.into(), &changes)
             .map_err(|err| write_error(err, &new.name, new.parent_id))?;
         let Some(row) = row else {
             bail!("category {id} does not exist");
@@ -75,10 +76,10 @@ impl CategorySvc for SqliteCategories {
         Ok(to_category(row))
     }
 
-    fn delete(&self, id: i64) -> Result<()> {
+    fn delete(&self, id: CategoryId) -> Result<()> {
         let mut conn = self.db.lock().unwrap();
         conn.transaction(|conn| {
-            let doomed = load_tree(conn)?.deletion_order(id);
+            let doomed = load_tree(conn)?.deletion_order(id.into());
             if doomed.is_empty() {
                 bail!("category {id} does not exist");
             }
@@ -89,13 +90,15 @@ impl CategorySvc for SqliteCategories {
         })
     }
 
-    fn assign_sessions(&self, session_ids: &[i64], category_id: Option<i64>) -> Result<()> {
+    fn assign_sessions(&self, session_ids: &[SessionId], category_id: Option<CategoryId>) -> Result<()> {
         if session_ids.is_empty() {
             return Ok(());
         }
+        let session_ids = raw(session_ids);
+        let category_id = category_id.map(i64::from);
         let mut conn = self.db.lock().unwrap();
         conn.transaction(|conn| -> diesel::QueryResult<()> {
-            let activity_ids = db::sessions::SessionsRepo::get_activity_ids_for(conn, session_ids)?;
+            let activity_ids = db::sessions::SessionsRepo::get_activity_ids_for(conn, &session_ids)?;
             if activity_ids.is_empty() {
                 return Ok(());
             }
@@ -107,28 +110,30 @@ impl CategorySvc for SqliteCategories {
         .map_err(Into::into)
     }
 
-    fn assign_activities(&self, activity_ids: &[i64], category_id: Option<i64>) -> Result<()> {
+    fn assign_activities(&self, activity_ids: &[ActivityId], category_id: Option<CategoryId>) -> Result<()> {
         if activity_ids.is_empty() {
             return Ok(());
         }
+        let activity_ids = raw(activity_ids);
+        let category_id = category_id.map(i64::from);
         let mut conn = self.db.lock().unwrap();
         conn.transaction(|conn| -> diesel::QueryResult<()> {
             // Unpinning also rejects the AI label each activity carries, if any, so
             // "Uncategorized" sticks and the model learns from it.
             if category_id.is_none() {
-                db::ai_labels::AiLabelsRepo::reject_active_many(conn, activity_ids)?;
+                db::ai_labels::AiLabelsRepo::reject_active_many(conn, &activity_ids)?;
             }
-            db::activities::ActivitiesRepo::set_category_many(conn, activity_ids, category_id)
+            db::activities::ActivitiesRepo::set_category_many(conn, &activity_ids, category_id)
         })
         .map_err(Into::into)
     }
 
-    fn reset_categorization(&self) -> Result<()> {
+    fn reset_categorization(&self) -> Result<usize> {
         let mut conn = self.db.lock().unwrap();
-        conn.transaction(|conn| -> diesel::QueryResult<()> {
-            db::ai_labels::AiLabelsRepo::delete_all(conn)?;
-            db::activities::ActivitiesRepo::clear_all_pins(conn)?;
-            Ok(())
+        conn.transaction(|conn| -> diesel::QueryResult<usize> {
+            let labels = db::ai_labels::AiLabelsRepo::delete_all(conn)?;
+            let pins = db::activities::ActivitiesRepo::clear_all_pins(conn)?;
+            Ok(labels + pins)
         })
         .map_err(Into::into)
     }
@@ -136,10 +141,10 @@ impl CategorySvc for SqliteCategories {
 
 fn to_category(row: CategoryRow) -> Category {
     Category {
-        id: row.id,
+        id: row.id.into(),
         name: row.name,
         color: row.color,
-        parent_id: row.parent_id,
+        parent_id: row.parent_id.map(Into::into),
         description: row.description,
     }
 }
@@ -153,7 +158,7 @@ pub(super) fn load_tree(conn: &mut SqliteConnection) -> Result<CategoryTree> {
 
 /// Turns the raw constraint errors into something the UI can show. Names only have to be
 /// unique among siblings, so the same name elsewhere in the tree is fine.
-fn write_error(err: DieselError, name: &str, parent_id: Option<i64>) -> anyhow::Error {
+fn write_error(err: DieselError, name: &str, parent_id: Option<CategoryId>) -> anyhow::Error {
     match &err {
         DieselError::DatabaseError(DatabaseErrorKind::UniqueViolation, _) => match parent_id {
             Some(_) => anyhow!("a subcategory named \"{name}\" already exists under this parent"),

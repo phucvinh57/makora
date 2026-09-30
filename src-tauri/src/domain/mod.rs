@@ -6,7 +6,6 @@
 mod categories;
 mod history;
 mod labeling;
-pub mod title;
 mod tracking;
 mod traits;
 pub mod types;

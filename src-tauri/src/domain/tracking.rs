@@ -7,12 +7,13 @@ use chrono::{DateTime, Utc};
 use diesel::sqlite::SqliteConnection;
 use diesel::{Connection, QueryResult};
 
-use crate::category::{category_key, url_path, KeyKind};
 use crate::db::models::{ActivityRow, NewActivityRow, NewSessionRow, NewSourceRow};
 use crate::db::{self, Db};
 use crate::focus::AppInfo;
-
-use super::title::canonical_title;
+use crate::shared::ids::SessionId;
+use crate::shared::time;
+use crate::tracking::domain::source_key::{url_path, SourceKey};
+use crate::tracking::domain::title::canonical_title;
 
 /// A focus or tab change that is undone within a second never was activity: a page redirects,
 /// a browser reports a tab before its title has loaded and corrects itself, a window flashes
@@ -36,13 +37,13 @@ impl SqliteTracking {
 }
 
 impl TrackingSvc for SqliteTracking {
-    fn start(&self, app: &AppInfo, window_title: &str, url: Option<&str>, at: DateTime<Utc>) -> Result<i64> {
-        let (key_kind, key) = category_key(&app.exe_path, url);
+    fn start(&self, app: &AppInfo, window_title: &str, url: Option<&str>, at: DateTime<Utc>) -> Result<SessionId> {
+        let source = SourceKey::of(&app.exe_path, url);
         let path = url.map(url_path).unwrap_or_default();
         let canonical = canonical_title(window_title, &app.app_name, url);
         let mut conn = self.db.lock().unwrap();
         conn.transaction(|conn| -> QueryResult<i64> {
-            let source_id = ensure_source(conn, key_kind, &key, &source_name(key_kind, &key, &app.app_name))?;
+            let source_id = ensure_source(conn, &source, &source.display_name(&app.app_name))?;
             let activity = ensure_activity(conn, source_id, &path, &canonical)?;
 
             if let Some(last) = db::sessions::SessionsRepo::get_last(conn)? {
@@ -60,16 +61,18 @@ impl TrackingSvc for SqliteTracking {
                 conn,
                 &NewSessionRow {
                     activity_id: activity.id,
-                    start_time: &at.to_rfc3339(),
+                    start_time: &time::to_db(at),
                 },
             )?;
             Ok(session.id)
         })
+        .map(SessionId::from)
         .map_err(Into::into)
     }
 
-    fn end(&self, id: i64, at: DateTime<Utc>) -> Result<()> {
-        let end_time = at.to_rfc3339();
+    fn end(&self, id: SessionId, at: DateTime<Utc>) -> Result<()> {
+        let id = i64::from(id);
+        let end_time = time::to_db(at);
         let mut conn = self.db.lock().unwrap();
         conn.transaction(|conn| -> QueryResult<()> {
             let Some(session) = db::sessions::SessionsRepo::get(conn, id)? else {
@@ -85,7 +88,8 @@ impl TrackingSvc for SqliteTracking {
         .map_err(Into::into)
     }
 
-    fn refine_title(&self, id: i64, app: &AppInfo, window_title: &str, url: Option<&str>) -> Result<()> {
+    fn refine_title(&self, id: SessionId, app: &AppInfo, window_title: &str, url: Option<&str>) -> Result<()> {
+        let id = i64::from(id);
         let mut conn = self.db.lock().unwrap();
         conn.transaction(|conn| -> QueryResult<()> {
             let Some(session) = db::sessions::SessionsRepo::get(conn, id)? else {
@@ -99,9 +103,9 @@ impl TrackingSvc for SqliteTracking {
                 return Ok(());
             }
 
-            let (key_kind, key) = category_key(&app.exe_path, url);
+            let source = SourceKey::of(&app.exe_path, url);
             let path = url.map(url_path).unwrap_or_default();
-            let source_id = ensure_source(conn, key_kind, &key, &source_name(key_kind, &key, &app.app_name))?;
+            let source_id = ensure_source(conn, &source, &source.display_name(&app.app_name))?;
             let target = ensure_activity(conn, source_id, &path, &canonical)?;
 
             let old_pin = old_activity.category_id;
@@ -132,18 +136,10 @@ impl TrackingSvc for SqliteTracking {
     }
 }
 
-/// The source name: the domain itself for a browser tab, or the app's display name.
-fn source_name(key_kind: KeyKind, key: &str, app_name: &str) -> String {
-    match key_kind {
-        KeyKind::Domain => key.to_string(),
-        KeyKind::Exe => app_name.to_string(),
-    }
-}
-
 /// Finds the source by its key, or creates it. An existing source keeps its name unless it
 /// never had one — a domain's or app's display name can only improve, never be blanked.
-fn ensure_source(conn: &mut SqliteConnection, kind: KeyKind, key: &str, name: &str) -> QueryResult<i64> {
-    if let Some(existing) = db::sources::SourcesRepo::get_by_key(conn, kind.as_str(), key)? {
+fn ensure_source(conn: &mut SqliteConnection, source: &SourceKey, name: &str) -> QueryResult<i64> {
+    if let Some(existing) = db::sources::SourcesRepo::get_by_key(conn, source.kind.as_str(), &source.key)? {
         if existing.name.is_empty() && !name.is_empty() {
             db::sources::SourcesRepo::set_name(conn, existing.id, name)?;
         }
@@ -152,8 +148,8 @@ fn ensure_source(conn: &mut SqliteConnection, kind: KeyKind, key: &str, name: &s
     let inserted = db::sources::SourcesRepo::insert(
         conn,
         &NewSourceRow {
-            kind: kind.as_str(),
-            key,
+            kind: source.kind.as_str(),
+            key: &source.key,
             name,
         },
     )?;
@@ -189,7 +185,7 @@ fn prune_orphans(conn: &mut SqliteConnection, activity_ids: &[i64]) -> QueryResu
 }
 
 fn within_merge_gap(closed_at: &str, resumed_at: DateTime<Utc>) -> bool {
-    parse_time(closed_at)
+    time::parse_db(closed_at)
         .map(|end| resumed_at.signed_duration_since(end).num_milliseconds())
         .is_some_and(|gap| (0..=MERGE_GAP_SECONDS * 1000).contains(&gap))
 }
@@ -197,14 +193,8 @@ fn within_merge_gap(closed_at: &str, resumed_at: DateTime<Utc>) -> bool {
 /// A row whose `start_time` is missing or unparseable is left alone — an unreadable timestamp
 /// is a reason to keep the row, not to throw it away.
 fn is_too_short(start_time: &str, at: DateTime<Utc>) -> bool {
-    let Some(start) = parse_time(start_time) else {
+    let Some(start) = time::parse_db(start_time) else {
         return false;
     };
     at.signed_duration_since(start).num_milliseconds() < MIN_SESSION_SECONDS * 1000
-}
-
-fn parse_time(value: &str) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value)
-        .ok()
-        .map(|time| time.with_timezone(&Utc))
 }

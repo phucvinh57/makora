@@ -137,7 +137,7 @@ export function AiCategorizationSection() {
       invalidateCategorizationQueries(queryClient);
       setResetDialogOpen(false);
       toast.success("Categorization data reset", {
-        description: `${outcome.sessions_cleared} session labels were cleared.`,
+        description: `${outcome.labels_cleared} labels were cleared.`,
       });
     },
   });
