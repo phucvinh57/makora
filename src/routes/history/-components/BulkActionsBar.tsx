@@ -5,15 +5,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  categoryOptions,
-  categoryValueLabels,
-} from "@/components/CategoryOptions";
-import type { Category } from "@/types";
+import type { CategoryPicker } from "@/components/CategoryOptions";
 
 export function BulkActionsBar({
   selectedCount,
-  categories,
+  picker,
   bulkCategory,
   onBulkCategoryChange,
   onApply,
@@ -21,7 +17,7 @@ export function BulkActionsBar({
   onClear,
 }: {
   selectedCount: number;
-  categories: Category[];
+  picker: CategoryPicker;
   bulkCategory: string;
   onBulkCategoryChange: (value: string) => void;
   onApply: () => void;
@@ -34,12 +30,12 @@ export function BulkActionsBar({
       <Select
         value={bulkCategory}
         onValueChange={(value) => onBulkCategoryChange(value ?? "")}
-        items={categoryValueLabels(categories)}
+        items={picker.valueLabels}
       >
         <SelectTrigger size="sm" className="w-40">
           <SelectValue placeholder="Set category…" />
         </SelectTrigger>
-        <SelectContent>{categoryOptions(categories)}</SelectContent>
+        <SelectContent>{picker.options}</SelectContent>
       </Select>
       <Button
         size="sm"

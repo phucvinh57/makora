@@ -1,7 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
-import { aiFeedbackStats } from "@/api";
+import {
+  type StorageCodec,
+  usePersistentState,
+} from "@/hooks/usePersistentState";
+import { aiFeedbackStatsQueryOptions } from "@/queries";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AiCategorizationSection } from "./-components/AiCategorizationSection";
 import { CategoriesTab } from "./-components/CategoriesTab";
@@ -14,32 +17,22 @@ export const Route = createFileRoute("/categories")({
 const TAB_STORAGE_KEY = "makora-categories-tab";
 type TabName = "taxonomy" | "review";
 
-function readStoredTab(): TabName {
-  try {
-    return localStorage.getItem(TAB_STORAGE_KEY) === "review"
-      ? "review"
-      : "taxonomy";
-  } catch {
-    return "taxonomy";
-  }
-}
+const TAB_CODEC: StorageCodec<TabName> = {
+  parse: (raw) => (raw === "review" || raw === "taxonomy" ? raw : undefined),
+  serialize: (tab) => tab,
+};
 
 function CategoriesPage() {
-  const [tab, setTab] = useState<TabName>(readStoredTab);
-  const statsQuery = useQuery({
-    queryKey: ["aiFeedbackStats"],
-    queryFn: aiFeedbackStats,
-  });
+  const [tab, setTab] = usePersistentState<TabName>(
+    TAB_STORAGE_KEY,
+    "taxonomy",
+    TAB_CODEC,
+  );
+  const statsQuery = useQuery(aiFeedbackStatsQueryOptions);
   const pending = statsQuery.data?.pending_review ?? 0;
 
   function changeTab(value: unknown) {
-    const next: TabName = value === "review" ? "review" : "taxonomy";
-    setTab(next);
-    try {
-      localStorage.setItem(TAB_STORAGE_KEY, next);
-    } catch {
-      // The tab just won't be remembered.
-    }
+    setTab(value === "review" ? "review" : "taxonomy");
   }
 
   return (

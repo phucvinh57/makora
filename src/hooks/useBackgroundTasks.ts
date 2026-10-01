@@ -1,13 +1,18 @@
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect, useState } from "react";
-import { categorizeStatus, modelDownloadStatus } from "@/api";
-import type { AiCategorizeProgress } from "@/types";
-
-interface DownloadProgress {
-  downloaded: number;
-  total: number;
-}
+import { useEffect, useRef } from "react";
+import { formatBytes } from "@/bytes";
+import {
+  categorizeStatusQueryOptions,
+  downloadStatusQueryOptions,
+  invalidateCategorizationQueries,
+  queryKeys,
+} from "@/queries";
+import type {
+  AiCategorizeProgress,
+  AiCategorizeStatus,
+  ModelDownloadStatus,
+} from "@/types";
 
 export interface BackgroundTask {
   id: string;
@@ -15,79 +20,88 @@ export interface BackgroundTask {
   progress: string;
 }
 
-const RUNNING_POLL_MS = 1_000;
-const IDLE_POLL_MS = 4_000;
-
-function formatBytes(bytes: number): string {
-  return bytes >= 1e9
-    ? `${(bytes / 1e9).toFixed(2)} GB`
-    : `${Math.round(bytes / 1e6)} MB`;
-}
-
 /**
- * Polls the backend's categorize/download status so a background task started on the
- * Categories page keeps being reported after the user navigates away from it.
+ * Mounted once, at the root: folds the backend's progress events into the status queries so
+ * every reader of those queries sees live numbers, and refreshes the data a task changes when
+ * it ends — even when no page was watching it run.
  */
-export function useBackgroundTasks(): BackgroundTask[] {
-  const categorizeStatusQuery = useQuery({
-    queryKey: ["aiCategorizeStatus"],
-    queryFn: categorizeStatus,
-    refetchInterval: (query) =>
-      query.state.data?.running ? RUNNING_POLL_MS : IDLE_POLL_MS,
-  });
-  const downloadStatusQuery = useQuery({
-    queryKey: ["aiModelDownloadStatus"],
-    queryFn: modelDownloadStatus,
-    refetchInterval: (query) =>
-      query.state.data?.running ? RUNNING_POLL_MS : IDLE_POLL_MS,
-  });
-  const [categorizeProgress, setCategorizeProgress] =
-    useState<AiCategorizeProgress | null>(null);
-  const [downloadProgress, setDownloadProgress] =
-    useState<DownloadProgress | null>(null);
+export function useBackgroundTaskSync() {
+  const queryClient = useQueryClient();
+  const categorizing =
+    useQuery(categorizeStatusQueryOptions).data?.running ?? false;
+  const downloading =
+    useQuery(downloadStatusQueryOptions).data?.running ?? false;
+  const wasCategorizing = useRef(false);
+  const wasDownloading = useRef(false);
 
   useEffect(() => {
     const unlisten = listen<AiCategorizeProgress>(
       "ai-categorize-progress",
-      (event) => setCategorizeProgress(event.payload),
+      ({ payload }) =>
+        queryClient.setQueryData<AiCategorizeStatus>(
+          queryKeys.aiCategorizeStatus,
+          (old) => old && { ...old, ...payload },
+        ),
     );
     return () => {
       void unlisten.then((off) => off());
     };
-  }, []);
+  }, [queryClient]);
 
   useEffect(() => {
-    const unlisten = listen<DownloadProgress>(
+    const unlisten = listen<Pick<ModelDownloadStatus, "downloaded" | "total">>(
       "ai-model-download-progress",
-      (event) => setDownloadProgress(event.payload),
+      ({ payload }) =>
+        queryClient.setQueryData<ModelDownloadStatus>(
+          queryKeys.aiModelDownloadStatus,
+          (old) => old && { ...old, ...payload },
+        ),
     );
     return () => {
       void unlisten.then((off) => off());
     };
-  }, []);
+  }, [queryClient]);
 
+  useEffect(() => {
+    if (wasCategorizing.current && !categorizing) {
+      void invalidateCategorizationQueries(queryClient);
+    }
+    wasCategorizing.current = categorizing;
+  }, [categorizing, queryClient]);
+
+  useEffect(() => {
+    if (wasDownloading.current && !downloading) {
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.aiInstalledModels,
+      });
+      void queryClient.invalidateQueries({
+        queryKey: queryKeys.aiModelInstalled,
+      });
+    }
+    wasDownloading.current = downloading;
+  }, [downloading, queryClient]);
+}
+
+/** What the sidebar lists as running, so a task keeps being reported off the page that began it. */
+export function useBackgroundTasks(): BackgroundTask[] {
+  const categorizeStatus = useQuery(categorizeStatusQueryOptions).data;
+  const downloadStatus = useQuery(downloadStatusQueryOptions).data;
   const tasks: BackgroundTask[] = [];
 
-  if (categorizeStatusQuery.data?.running) {
-    const status = categorizeStatusQuery.data;
-    const done = categorizeProgress?.done ?? status.done;
-    const total = categorizeProgress?.total ?? status.total;
+  if (categorizeStatus?.running) {
+    const { done, total, recheck } = categorizeStatus;
     tasks.push({
       id: "categorize",
-      label: status.recheck
-        ? "Re-checking AI labels"
-        : "Categorizing activities",
+      label: recheck ? "Re-checking AI labels" : "Categorizing activities",
       progress: total > 0 ? `${done}/${total}` : "Loading model…",
     });
   }
 
-  if (downloadStatusQuery.data?.running) {
-    const status = downloadStatusQuery.data;
-    const downloaded = downloadProgress?.downloaded ?? status.downloaded;
-    const total = downloadProgress?.total ?? status.total;
+  if (downloadStatus?.running) {
+    const { downloaded, total, model } = downloadStatus;
     tasks.push({
       id: "download",
-      label: `Downloading ${status.model}`,
+      label: `Downloading ${model}`,
       progress:
         total > 0
           ? `${formatBytes(downloaded)} of ${formatBytes(total)}`

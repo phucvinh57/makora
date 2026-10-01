@@ -5,30 +5,36 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
   acceptAiLabels,
-  listCategories,
   listSessions,
   setSessionRowCategory,
   setSessionsCategory,
 } from "@/api";
-import { categoryPath } from "@/categories";
+import { useCategoryPicker } from "@/components/CategoryOptions";
+import { PaginationControls } from "@/components/PaginationControls";
+import { useCategories } from "@/hooks/useCategories";
+import { useDebouncedCallback } from "@/hooks/useDebouncedCallback";
+import { useScopedState } from "@/hooks/useScopedState";
+import { invalidateCategorizationQueries, queryKeys } from "@/queries";
 import type { SessionRow } from "@/types";
 import { BulkActionsBar } from "./-components/BulkActionsBar";
 import {
   ALL_CATEGORIES,
   ALL_SOURCES,
+  MANUAL_SOURCE,
   PAGE_SIZE,
   SEARCH_DEBOUNCE_MS,
   UNCATEGORIZED,
 } from "./-components/constants";
+import type { HistoryFilters } from "./-components/filters";
 import { HistoryHeader } from "./-components/HistoryHeader";
-import { HistoryPagination } from "./-components/HistoryPagination";
 import { SessionsTable } from "./-components/SessionsTable";
 import {
   ALL_TIME,
+  isRangeActive,
   resolveRange,
   type TimeRange,
   type TimeRangeKind,
@@ -43,7 +49,16 @@ const RANGE_KINDS: TimeRangeKind[] = [
   "custom",
 ];
 
-function validateSearch(search: Partial<TimeRange>): TimeRange {
+/** Everything the page filters by lives in the URL, so it survives navigating away and back. */
+interface HistorySearch extends TimeRange {
+  q?: string;
+  category?: string;
+  source?: typeof MANUAL_SOURCE;
+  /** One-based, and absent for the first page. */
+  page?: number;
+}
+
+function validateRange(search: Record<string, unknown>): TimeRange {
   const kind = RANGE_KINDS.find((k) => k === search.kind);
   if (!kind || kind === "all") return ALL_TIME;
   if (kind === "custom") {
@@ -54,192 +69,240 @@ function validateSearch(search: Partial<TimeRange>): TimeRange {
   return { kind };
 }
 
+function validateSearch(search: Record<string, unknown>): HistorySearch {
+  return {
+    ...validateRange(search),
+    q: typeof search.q === "string" && search.q ? search.q : undefined,
+    category:
+      typeof search.category === "string" && search.category !== ALL_CATEGORIES
+        ? search.category
+        : undefined,
+    source: search.source === MANUAL_SOURCE ? MANUAL_SOURCE : undefined,
+    page:
+      typeof search.page === "number" &&
+      Number.isInteger(search.page) &&
+      search.page > 1
+        ? search.page
+        : undefined,
+  };
+}
+
 export const Route = createFileRoute("/history")({
   component: HistoryPage,
   validateSearch,
 });
 
+const EMPTY_IDS: ReadonlySet<number> = new Set();
+const NO_ROWS: SessionRow[] = [];
+
 function HistoryPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate({ from: Route.fullPath });
-  const range = Route.useSearch();
+  const search = Route.useSearch();
 
-  const [page, setPage] = useState(0);
-  const [searchInput, setSearchInput] = useState("");
-  const [search, setSearch] = useState("");
-  const [categoryFilter, setCategoryFilter] = useState(ALL_CATEGORIES);
-  const [sourceFilter, setSourceFilter] = useState(ALL_SOURCES);
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
-  const [bulkCategory, setBulkCategory] = useState("");
+  const query = search.q ?? "";
+  const page = (search.page ?? 1) - 1;
+  const filters: HistoryFilters = {
+    category: search.category ?? ALL_CATEGORIES,
+    source: search.source ?? ALL_SOURCES,
+    range: { kind: search.kind, from: search.from, to: search.to },
+  };
 
-  function clearSelection() {
-    setSelectedIds(new Set());
-    setBulkCategory("");
+  /** Any filter change goes back to the first page. */
+  const changeSearch = useCallback(
+    (patch: Partial<HistorySearch>, replace = false) =>
+      navigate({
+        search: (prev) => ({ ...prev, ...patch, page: undefined }),
+        replace,
+      }),
+    [navigate],
+  );
+  const goToPage = useCallback(
+    (next: number) =>
+      navigate({
+        search: (prev) => ({ ...prev, page: next > 0 ? next + 1 : undefined }),
+      }),
+    [navigate],
+  );
+
+  function handleFiltersChange(patch: Partial<HistoryFilters>) {
+    const { category, source, range } = patch;
+    changeSearch({
+      ...(category !== undefined && {
+        category: category === ALL_CATEGORIES ? undefined : category,
+      }),
+      ...(source !== undefined && {
+        source: source === ALL_SOURCES ? undefined : MANUAL_SOURCE,
+      }),
+      // Spelled out so switching to a preset also drops a custom range's bounds.
+      ...(range && { kind: range.kind, from: range.from, to: range.to }),
+    });
   }
 
-  useEffect(() => {
-    const handle = setTimeout(() => {
-      setSearch(searchInput.trim());
-      setPage(0);
-      setSelectedIds(new Set());
-      setBulkCategory("");
-    }, SEARCH_DEBOUNCE_MS);
-    return () => clearTimeout(handle);
-  }, [searchInput]);
-
-  function handleCategoryFilterChange(value: string) {
-    setCategoryFilter(value);
-    setPage(0);
-    clearSelection();
+  const [searchInput, setSearchInput] = useState(query);
+  const commitQuery = useDebouncedCallback(
+    (text: string) => changeSearch({ q: text.trim() || undefined }, true),
+    SEARCH_DEBOUNCE_MS,
+  );
+  function handleSearchInputChange(text: string) {
+    setSearchInput(text);
+    commitQuery(text);
   }
 
-  function handleSourceFilterChange(value: string) {
-    setSourceFilter(value);
-    setPage(0);
-    clearSelection();
-  }
+  // Selections belong to the page and filters they were made on.
+  const scope = JSON.stringify([page, query, filters]);
+  const [selectedIds, updateSelectedIds] = useScopedState(scope, EMPTY_IDS);
+  const [bulkCategory, updateBulkCategory] = useScopedState(scope, "");
 
-  function handleRangeChange(next: TimeRange) {
-    navigate({ search: next });
-    setPage(0);
-    clearSelection();
-  }
-
-  const { start, end } = useMemo(() => resolveRange(range), [range]);
+  const clearSelection = useCallback(() => {
+    updateSelectedIds(() => EMPTY_IDS);
+    updateBulkCategory(() => "");
+  }, [updateSelectedIds, updateBulkCategory]);
 
   const sessionsQuery = useQuery({
-    queryKey: [
-      "sessions",
-      page,
-      PAGE_SIZE,
-      search,
-      categoryFilter === ALL_CATEGORIES ? undefined : categoryFilter,
-      sourceFilter === ALL_SOURCES ? undefined : sourceFilter,
-      start,
-      end,
-    ],
-    queryFn: () =>
-      listSessions(
+    queryKey: [...queryKeys.sessions, { page, query, filters }],
+    // The range is resolved per fetch, so "Today" is still today after midnight.
+    queryFn: () => {
+      const { start, end } = resolveRange(filters.range);
+      return listSessions({
         page,
-        PAGE_SIZE,
-        search || undefined,
-        categoryFilter === ALL_CATEGORIES ? undefined : categoryFilter,
-        sourceFilter === ALL_SOURCES ? undefined : "manual",
+        pageSize: PAGE_SIZE,
+        search: query || undefined,
+        category:
+          filters.category === ALL_CATEGORIES ? undefined : filters.category,
+        source: filters.source === ALL_SOURCES ? undefined : MANUAL_SOURCE,
         start,
         end,
-      ),
+      });
+    },
     placeholderData: keepPreviousData,
   });
+  const { categories, error: categoriesError } = useCategories();
+  const picker = useCategoryPicker(categories);
 
-  const categoriesQuery = useQuery({
-    queryKey: ["categories"],
-    queryFn: listCategories,
-  });
-
-  const rows = sessionsQuery.data?.rows ?? [];
+  const rows = sessionsQuery.data?.rows ?? NO_ROWS;
   const total = sessionsQuery.data?.total ?? 0;
-  const categories = categoriesQuery.data ?? [];
   const loading = sessionsQuery.isFetching;
-  const error =
-    (sessionsQuery.error && String(sessionsQuery.error)) ||
-    (categoriesQuery.error && String(categoriesQuery.error)) ||
-    null;
+  const error = sessionsQuery.error ?? categoriesError;
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
-  function invalidateSessions() {
-    queryClient.invalidateQueries({ queryKey: ["sessions"] });
-    // The statistics page buckets the same rows, so it goes stale on the same edits.
-    queryClient.invalidateQueries({ queryKey: ["activityStats"] });
-  }
+  // A link or a reload can land past the last page; settle on the last one that exists.
+  const settled = sessionsQuery.data && !sessionsQuery.isPlaceholderData;
+  useEffect(() => {
+    if (settled && page > pageCount - 1) {
+      void navigate({
+        search: (prev) => ({
+          ...prev,
+          page: pageCount > 1 ? pageCount : undefined,
+        }),
+        replace: true,
+      });
+    }
+  }, [settled, page, pageCount, navigate]);
 
-  const categoryChangeMutation = useMutation({
+  const { mutate: changeRowCategory } = useMutation({
     mutationFn: async ({ row, value }: { row: SessionRow; value: string }) => {
       const categoryId = value === UNCATEGORIZED ? null : Number(value);
       await setSessionRowCategory(row.id, categoryId);
       return { row, categoryId };
     },
     onSuccess: ({ row, categoryId }) => {
-      invalidateSessions();
       if (categoryId === null) {
         toast.success(
           row.category_source === "ai"
             ? "Rejected the AI suggestion"
             : "Cleared this activity's category",
         );
-        return;
+      } else {
+        toast.success(
+          `Set to ${picker.pathById.get(categoryId) ?? "category"}`,
+          {
+            description: row.title ?? row.url ?? row.app_name,
+          },
+        );
       }
-      const category = categories.find((c) => c.id === categoryId);
-      const categoryName = category
-        ? categoryPath(category, categories)
-        : "category";
-      toast.success(`Set to ${categoryName}`, {
-        description: row.title ?? row.url ?? row.app_name,
-      });
+      return invalidateCategorizationQueries(queryClient);
     },
     onError: (err) => toast.error(String(err)),
   });
 
-  const acceptAiMutation = useMutation({
+  const { mutate: acceptAiLabel } = useMutation({
     mutationFn: (row: SessionRow) => acceptAiLabels([row.activity_id]),
-    onSuccess: invalidateSessions,
+    onSuccess: () => invalidateCategorizationQueries(queryClient),
     onError: (err) => toast.error(String(err)),
   });
 
   const bulkApplyMutation = useMutation({
-    mutationFn: () =>
-      setSessionsCategory([...selectedIds], Number(bulkCategory)),
-    onSuccess: () => {
-      const count = selectedIds.size;
+    mutationFn: ({ ids, categoryId }: { ids: number[]; categoryId: number }) =>
+      setSessionsCategory(ids, categoryId),
+    onSuccess: (_, { ids }) => {
       clearSelection();
-      invalidateSessions();
-      toast.success(`Categorized ${count} activities`);
+      toast.success(`Categorized ${ids.length} activities`);
+      return invalidateCategorizationQueries(queryClient);
     },
     onError: (err) => toast.error(String(err)),
   });
 
-  function toggleRow(id: number, checked: boolean) {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (checked) next.add(id);
-      else next.delete(id);
-      return next;
-    });
-  }
+  const toggleRow = useCallback(
+    (id: number, checked: boolean) =>
+      updateSelectedIds((prev) => {
+        const next = new Set(prev);
+        if (checked) next.add(id);
+        else next.delete(id);
+        return next;
+      }),
+    [updateSelectedIds],
+  );
 
-  function toggleAllVisible(checked: boolean) {
-    setSelectedIds(checked ? new Set(rows.map((r) => r.id)) : new Set());
-  }
+  const toggleAllVisible = useCallback(
+    (checked: boolean) =>
+      updateSelectedIds(() =>
+        checked ? new Set(rows.map((r) => r.id)) : EMPTY_IDS,
+      ),
+    [updateSelectedIds, rows],
+  );
 
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const handleRowCategoryChange = useCallback(
+    (row: SessionRow, value: string) => changeRowCategory({ row, value }),
+    [changeRowCategory],
+  );
+
+  const filtered =
+    query !== "" ||
+    filters.category !== ALL_CATEGORIES ||
+    filters.source !== ALL_SOURCES ||
+    isRangeActive(filters.range);
 
   return (
     <div className="flex h-full flex-col box-border">
       <HistoryHeader
         searchInput={searchInput}
-        onSearchInputChange={setSearchInput}
-        categoryFilter={categoryFilter}
-        onCategoryFilterChange={handleCategoryFilterChange}
-        sourceFilter={sourceFilter}
-        onSourceFilterChange={handleSourceFilterChange}
-        categories={categories}
-        range={range}
-        onRangeChange={handleRangeChange}
+        onSearchInputChange={handleSearchInputChange}
+        filters={filters}
+        onFiltersChange={handleFiltersChange}
+        picker={picker}
         loading={loading}
         onRefresh={() => sessionsQuery.refetch()}
       />
 
       {error && (
         <div className="mb-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          Failed to load sessions: {error}
+          Failed to load sessions: {String(error)}
         </div>
       )}
 
       {selectedIds.size > 0 && (
         <BulkActionsBar
           selectedCount={selectedIds.size}
-          categories={categories}
+          picker={picker}
           bulkCategory={bulkCategory}
-          onBulkCategoryChange={setBulkCategory}
-          onApply={() => bulkApplyMutation.mutate()}
+          onBulkCategoryChange={(value) => updateBulkCategory(() => value)}
+          onApply={() =>
+            bulkApplyMutation.mutate({
+              ids: [...selectedIds],
+              categoryId: Number(bulkCategory),
+            })
+          }
           applyPending={bulkApplyMutation.isPending}
           onClear={clearSelection}
         />
@@ -247,26 +310,22 @@ function HistoryPage() {
 
       <SessionsTable
         rows={rows}
-        categories={categories}
+        picker={picker}
         loading={loading}
-        search={search}
-        categoryFilter={categoryFilter}
-        sourceFilter={sourceFilter}
+        filtered={filtered}
         selectedIds={selectedIds}
         onToggleRow={toggleRow}
         onToggleAllVisible={toggleAllVisible}
-        onRowCategoryChange={(row, value) =>
-          categoryChangeMutation.mutate({ row, value })
-        }
-        onAcceptAiLabel={(row) => acceptAiMutation.mutate(row)}
+        onRowCategoryChange={handleRowCategoryChange}
+        onAcceptAiLabel={acceptAiLabel}
       />
 
-      <HistoryPagination
+      <PaginationControls
+        className="pt-3"
         page={page}
         pageCount={pageCount}
-        total={total}
-        onPrev={() => setPage((p) => p - 1)}
-        onNext={() => setPage((p) => p + 1)}
+        label={`${total} sessions`}
+        onPage={goToPage}
       />
     </div>
   );

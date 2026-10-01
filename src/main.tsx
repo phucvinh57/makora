@@ -7,9 +7,15 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { router } from "./router";
 import "./styles.css";
 
-const queryClient = new QueryClient();
+// Queries are local IPC calls: when one fails, trying again three times just delays the error.
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false } },
+});
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+const rootElement = document.getElementById("root");
+if (!rootElement) throw new Error("index.html has no #root element");
+
+ReactDOM.createRoot(rootElement).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>

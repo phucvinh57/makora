@@ -70,24 +70,19 @@ async function call<T>(command: string, args?: InvokeArgs): Promise<T> {
   }
 }
 
-export function listSessions(
-  page: number,
-  pageSize: number,
-  search?: string,
-  category?: string,
-  source?: "manual",
-  start?: string,
-  end?: string,
-): Promise<SessionsPage> {
-  return call("list_sessions", {
-    page,
-    pageSize,
-    search,
-    category,
-    source,
-    start,
-    end,
-  });
+export interface SessionsQuery {
+  /** Zero-based. */
+  page: number;
+  pageSize: number;
+  search?: string;
+  category?: string;
+  source?: "manual";
+  start?: string;
+  end?: string;
+}
+
+export function listSessions(query: SessionsQuery): Promise<SessionsPage> {
+  return call("list_sessions", { ...query });
 }
 
 export function activityStats(
@@ -119,23 +114,23 @@ export function resetCategorization(): Promise<CategorizationResetOutcome> {
   return call("reset_categorization");
 }
 
-export function createCategory(
-  name: string,
-  color: string,
-  description: string | null,
-  parentId: number | null,
-): Promise<Category> {
-  return call("create_category", { name, color, description, parentId });
+/** What a category is made of; the id is the backend's to assign. */
+export interface CategoryDraft {
+  name: string;
+  color: string;
+  description: string | null;
+  parentId: number | null;
+}
+
+export function createCategory(draft: CategoryDraft): Promise<Category> {
+  return call("create_category", { ...draft });
 }
 
 export function updateCategory(
   id: number,
-  name: string,
-  color: string,
-  description: string | null,
-  parentId: number | null,
+  draft: CategoryDraft,
 ): Promise<void> {
-  return call("update_category", { id, name, color, description, parentId });
+  return call("update_category", { id, ...draft });
 }
 
 export function deleteCategory(id: number): Promise<void> {

@@ -1,9 +1,13 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { RefreshCw } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
+import { activityStats } from "@/api";
 import { Button } from "@/components/ui/button";
-import { activityStats, listCategories } from "@/api";
+import { useCategories } from "@/hooks/useCategories";
+import { cn } from "@/lib/utils";
+import { queryKeys } from "@/queries";
+import type { ActivityStats, Category } from "@/types";
 import { CategoryBreakdown } from "./-components/CategoryBreakdown";
 import { RANGE_PRESETS } from "./-components/constants";
 import { DailyTrend } from "./-components/DailyTrend";
@@ -16,23 +20,58 @@ export const Route = createFileRoute("/statistics")({
   component: StatisticsPage,
 });
 
+function ErrorBanner({ message }: { message: string }) {
+  return (
+    <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+      {message}
+    </div>
+  );
+}
+
+function StatisticsBody({
+  stats,
+  categories,
+}: {
+  stats: ActivityStats;
+  categories: Category[];
+}) {
+  if (stats.session_count === 0) {
+    return (
+      <div className="rounded-md border p-8 text-center text-sm text-muted-foreground">
+        No activity tracked in this range yet.
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <SummaryTiles stats={stats} />
+      <div className="grid gap-6 @4xl/main:grid-cols-2">
+        <CategoryBreakdown stats={stats} categories={categories} />
+        <TopAppsBreakdown stats={stats} />
+      </div>
+      <DailyTrend stats={stats} />
+    </>
+  );
+}
+
 function StatisticsPage() {
   const [range, setRange] = useState<RangePreset>("7d");
-  const { start, end } = useMemo(() => computeRange(range), [range]);
 
   const statsQuery = useQuery({
-    queryKey: ["activityStats", start, end],
-    queryFn: () => activityStats(start, end),
+    // The preset is the key and the dates are worked out per fetch: the app stays open for
+    // days, so "Today" must mean the day it is now, not the day this page first rendered.
+    queryKey: [...queryKeys.activityStats, range],
+    queryFn: () => {
+      const { start, end } = computeRange(range);
+      return activityStats(start, end);
+    },
+    placeholderData: keepPreviousData,
   });
-
-  const categoriesQuery = useQuery({
-    queryKey: ["categories"],
-    queryFn: listCategories,
-  });
+  const { categories, error: categoriesError } = useCategories();
 
   const stats = statsQuery.data;
   const loading = statsQuery.isFetching;
-  const error = statsQuery.error ? String(statsQuery.error) : null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -69,30 +108,28 @@ function StatisticsPage() {
         </div>
       </header>
 
-      {error && (
-        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          Failed to load statistics: {error}
-        </div>
+      {statsQuery.error && (
+        <ErrorBanner
+          message={`Failed to load statistics: ${String(statsQuery.error)}`}
+        />
+      )}
+      {categoriesError && (
+        <ErrorBanner
+          message={`Failed to load categories: ${String(categoriesError)}`}
+        />
       )}
 
-      {!stats && loading ? (
-        <StatisticsSkeleton />
-      ) : stats && stats.session_count === 0 ? (
-        <div className="rounded-md border p-8 text-center text-sm text-muted-foreground">
-          No activity tracked in this range yet.
+      {stats ? (
+        <div
+          className={cn(
+            "flex flex-col gap-6 transition-opacity",
+            statsQuery.isPlaceholderData && "opacity-60",
+          )}
+        >
+          <StatisticsBody stats={stats} categories={categories} />
         </div>
-      ) : stats ? (
-        <>
-          <SummaryTiles stats={stats} />
-          <div className="grid gap-6 @4xl/main:grid-cols-2">
-            <CategoryBreakdown
-              stats={stats}
-              categories={categoriesQuery.data ?? []}
-            />
-            <TopAppsBreakdown stats={stats} />
-          </div>
-          <DailyTrend stats={stats} />
-        </>
+      ) : statsQuery.isPending ? (
+        <StatisticsSkeleton />
       ) : null}
     </div>
   );

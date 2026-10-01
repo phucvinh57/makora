@@ -8,45 +8,43 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  categoryOptions,
-  categoryValueLabels,
-} from "@/components/CategoryOptions";
-import type { Category } from "@/types";
+import { useMemo } from "react";
+import type { CategoryPicker } from "@/components/CategoryOptions";
 import {
   ALL_CATEGORIES,
   ALL_SOURCES,
   MANUAL_SOURCE,
   UNCATEGORIZED,
 } from "./constants";
-import type { TimeRange } from "./timeRange";
+import type { HistoryFilters } from "./filters";
 import { TimeRangeFilter } from "./TimeRangeFilter";
 
 export function HistoryHeader({
   searchInput,
   onSearchInputChange,
-  categoryFilter,
-  onCategoryFilterChange,
-  sourceFilter,
-  onSourceFilterChange,
-  categories,
-  range,
-  onRangeChange,
+  filters,
+  onFiltersChange,
+  picker,
   loading,
   onRefresh,
 }: {
   searchInput: string;
   onSearchInputChange: (value: string) => void;
-  categoryFilter: string;
-  onCategoryFilterChange: (value: string) => void;
-  sourceFilter: string;
-  onSourceFilterChange: (value: string) => void;
-  categories: Category[];
-  range: TimeRange;
-  onRangeChange: (range: TimeRange) => void;
+  filters: HistoryFilters;
+  onFiltersChange: (patch: Partial<HistoryFilters>) => void;
+  picker: CategoryPicker;
   loading: boolean;
   onRefresh: () => void;
 }) {
+  const categoryItems = useMemo(
+    () => ({
+      [ALL_CATEGORIES]: "All categories",
+      [UNCATEGORIZED]: "Uncategorized",
+      ...picker.valueLabels,
+    }),
+    [picker.valueLabels],
+  );
+
   return (
     <header className="mb-4 flex flex-wrap items-center gap-2">
       <div className="mr-auto">
@@ -61,15 +59,11 @@ export function HistoryHeader({
         className="h-8 min-w-40 flex-1 basis-48 sm:max-w-64"
       />
       <Select
-        value={categoryFilter}
+        value={filters.category}
         onValueChange={(value) =>
-          onCategoryFilterChange(value ?? ALL_CATEGORIES)
+          onFiltersChange({ category: value ?? ALL_CATEGORIES })
         }
-        items={{
-          [ALL_CATEGORIES]: "All categories",
-          [UNCATEGORIZED]: "Uncategorized",
-          ...categoryValueLabels(categories),
-        }}
+        items={categoryItems}
       >
         <SelectTrigger
           size="sm"
@@ -81,12 +75,14 @@ export function HistoryHeader({
         <SelectContent>
           <SelectItem value={ALL_CATEGORIES}>All categories</SelectItem>
           <SelectItem value={UNCATEGORIZED}>Uncategorized</SelectItem>
-          {categoryOptions(categories)}
+          {picker.options}
         </SelectContent>
       </Select>
       <Select
-        value={sourceFilter}
-        onValueChange={(value) => onSourceFilterChange(value ?? ALL_SOURCES)}
+        value={filters.source}
+        onValueChange={(value) =>
+          onFiltersChange({ source: value ?? ALL_SOURCES })
+        }
         items={{
           [ALL_SOURCES]: "All sources",
           [MANUAL_SOURCE]: "Manual",
@@ -100,7 +96,10 @@ export function HistoryHeader({
           <SelectItem value={MANUAL_SOURCE}>Manual</SelectItem>
         </SelectContent>
       </Select>
-      <TimeRangeFilter range={range} onChange={onRangeChange} />
+      <TimeRangeFilter
+        range={filters.range}
+        onChange={(range) => onFiltersChange({ range })}
+      />
       <Button
         variant="outline"
         size="sm"

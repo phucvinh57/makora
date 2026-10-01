@@ -53,12 +53,7 @@ export function orderedCategories(categories: Category[]): CategoryNode[] {
   return flattenCategoryTree(buildCategoryTree(categories));
 }
 
-/** `"Work / Reading"` — how a nested category reads outside the tree itself. */
-export function categoryPath(
-  category: Category,
-  categories: Category[],
-): string {
-  const byId = new Map(categories.map((c) => [c.id, c]));
+function pathOf(category: Category, byId: Map<number, Category>): string {
   const names = [category.name];
   const seen = new Set([category.id]);
   let current = category;
@@ -70,6 +65,20 @@ export function categoryPath(
     current = parent;
   }
   return names.join(" / ");
+}
+
+/** `"Work / Reading"` — how a nested category reads outside the tree itself. */
+export function categoryPath(
+  category: Category,
+  categories: Category[],
+): string {
+  return pathOf(category, new Map(categories.map((c) => [c.id, c])));
+}
+
+/** `categoryPath` for every category at once, for callers that would otherwise rebuild the lookup per row. */
+export function categoryPaths(categories: Category[]): Map<number, string> {
+  const byId = new Map(categories.map((c) => [c.id, c]));
+  return new Map(categories.map((c) => [c.id, pathOf(c, byId)]));
 }
 
 /** A category plus everything nested under it — what picking it now covers. */
