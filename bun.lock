@@ -12,7 +12,7 @@
         "@tanstack/react-router": "^1.170.40",
         "@tauri-apps/api": "^2.12.0",
         "@tauri-apps/plugin-autostart": "^2.6.0",
-        "@tauri-apps/plugin-opener": "^2.6.0",
+        "@tauri-apps/plugin-opener": "^2.7.0",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
         "date-fns": "^4.4.0",
@@ -337,7 +337,7 @@
 
     "@tauri-apps/plugin-autostart": ["@tauri-apps/plugin-autostart@2.6.0", "", { "dependencies": { "@tauri-apps/api": "^2.12.0" } }, "sha512-myppl3C/dygGbn7Inmm3LqsAQ7SSsT3KtNpSt/e+fA5J7xeCIf8H+LMiE1tkS7mKzTfChCutfZCt0FQkrL/YdA=="],
 
-    "@tauri-apps/plugin-opener": ["@tauri-apps/plugin-opener@2.6.0", "", { "dependencies": { "@tauri-apps/api": "^2.12.0" } }, "sha512-KIl9qkBGyAUrbzfCtdk+NRPTXUOwpMyUKsKN57H6/qA0q8auVywXpfUyWClqX6I/iH8PHmqAUa/KK9YZPWVQew=="],
+    "@tauri-apps/plugin-opener": ["@tauri-apps/plugin-opener@2.7.0", "", { "dependencies": { "@tauri-apps/api": "^2.12.0" } }, "sha512-mBorYfVKh9Lt7s4ZFtKbMUTxBw+Y/sVmSlKCtkkoBgMTC/DIbt/kaPm67L/2djAUqDI1wbixy5OHHVmipjuGMw=="],
 
     "@ts-morph/common": ["@ts-morph/common@0.27.0", "", { "dependencies": { "fast-glob": "^3.3.3", "minimatch": "^10.0.1", "path-browserify": "^1.0.1" } }, "sha512-Wf29UqxWDpc+i61k3oIOzcUfQt79PIT9y/MWfAGlrkjg6lBC1hwDECLXPVJAhWjiGbfBCxZd65F/LIZF3+jeJQ=="],
 
