@@ -62,11 +62,11 @@ export function CategoryBreakdown({
   categories: Category[];
 }) {
   const { rows, topLevel } = useMemo(() => {
-    const secondsById = new Map(
-      stats.categories
-        .filter((c) => c.category_id !== null)
-        .map((c) => [c.category_id as number, c.total_seconds]),
-    );
+    const secondsById = new Map<number, number>();
+    for (const c of stats.categories) {
+      if (c.category_id !== null)
+        secondsById.set(c.category_id, c.total_seconds);
+    }
     const tree = buildCategoryTree(categories);
     const { rows } = rollUp(tree, secondsById);
 

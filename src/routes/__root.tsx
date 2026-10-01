@@ -1,4 +1,10 @@
 import {
+  createRootRoute,
+  Link,
+  type LinkProps,
+  Outlet,
+} from "@tanstack/react-router";
+import {
   BarChart3,
   History,
   Hourglass,
@@ -7,18 +13,18 @@ import {
   Settings as SettingsIcon,
   Tags,
 } from "lucide-react";
-import { useState } from "react";
 import { BackgroundTasksIndicator } from "@/components/BackgroundTasksIndicator";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useBackgroundTaskSync } from "@/hooks/useBackgroundTasks";
+import { FLAG_CODEC, usePersistentState } from "@/hooks/usePersistentState";
 import { cn } from "@/lib/utils";
-import { createRootRoute, Link, Outlet } from "@tanstack/react-router";
 
 type NavItem = {
-  to: string;
+  to: LinkProps["to"];
   label: string;
   icon: typeof History;
 };
@@ -36,18 +42,48 @@ export const Route = createRootRoute({
   component: RootLayout,
 });
 
-function RootLayout() {
-  const [collapsed, setCollapsed] = useState(
-    () => localStorage.getItem(COLLAPSE_STORAGE_KEY) === "1",
+function NavLink({
+  item: { to, label, icon: Icon },
+  collapsed,
+}: {
+  item: NavItem;
+  collapsed: boolean;
+}) {
+  const link = (
+    <Link
+      to={to}
+      className={cn(
+        "flex items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm font-medium transition-colors",
+        collapsed && "justify-center px-0",
+      )}
+      activeProps={{ className: "bg-sidebar-primary/10 text-sidebar-primary" }}
+      inactiveProps={{
+        className:
+          "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground",
+      }}
+      aria-label={collapsed ? label : undefined}
+    >
+      <Icon className="size-4 shrink-0" />
+      {!collapsed && label}
+    </Link>
   );
 
-  function toggleCollapsed() {
-    setCollapsed((prev) => {
-      const next = !prev;
-      localStorage.setItem(COLLAPSE_STORAGE_KEY, next ? "1" : "0");
-      return next;
-    });
-  }
+  if (!collapsed) return link;
+  return (
+    <Tooltip>
+      <TooltipTrigger render={link} />
+      <TooltipContent side="right">{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+function RootLayout() {
+  const [collapsed, setCollapsed] = usePersistentState(
+    COLLAPSE_STORAGE_KEY,
+    false,
+    FLAG_CODEC,
+  );
+  useBackgroundTaskSync();
 
   return (
     <div className="flex h-screen box-border">
@@ -75,7 +111,7 @@ function RootLayout() {
           )}
           <button
             type="button"
-            onClick={toggleCollapsed}
+            onClick={() => setCollapsed(!collapsed)}
             aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
             className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground"
           >
@@ -87,50 +123,9 @@ function RootLayout() {
           </button>
         </div>
         <nav className="flex flex-1 flex-col gap-1 px-2">
-          {NAV_ITEMS.map(({ to, label, icon: Icon }) => {
-            const itemClassName = cn(
-              "flex items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm font-medium transition-colors",
-              collapsed && "justify-center px-0",
-            );
-            const inactiveClassName =
-              "text-muted-foreground hover:bg-sidebar-accent/50 hover:text-sidebar-accent-foreground";
-            const activeClassName =
-              "bg-sidebar-primary/10 text-sidebar-primary";
-
-            if (!collapsed) {
-              return (
-                <Link
-                  key={to}
-                  to={to}
-                  className={itemClassName}
-                  activeProps={{ className: activeClassName }}
-                  inactiveProps={{ className: inactiveClassName }}
-                >
-                  <Icon className="size-4 shrink-0" />
-                  {label}
-                </Link>
-              );
-            }
-
-            return (
-              <Tooltip key={to}>
-                <TooltipTrigger
-                  render={
-                    <Link
-                      to={to}
-                      className={itemClassName}
-                      activeProps={{ className: activeClassName }}
-                      inactiveProps={{ className: inactiveClassName }}
-                      aria-label={label}
-                    >
-                      <Icon className="size-4 shrink-0" />
-                    </Link>
-                  }
-                />
-                <TooltipContent side="right">{label}</TooltipContent>
-              </Tooltip>
-            );
-          })}
+          {NAV_ITEMS.map((item) => (
+            <NavLink key={item.label} item={item} collapsed={collapsed} />
+          ))}
         </nav>
         <div className="px-2 pb-2">
           <BackgroundTasksIndicator collapsed={collapsed} />

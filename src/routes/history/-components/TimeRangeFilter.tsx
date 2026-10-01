@@ -1,5 +1,5 @@
 import { CalendarRange, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { DateTimePicker } from "@/components/ui/date-time-picker";
 import {
@@ -88,6 +88,7 @@ export function TimeRangeFilter({
   );
 }
 
+/** Mounted with the popover, so it starts from the applied range each time it opens. */
 function CustomRangeFields({
   range,
   onApply,
@@ -97,11 +98,6 @@ function CustomRangeFields({
 }) {
   const [from, setFrom] = useState(() => toLocalInputValue(range.from));
   const [to, setTo] = useState(() => toLocalInputValue(range.to));
-
-  useEffect(() => {
-    setFrom(toLocalInputValue(range.from));
-    setTo(toLocalInputValue(range.to));
-  }, [range.from, range.to]);
 
   const invalid = from !== "" && to !== "" && from >= to;
 

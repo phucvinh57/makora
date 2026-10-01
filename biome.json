@@ -17,6 +17,10 @@
     "enabled": true,
     "rules": {
       "preset": "recommended",
+      "correctness": {
+        "useExhaustiveDependencies": "error",
+        "useHookAtTopLevel": "error"
+      },
       "suspicious": {
         "noArrayIndexKey": "off"
       }

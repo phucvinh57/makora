@@ -19,9 +19,10 @@ export function BackgroundTasksIndicator({
     <Tooltip>
       <TooltipTrigger
         render={
-          <div
+          <button
+            type="button"
             className={cn(
-              "flex items-center gap-2 rounded-md px-2.5 py-1.5 text-sm text-muted-foreground",
+              "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm text-muted-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
               collapsed && "justify-center px-0",
             )}
           >
@@ -31,7 +32,7 @@ export function BackgroundTasksIndicator({
                 {tasks.length} task{tasks.length === 1 ? "" : "s"} running
               </span>
             )}
-          </div>
+          </button>
         }
       />
       <TooltipContent

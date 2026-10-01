@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { Bar, BarChart, CartesianGrid, XAxis } from "recharts";
 import {
   Card,
@@ -16,15 +17,19 @@ import { formatSeconds } from "@/duration";
 import type { ActivityStats } from "@/types";
 import { formatDay } from "./date";
 
-export function DailyTrend({ stats }: { stats: ActivityStats }) {
-  const data = stats.daily.map((d) => ({
-    label: formatDay(d.day),
-    total_seconds: d.total_seconds,
-  }));
+const chartConfig: ChartConfig = {
+  total_seconds: { label: "Tracked time", color: "var(--chart-1)" },
+};
 
-  const chartConfig: ChartConfig = {
-    total_seconds: { label: "Tracked time", color: "var(--chart-1)" },
-  };
+export function DailyTrend({ stats }: { stats: ActivityStats }) {
+  const data = useMemo(
+    () =>
+      stats.daily.map((d) => ({
+        label: formatDay(d.day),
+        total_seconds: d.total_seconds,
+      })),
+    [stats.daily],
+  );
 
   return (
     <Card size="sm">

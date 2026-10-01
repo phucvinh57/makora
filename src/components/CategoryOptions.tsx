@@ -1,6 +1,6 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useMemo } from "react";
+import { categoryPaths, orderedCategories } from "@/categories";
 import { SelectItem } from "@/components/ui/select";
-import { categoryPath, orderedCategories } from "@/categories";
 import type { Category } from "@/types";
 
 const INDENT_PER_LEVEL_PX = 12;
@@ -39,13 +39,34 @@ export function categoryOptions(categories: Category[]): ReactNode[] {
 export function categoryValueLabels(
   categories: Category[],
 ): Record<string, ReactNode> {
+  const paths = categoryPaths(categories);
   return Object.fromEntries(
     categories.map((category) => [
       String(category.id),
       <span className="flex min-w-0 items-center gap-1.5" key={category.id}>
         <CategoryDot color={category.color} />
-        {categoryPath(category, categories)}
+        {paths.get(category.id)}
       </span>,
     ]),
+  );
+}
+
+/** Everything a category dropdown needs, built once per category list instead of once per dropdown. */
+export interface CategoryPicker {
+  categories: Category[];
+  pathById: Map<number, string>;
+  options: ReactNode[];
+  valueLabels: Record<string, ReactNode>;
+}
+
+export function useCategoryPicker(categories: Category[]): CategoryPicker {
+  return useMemo(
+    () => ({
+      categories,
+      pathById: categoryPaths(categories),
+      options: categoryOptions(categories),
+      valueLabels: categoryValueLabels(categories),
+    }),
+    [categories],
   );
 }

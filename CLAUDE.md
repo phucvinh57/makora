@@ -15,7 +15,7 @@ bun run build      # tsc typecheck + vite build
 
 From `src-tauri/` (single crate, no workspace): `cargo build`, `cargo test`, `cargo clippy`.
 
-No ESLint/Prettier; `tsc` in `bun run build` enforces TypeScript strictness.
+No ESLint/Prettier: Biome lints and formats (`bun run lint`, `bun run check`, with the React hook rules on), and `tsc` in `bun run build` enforces TypeScript strictness.
 
 Build deps: Rust, Node, a C/C++ toolchain (`rusqlite` builds SQLite from source). Linux also needs Tauri's WebKitGTK stack (`libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libssl-dev patchelf`).
 
