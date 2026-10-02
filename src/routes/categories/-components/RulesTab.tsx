@@ -75,7 +75,7 @@ export function RulesTab() {
           disabled={categories.length === 0}
           onClick={() => openDialog<RuleDialogData>("rule", { rule: null })}
         >
-          Add rule
+          Add rules
         </Button>
       </div>
 
@@ -87,7 +87,7 @@ export function RulesTab() {
       )}
       {!rulesQuery.isLoading && rules.length === 0 && categories.length > 0 && (
         <p className="m-0 text-sm text-muted-foreground">
-          No rules yet. Use “Add rule” above to begin.
+          No rules yet. Use “Add rules” above to begin.
         </p>
       )}
 

@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { Plus, X } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
 import { categoryRule, suggestion as suggestionApi } from "@/api";
 import { useCategoryPicker } from "@/components/CategoryOptions";
 import { CreatableCategoryCombobox } from "@/components/CreatableCategoryCombobox";
@@ -55,19 +56,23 @@ interface Form {
   value: string;
   /** Only for a page: what follows the domain, e.g. `/acme/api`. */
   path: string;
-  categoryId: number | null;
 }
 
-function formOf(rule: CategoryRule | null): Form {
-  if (!rule) {
-    return {
-      kind: "site",
-      field: "url",
-      value: "",
-      path: "",
-      categoryId: null,
-    };
-  }
+/** One rule being written. The `id` keeps a row's state with it as others come and go. */
+interface Row extends Form {
+  id: number;
+}
+
+function emptyForm(like?: Form): Form {
+  return {
+    kind: like?.kind ?? "site",
+    field: like?.field ?? "url",
+    value: "",
+    path: "",
+  };
+}
+
+function formOf(rule: CategoryRule): Form {
   const slash = rule.value.indexOf("/");
   const isPage = rule.kind === "page" && slash >= 0;
   return {
@@ -75,7 +80,6 @@ function formOf(rule: CategoryRule | null): Form {
     field: rule.field ?? "url",
     value: isPage ? rule.value.slice(0, slash) : rule.value,
     path: isPage ? rule.value.slice(slash) : "",
-    categoryId: rule.category_id,
   };
 }
 
@@ -97,21 +101,21 @@ function sourceHint(name: string, key: string, seconds: number): string {
   return `${label}${formatSeconds(seconds)}`;
 }
 
-/**
- * The form is its own component because the dialog unmounts its content on close: the fields
- * and the mutation's error start fresh every time it opens.
- */
-function RuleForm({
-  rule,
-  onClose,
+/** One rule's fields, and what it would match. */
+function RuleFields({
+  form,
+  onChange,
+  onRemove,
+  error,
+  autoFocus,
 }: {
-  rule: CategoryRule | null;
-  onClose: () => void;
+  form: Form;
+  onChange: (patch: Partial<Form>) => void;
+  /** Absent when this is the only rule and cannot be removed. */
+  onRemove?: () => void;
+  error?: string;
+  autoFocus?: boolean;
 }) {
-  const queryClient = useQueryClient();
-  const { categories } = useCategories();
-  const picker = useCategoryPicker(categories);
-  const [form, setForm] = useState(() => formOf(rule));
   // The preview follows what was typed a moment ago, so it is not asked on every keystroke.
   const [previewed, setPreviewed] = useState(() => ({
     kind: form.kind,
@@ -125,7 +129,7 @@ function RuleForm({
 
   function change(patch: Partial<Form>) {
     const next = { ...form, ...patch };
-    setForm(next);
+    onChange(patch);
     schedulePreview({
       kind: next.kind,
       field: fieldOf(next),
@@ -170,80 +174,65 @@ function RuleForm({
   });
   const preview = previewQuery.data;
 
-  const saveMutation = useMutation({
-    mutationFn: async (categoryId: number) => {
-      const draft = {
-        kind: form.kind,
-        field: fieldOf(form),
-        value: matchValue(form),
-        categoryId,
-      };
-      if (rule) await categoryRule.update(rule.id, draft);
-      else await categoryRule.create(draft);
-    },
-    onSuccess: () => {
-      onClose();
-      return invalidateCategorizationQueries(queryClient);
-    },
-  });
-
-  const canSave = matchValue(form) !== "" && form.categoryId !== null;
-
   return (
-    <form
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (canSave && form.categoryId !== null) {
-          saveMutation.mutate(form.categoryId);
-        }
-      }}
-      className="flex flex-col gap-4"
-    >
-      <DialogHeader>
-        <DialogTitle>{rule ? "Edit rule" : "Add rule"}</DialogTitle>
-        <DialogDescription>
-          Every activity that matches goes to the category you choose, including
-          what you have already tracked.
-        </DialogDescription>
-      </DialogHeader>
-
-      <Select
-        value={form.kind}
-        onValueChange={(value) => value && change({ kind: value as RuleKind })}
-        items={KIND_ITEMS}
-      >
-        <SelectTrigger className="w-full" aria-label="What to match">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {KINDS.map((kind) => (
-            <SelectItem key={kind} value={kind}>
-              {RULE_KIND_LABELS[kind]}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-
-      {form.kind === "pattern" && (
+    <div className="flex min-w-0 flex-col gap-2">
+      <div className="flex items-center gap-2">
         <Select
-          value={form.field}
+          value={form.kind}
           onValueChange={(value) =>
-            value && change({ field: value as PatternField })
+            value && change({ kind: value as RuleKind })
           }
-          items={FIELD_ITEMS}
+          items={KIND_ITEMS}
         >
-          <SelectTrigger className="w-full" aria-label="Match against">
+          <SelectTrigger className="min-w-0 flex-1" aria-label="What to match">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {PATTERN_FIELDS.map((field) => (
-              <SelectItem key={field} value={field}>
-                {PATTERN_FIELD_LABELS[field]}
+            {KINDS.map((kind) => (
+              <SelectItem key={kind} value={kind}>
+                {RULE_KIND_LABELS[kind]}
               </SelectItem>
             ))}
           </SelectContent>
         </Select>
-      )}
+
+        {form.kind === "pattern" && (
+          <Select
+            value={form.field}
+            onValueChange={(value) =>
+              value && change({ field: value as PatternField })
+            }
+            items={FIELD_ITEMS}
+          >
+            <SelectTrigger
+              className="min-w-0 flex-1"
+              aria-label="Match against"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PATTERN_FIELDS.map((field) => (
+                <SelectItem key={field} value={field}>
+                  {PATTERN_FIELD_LABELS[field]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+
+        {onRemove && (
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="ghost"
+            aria-label="Remove rule"
+            title="Remove rule"
+            onClick={onRemove}
+          >
+            <X />
+          </Button>
+        )}
+      </div>
 
       <div className="flex flex-col gap-1.5">
         {form.kind === "pattern" ? (
@@ -253,7 +242,7 @@ function RuleForm({
             onChange={(event) => change({ value: event.target.value })}
             placeholder={RULE_VALUE_PLACEHOLDERS.pattern}
             aria-label="Pattern"
-            autoFocus
+            autoFocus={autoFocus}
           />
         ) : (
           <SuggestInput
@@ -262,6 +251,7 @@ function RuleForm({
             suggestions={sourceSuggestions}
             placeholder={RULE_VALUE_PLACEHOLDERS[form.kind]}
             ariaLabel={form.kind === "app" ? "App" : "Website"}
+            autoFocus={autoFocus}
           />
         )}
         {form.kind === "page" && (
@@ -278,18 +268,9 @@ function RuleForm({
             ? "* matches any text and ? matches one character, ignoring case."
             : form.kind === "page"
               ? "Covers this page and everything below it."
-              : "Pick from what you have tracked, or type your own."}{" "}
-          Avoid multi-purpose sites or apps: every matching activity goes to
-          this category.
+              : "Pick from what you have tracked, or type your own."}
         </p>
       </div>
-
-      <CreatableCategoryCombobox
-        picker={picker}
-        value={form.categoryId === null ? null : String(form.categoryId)}
-        onValueChange={(value) => change({ categoryId: Number(value) })}
-        className="w-full"
-      />
 
       <div className="min-h-10 rounded-md border bg-muted/30 px-3 py-2 text-xs">
         {previewed.value === "" ? (
@@ -326,6 +307,165 @@ function RuleForm({
         )}
       </div>
 
+      {error && <p className="m-0 text-xs text-destructive">{error}</p>}
+    </div>
+  );
+}
+
+interface SaveResult {
+  /** The rows that were saved. */
+  saved: number[];
+  /** The row that stopped the save, if one did; the rows after it were not tried. */
+  failed: { id: number; message: string } | null;
+}
+
+/**
+ * The form is its own component because the dialog unmounts its content on close: the fields
+ * and the mutation's error start fresh every time it opens.
+ *
+ * The category comes first and every rule written below it files there, so a batch of rules
+ * for one category goes in with a single pick. Editing changes one rule, so it has one row.
+ */
+function RuleForm({
+  rule,
+  onClose,
+}: {
+  rule: CategoryRule | null;
+  onClose: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const { categories } = useCategories();
+  const picker = useCategoryPicker(categories);
+  const [categoryId, setCategoryId] = useState<number | null>(
+    rule?.category_id ?? null,
+  );
+  const nextId = useRef(1);
+  const [rows, setRows] = useState<Row[]>(() => [
+    { id: 0, ...(rule ? formOf(rule) : emptyForm()) },
+  ]);
+  // Only rows added after the first take focus: the dialog opens on the category.
+  const [focusedId, setFocusedId] = useState<number | null>(null);
+
+  function changeRow(id: number, patch: Partial<Form>) {
+    setRows((prev) =>
+      prev.map((row) => (row.id === id ? { ...row, ...patch } : row)),
+    );
+  }
+
+  function addRow() {
+    const id = nextId.current++;
+    setRows((prev) => [...prev, { id, ...emptyForm(prev[prev.length - 1]) }]);
+    setFocusedId(id);
+  }
+
+  function removeRow(id: number) {
+    setRows((prev) => prev.filter((row) => row.id !== id));
+  }
+
+  // A blank row is one still waiting to be filled, so it is skipped rather than blocking.
+  const filled = rows.filter((row) => matchValue(row) !== "");
+
+  const saveMutation = useMutation({
+    mutationFn: async (category: number): Promise<SaveResult> => {
+      const draftOf = (row: Row) => ({
+        kind: row.kind,
+        field: fieldOf(row),
+        value: matchValue(row),
+        categoryId: category,
+      });
+      if (rule) {
+        await categoryRule.update(rule.id, draftOf(filled[0]));
+        return { saved: [filled[0].id], failed: null };
+      }
+      const saved: number[] = [];
+      for (const row of filled) {
+        try {
+          await categoryRule.create(draftOf(row));
+          saved.push(row.id);
+        } catch (err) {
+          return { saved, failed: { id: row.id, message: String(err) } };
+        }
+      }
+      return { saved, failed: null };
+    },
+    onSuccess: (result) => {
+      // Rules saved before a failure stay saved, so they leave the form: saving again must
+      // not add them twice.
+      if (result.failed) {
+        setRows((prev) => prev.filter((row) => !result.saved.includes(row.id)));
+      } else {
+        onClose();
+      }
+      return invalidateCategorizationQueries(queryClient);
+    },
+  });
+
+  const canSave = filled.length > 0 && categoryId !== null;
+  const failed = saveMutation.data?.failed ?? null;
+
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (canSave && categoryId !== null) saveMutation.mutate(categoryId);
+      }}
+      className="flex min-w-0 flex-col gap-4"
+    >
+      <DialogHeader>
+        <DialogTitle>{rule ? "Edit rule" : "Add rules"}</DialogTitle>
+        <DialogDescription>
+          {rule
+            ? "Every activity that matches goes to the category you choose, including what you have already tracked."
+            : "Choose a category, then add every rule that belongs in it. Every activity that matches goes there, including what you have already tracked."}{" "}
+          Avoid multi-purpose sites or apps: every matching activity goes to the
+          category.
+        </DialogDescription>
+      </DialogHeader>
+
+      <CreatableCategoryCombobox
+        picker={picker}
+        value={categoryId === null ? null : String(categoryId)}
+        onValueChange={(value) => setCategoryId(Number(value))}
+        className="w-full"
+      />
+
+      <div className="-mx-1 flex max-h-[50vh] min-w-0 flex-col gap-3 overflow-x-hidden overflow-y-auto px-1">
+        {rows.map((row) => {
+          const fields = (
+            <RuleFields
+              key={row.id}
+              form={row}
+              onChange={(patch) => changeRow(row.id, patch)}
+              onRemove={
+                rule || rows.length === 1 ? undefined : () => removeRow(row.id)
+              }
+              error={failed?.id === row.id ? failed.message : undefined}
+              autoFocus={row.id === focusedId}
+            />
+          );
+          return rule ? (
+            fields
+          ) : (
+            <div key={row.id} className="rounded-lg border p-3">
+              {fields}
+            </div>
+          );
+        })}
+      </div>
+
+      {!rule && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="self-start"
+          onClick={addRow}
+        >
+          <Plus />
+          Add another rule
+        </Button>
+      )}
+
       {saveMutation.isError && (
         <p className="m-0 text-xs text-destructive">
           {String(saveMutation.error)}
@@ -336,7 +476,11 @@ function RuleForm({
           Cancel
         </Button>
         <Button type="submit" disabled={!canSave || saveMutation.isPending}>
-          {rule ? "Save rule" : "Add rule"}
+          {rule
+            ? "Save rule"
+            : filled.length > 1
+              ? `Add ${filled.length} rules`
+              : "Add rule"}
         </Button>
       </DialogFooter>
     </form>
@@ -344,7 +488,7 @@ function RuleForm({
 }
 
 export interface RuleDialogData {
-  /** The rule being edited; `null` for a new one. */
+  /** The rule being edited; `null` for new ones. */
   rule: CategoryRule | null;
 }
 

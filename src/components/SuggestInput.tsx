@@ -28,12 +28,14 @@ export function SuggestInput({
   suggestions,
   placeholder,
   ariaLabel,
+  autoFocus,
 }: {
   value: string;
   onValueChange: (value: string) => void;
   suggestions: Suggestion[];
   placeholder?: string;
   ariaLabel: string;
+  autoFocus?: boolean;
 }) {
   return (
     <Autocomplete.Root
@@ -50,10 +52,11 @@ export function SuggestInput({
         aria-label={ariaLabel}
         autoComplete="off"
         spellCheck={false}
+        autoFocus={autoFocus}
       />
       <Autocomplete.Portal>
         <Autocomplete.Positioner sideOffset={4} className="isolate z-50">
-          <Autocomplete.Popup className="w-(--anchor-width) max-w-(--available-width) overflow-hidden rounded-lg bg-popover text-popover-foreground shadow-md ring-1 ring-foreground/10 has-[[data-empty]]:hidden">
+          <Autocomplete.Popup className="w-(--anchor-width) max-w-(--available-width) overflow-hidden rounded-lg bg-popover text-popover-foreground shadow-md ring-1 ring-foreground/10 has-data-empty:hidden">
             <Autocomplete.List className="max-h-[min(18rem,var(--available-height))] overflow-y-auto overscroll-contain p-1 outline-0 data-empty:p-0">
               {(suggestion: Suggestion) => (
                 <Autocomplete.Item

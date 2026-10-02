@@ -4,7 +4,6 @@
 // the global genuinely is absent.
 declare var browser: typeof chrome | undefined;
 
-// biome-ignore lint/correctness/noUnusedVariables: <ignore>
 interface Navigator {
   // Brave-only; feature-detected in detectBrowser().
   brave?: { isBrave(): Promise<boolean> };
