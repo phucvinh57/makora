@@ -2,6 +2,7 @@ import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import {
   aiFeedbackStats,
   categorizeStatus,
+  getSettings,
   listCategories,
   listInstalledAiModels,
   modelDownloadStatus,
@@ -22,6 +23,7 @@ export const queryKeys = {
   aiInstalledModels: ["aiInstalledModels"],
   aiModelInstalled: ["aiModelInstalled"],
   autostartEnabled: ["autostartEnabled"],
+  settings: ["settings"],
 } as const;
 
 /** Polling only runs while the backend reports a task; starting one flags it up front. */
@@ -30,6 +32,11 @@ const RUNNING_POLL_MS = 1_000;
 export const categoriesQueryOptions = queryOptions({
   queryKey: queryKeys.categories,
   queryFn: listCategories,
+});
+
+export const settingsQueryOptions = queryOptions({
+  queryKey: queryKeys.settings,
+  queryFn: getSettings,
 });
 
 export const aiFeedbackStatsQueryOptions = queryOptions({

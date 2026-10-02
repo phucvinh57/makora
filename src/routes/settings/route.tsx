@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { GeneralSection } from "./-components/GeneralSection";
+import { TrackingSection } from "./-components/TrackingSection";
 
 export const Route = createFileRoute("/settings")({
   component: SettingsPage,
@@ -15,6 +16,7 @@ function SettingsPage() {
         </p>
       </header>
       <GeneralSection />
+      <TrackingSection />
     </div>
   );
 }

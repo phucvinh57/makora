@@ -2,6 +2,8 @@
 //! or drops it when it loses focus, and folds a refined title into the session already open.
 //! What counts as a block is decided by [`super::domain::session_policy`].
 
+use std::sync::Arc;
+
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use diesel::{Connection, QueryResult};
@@ -10,6 +12,7 @@ use crate::categorization::store as classifications;
 use crate::db::models::NewSessionRow;
 use crate::db::{self, Db};
 use crate::shared::ids::SessionId;
+use crate::settings::SettingsStore;
 use crate::shared::time;
 
 use super::domain::events::FocusedApp;
@@ -21,11 +24,12 @@ use super::store::{ensure_activity, ensure_source, prune_orphans};
 
 pub struct SqliteSessionRecorder {
     db: Db,
+    settings: Arc<dyn SettingsStore>,
 }
 
 impl SqliteSessionRecorder {
-    pub fn new(db: Db) -> Self {
-        Self { db }
+    pub fn new(db: Db, settings: Arc<dyn SettingsStore>) -> Self {
+        Self { db, settings }
     }
 }
 
@@ -66,6 +70,8 @@ impl SessionRecorder for SqliteSessionRecorder {
     fn end(&self, id: SessionId, at: DateTime<Utc>) -> Result<()> {
         let id = i64::from(id);
         let end_time = time::to_db(at);
+        // Read per close, so a change on the settings page applies to the very next block.
+        let min_seconds = self.settings.get().tracking.min_session_seconds;
         let mut conn = self.db.write();
         conn.transaction(|conn| -> QueryResult<()> {
             let Some(session) = db::sessions::SessionsRepo::get(conn, id)? else {
@@ -73,7 +79,7 @@ impl SessionRecorder for SqliteSessionRecorder {
             };
             // A start time that is missing or unreadable is a reason to keep the row, not to
             // throw it away.
-            if time::parse_db(&session.start_time).is_some_and(|started_at| is_noise(started_at, at)) {
+            if time::parse_db(&session.start_time).is_some_and(|started_at| is_noise(started_at, at, min_seconds)) {
                 db::sessions::SessionsRepo::delete(conn, id)?;
                 prune_orphans(conn, &[session.activity_id])?;
                 return Ok(());

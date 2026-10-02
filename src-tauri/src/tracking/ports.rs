@@ -20,9 +20,9 @@ pub trait SessionTracker: Send {
 /// Where blocks of activity are kept.
 pub trait SessionRecorder: Send + Sync {
     fn start(&self, app: &FocusedApp, window_title: &str, url: Option<&str>, at: DateTime<Utc>) -> Result<SessionId>;
-    /// Closes the block in one transaction, unless it lasted less than
-    /// [`MIN_SESSION_SECONDS`](super::domain::session_policy::MIN_SESSION_SECONDS), in which case
-    /// it is dropped and its orphaned activity pruned.
+    /// Closes the block in one transaction, unless it lasted less than the configured minimum
+    /// (`tracking.min_session_seconds` in [`crate::settings`]), in which case it is dropped and
+    /// its orphaned activity pruned.
     fn end(&self, id: SessionId, at: DateTime<Utc>) -> Result<()>;
     /// A browser reported the real title for a session that opened with a placeholder one. If
     /// that resolves to a different activity than the one the session opened against, the

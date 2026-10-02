@@ -151,3 +151,10 @@ export interface ActivityStats {
   apps: AppStat[];
   daily: DailyStat[];
 }
+
+export interface Settings {
+  tracking: {
+    /** Activity that ends sooner than this after it began is discarded. */
+    min_session_seconds: number;
+  };
+}

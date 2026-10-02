@@ -17,6 +17,7 @@ import type {
   ModelDownloadStatus,
   ReviewFilter,
   SessionsPage,
+  Settings,
 } from "./types";
 
 /** Why a command failed, stable enough to branch on. */
@@ -143,6 +144,15 @@ export function isAutostartEnabled(): Promise<boolean> {
 
 export function setAutostartEnabled(enabled: boolean): Promise<void> {
   return enabled ? enableAutostart() : disableAutostart();
+}
+
+export function getSettings(): Promise<Settings> {
+  return call("get_settings");
+}
+
+/** Resolves to the settings as saved. */
+export function setMinSessionSeconds(seconds: number): Promise<Settings> {
+  return call("set_min_session_seconds", { seconds });
 }
 
 export function cancelCategorize(): Promise<void> {

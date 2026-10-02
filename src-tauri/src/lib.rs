@@ -5,6 +5,7 @@ mod domain;
 mod host;
 mod logging;
 mod reporting;
+mod settings;
 mod shared;
 mod taxonomy;
 mod tracking;
@@ -22,6 +23,7 @@ use crate::ai::model_download::ModelDownloadState;
 use crate::categorization::application::ai_run::AiRunState;
 use crate::categorization::ports::Classifier;
 use crate::categorization::{ClassificationSvc, SqliteClassification};
+use crate::settings::{SettingsStore, TomlSettings};
 use crate::domain::{HistorySvc, LabelingSvc, SqliteHistory, SqliteLabeling};
 use crate::taxonomy::{CategorySvc, SqliteCategories};
 use crate::tracking::adapters::model::WatchEvent;
@@ -74,6 +76,8 @@ pub fn run() {
             host::commands::models::cancel_model_download,
             host::commands::models::ai_model_installed,
             host::commands::models::list_installed_ai_models,
+            host::commands::settings::get_settings,
+            host::commands::settings::set_min_session_seconds,
         ])
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
@@ -89,7 +93,13 @@ pub fn run() {
             let conn = db::open_sqlite(&db_path).map_err(|err| {
                 anyhow::anyhow!("opening database at {}: {err:#}", db_path.display())
             })?;
-            let recorder: Box<dyn SessionRecorder> = Box::new(SqliteSessionRecorder::new(conn.clone()));
+
+            let settings_path = app.path().app_config_dir()?.join("settings.toml");
+            info!(path = %settings_path.display(), "reading settings");
+            let settings: Arc<dyn SettingsStore> = Arc::new(TomlSettings::load(settings_path));
+
+            let recorder: Box<dyn SessionRecorder> =
+                Box::new(SqliteSessionRecorder::new(conn.clone(), settings.clone()));
             let session_tracker = FocusStateMachine::new(recorder).context("initializing session tracker")?;
             let tracker: SharedTracker = Arc::new(Mutex::new(Box::new(session_tracker) as Box<dyn SessionTracker>));
             ai::llm::set_download_root(data_dir.join("models"));
@@ -98,6 +108,7 @@ pub fn run() {
             app.manage(Box::new(SqliteCategories::new(conn.clone())) as Box<dyn CategorySvc>);
             app.manage(Box::new(SqliteClassification::new(conn.clone())) as Box<dyn ClassificationSvc>);
             app.manage(Box::new(SqliteLabeling::new(conn)) as Box<dyn LabelingSvc>);
+            app.manage(settings);
             app.manage(AiRunState::default());
             app.manage(ModelDownloadState::default());
             let models = ModelCache::default();
