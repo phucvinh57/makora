@@ -7,23 +7,16 @@ import {
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { activity, aiReview } from "@/api";
+import { CategoryCombobox } from "@/components/CategoryCombobox";
 import {
-  acceptAiLabels,
-  listAiReviewGroups,
-  setActivitiesCategory,
-} from "@/api";
-import { useCategoryPicker } from "@/components/CategoryOptions";
+  type CategoryChoice,
+  useCategoryPicker,
+} from "@/components/CategoryOptions";
 import { PaginationControls } from "@/components/PaginationControls";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import {
   Table,
@@ -49,6 +42,9 @@ import {
 
 const GROUP_PAGE_SIZE = 20;
 const ALL = "all";
+const ALL_CHOICES: CategoryChoice[] = [
+  { value: ALL, label: "All suggestions" },
+];
 /** Groups tracked for less than this are not worth a decision. */
 const MIN_SECONDS = 60;
 
@@ -81,7 +77,7 @@ export function ReviewQueue() {
   const picker = useCategoryPicker(categories);
   const groupsQuery = useQuery({
     queryKey: [...queryKeys.aiReviewGroups, page, filter],
-    queryFn: () => listAiReviewGroups(page, GROUP_PAGE_SIZE, filter),
+    queryFn: () => aiReview.listGroups(page, GROUP_PAGE_SIZE, filter),
     placeholderData: keepPreviousData,
   });
 
@@ -110,7 +106,7 @@ export function ReviewQueue() {
   }
 
   const acceptMutation = useMutation({
-    mutationFn: (ids: number[]) => acceptAiLabels(ids),
+    mutationFn: (ids: number[]) => aiReview.accept(ids),
     onSuccess: () => {
       setSelected(new Set());
       return invalidateCategorizationQueries(queryClient);
@@ -124,7 +120,7 @@ export function ReviewQueue() {
     }: {
       ids: number[];
       categoryId: number | null;
-    }) => setActivitiesCategory(ids, categoryId),
+    }) => activity.setCategory(ids, categoryId),
     onSuccess: () => {
       setSelected(new Set());
       return invalidateCategorizationQueries(queryClient);
@@ -164,25 +160,18 @@ export function ReviewQueue() {
           />
           <label htmlFor="review-hide-short">Hide under 1 min</label>
         </div>
-        <Select
+        <CategoryCombobox
+          picker={picker}
+          extraChoices={ALL_CHOICES}
           value={category}
           onValueChange={(value) => {
-            setCategory(value ?? ALL);
+            setCategory(value);
             resetView();
           }}
-          items={{
-            [ALL]: "All suggestions",
-            ...picker.valueLabels,
-          }}
-        >
-          <SelectTrigger size="sm" className="w-52">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value={ALL}>All suggestions</SelectItem>
-            {picker.options}
-          </SelectContent>
-        </Select>
+          ariaLabel="Category"
+          size="sm"
+          className="w-52"
+        />
       </div>
 
       {selectedGroups.length > 0 && (

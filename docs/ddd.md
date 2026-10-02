@@ -13,8 +13,9 @@ These words mean one thing each, in code, UI and conversation.
 | **Session** | One block of tracked time on an activity. A session opens when an app or tab gains focus and closes when it loses it. |
 | **Category** | A node in the user's category tree. Names are unique only among siblings. |
 | **Pin** | The user's own decision that an activity belongs to a category. |
+| **Rule** | A matcher the user wrote — an app, a site, a page or a pattern — that files every activity it matches under a category, past and future. |
 | **AI suggestion** | The model's proposal for an activity's category, with a confidence. The user can **accept** it (it becomes a pin), change it, or **reject** it. |
-| **Resolved category** | The category an activity is actually shown under: the pin if there is one, otherwise the AI suggestion the user has not rejected. |
+| **Resolved category** | The category an activity is actually shown under: the pin if there is one, otherwise the winning rule, otherwise the AI suggestion the user has not rejected. |
 
 ## Bounded contexts
 
@@ -34,7 +35,7 @@ reporting reads every context's tables, through the activity_category view
 |---|---|---|
 | **tracking** | Turning focus, tab and presence changes into sessions; what counts as a session; source and activity identity. | [tracking/](../src-tauri/src/tracking/) |
 | **taxonomy** | The category tree: creating, renaming, re-parenting, deleting. | [taxonomy/](../src-tauri/src/taxonomy/) |
-| **categorization** | How an activity comes to be filed under a category: pins, AI suggestions, rejection, acceptance, and running the model over uncategorized activities. | [categorization/](../src-tauri/src/categorization/) |
+| **categorization** | How an activity comes to be filed under a category: pins, rules, AI suggestions, rejection, acceptance, and running the model over activities no pin or rule covers. | [categorization/](../src-tauri/src/categorization/) |
 | **reporting** | Read models: the history list, statistics, the AI review queue. Never writes. | [reporting/](../src-tauri/src/reporting/) |
 | **ai** | Infrastructure, not a context: llama.cpp inference and model downloads, behind the `Classifier` port. | [ai/](../src-tauri/src/ai/) |
 | **host** | The Tauri shell: IPC commands, tray, error mapping. Glue only. | [host/](../src-tauri/src/host/) |
@@ -66,7 +67,8 @@ The rule: **dependencies point inward, toward `domain/`**. `host` and `ai` sit o
   - accepting a suggestion turns it into a pin;
   - merging two activities carries the pin across unless the two disagree (`PinConflict`).
 
-  Nothing else decides these. Use cases call `pin_to`, `unpin`, `suggest`, `withdraw_suggestion`, `accept_suggestion`, `carry_pin_into`. [`store.rs`](../src-tauri/src/categorization/store.rs) loads a batch of aggregates and writes back only the difference, in a fixed number of queries.
+  Nothing else decides these. A rule sits between the two: it never overrides a pin, and the model is not asked about an activity a rule covers (that precedence is also in the `activity_category` view). Use cases call `pin_to`, `unpin`, `suggest`, `withdraw_suggestion`, `accept_suggestion`, `carry_pin_into`. [`store.rs`](../src-tauri/src/categorization/store.rs) loads a batch of aggregates and writes back only the difference, in a fixed number of queries.
+- **Rules** — [`rules.rs`](../src-tauri/src/categorization/domain/rules.rs) owns what a rule is and which one wins. A rule is an app, a site, a page (a domain and a path prefix, matched on whole path segments) or a glob pattern over the URL, title or app name; everything is compared case-insensitively. When several match one activity, the most specific wins: page (longer path first), then app or site, then pattern (more literal text first), and a tie goes to the oldest rule. [`rules_store.rs`](../src-tauri/src/categorization/rules_store.rs) stores the winner per activity in `rule_matches` and rewrites it whenever a rule changes, a category with rules is deleted, or a new activity appears, so reads never evaluate a rule. Rules are retroactive for that reason: saving one re-evaluates all of history in the same transaction.
 - **Tracking** — [`session_policy.rs`](../src-tauri/src/tracking/domain/session_policy.rs) decides what counts as a block: under one second is noise and is dropped, a resume within two seconds of a close is the same block, and shell windows are ignored. [`FocusStateMachine`](../src-tauri/src/tracking/domain/focus_machine.rs) tracks the current block across focus, tab and presence changes. [`SourceKey`](../src-tauri/src/tracking/domain/source_key.rs) and `canonical_title` define identity.
 - **Taxonomy** — [`CategoryTree`](../src-tauri/src/taxonomy/domain.rs) answers "which categories are under this one" and "in what order can a branch be deleted".
 
@@ -76,9 +78,9 @@ The rule: **dependencies point inward, toward `domain/`**. `host` and `ai` sit o
 
 **Writing (tracking).** The window watchers and the extension endpoint send domain events (`FocusChange`, `TabChange`, `PresenceChange`) to a `SessionTracker`. `FocusStateMachine` decides what they mean and calls a `SessionRecorder`, which `SqliteSessionRecorder` implements: it finds or creates the source and activity and opens, merges, closes or drops the session.
 
-**Writing (categorization).** A person pins or unpins (`ClassificationSvc`), or the model runs (`AiRunState::run`). The run loads the taxonomy, the activities without a suggestion and the user's past corrections; hands them to a `Classifier`; and saves each answer as it arrives, so a stopped run keeps its progress. The concrete classifier is [`LlamaClassifier`](../src-tauri/src/ai/llm.rs), wired in `lib.rs`.
+**Writing (categorization).** A person pins or unpins (`ClassificationSvc`), adds, edits or deletes a rule (`RuleSvc`), or the model runs (`AiRunState::run`). The run loads the taxonomy, the activities without a suggestion and the user's past corrections; hands them to a `Classifier`; and saves each answer as it arrives, so a stopped run keeps its progress. The concrete classifier is [`LlamaClassifier`](../src-tauri/src/ai/llm.rs), wired in `lib.rs`.
 
-**Reading.** Reporting is a separate, read-only model. Every query joins the `activity_category` view (migration 7), which is the SQL form of the resolved-category rule: pin, else unrejected AI suggestion. The rule therefore exists once in Rust and once in SQL, side by side, rather than being re-derived in each query. `CategoryScope` is the one shared filter over resolved categories.
+**Reading.** Reporting is a separate, read-only model. Every query joins the `activity_category` view (migration 8), which is the SQL form of the resolved-category rule: pin, else rule, else unrejected AI suggestion. The rule therefore exists once in Rust and once in SQL, side by side, rather than being re-derived in each query. `CategoryScope` is the one shared filter over resolved categories.
 
 ## Errors
 

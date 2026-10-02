@@ -14,6 +14,7 @@ import {
   Tags,
 } from "lucide-react";
 import { BackgroundTasksIndicator } from "@/components/BackgroundTasksIndicator";
+import { Dialogs } from "@/components/dialogs/Dialogs";
 import {
   Tooltip,
   TooltipContent,
@@ -87,6 +88,7 @@ function RootLayout() {
 
   return (
     <div className="flex h-screen box-border">
+      <Dialogs />
       <aside
         className={cn(
           "flex shrink-0 flex-col border-r bg-sidebar text-sidebar-foreground transition-[width] duration-150",

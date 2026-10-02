@@ -31,12 +31,16 @@ pub fn ensure_source(conn: &mut SqliteConnection, source: &SourceKey, name: &str
     Ok(inserted.id)
 }
 
-/// Finds the activity by its identity (source, path, title), or creates it.
+/// Finds the activity by its identity (source, path, title), or creates it and matches it
+/// against the user's rules.
 pub fn ensure_activity(conn: &mut SqliteConnection, source_id: i64, path: &str, title: &str) -> QueryResult<ActivityRow> {
     if let Some(existing) = db::activities::ActivitiesRepo::get_by_identity(conn, source_id, path, title)? {
         return Ok(existing);
     }
-    db::activities::ActivitiesRepo::insert(conn, &NewActivityRow { source_id, path, title })
+    let created = db::activities::ActivitiesRepo::insert(conn, &NewActivityRow { source_id, path, title })?;
+    // A rule the person already wrote may cover it, so it is categorized from its first moment.
+    categorization::rules_store::match_new(conn, created.id)?;
+    Ok(created)
 }
 
 /// Deletes every activity among `activity_ids` (and its source, if nothing else uses it) that

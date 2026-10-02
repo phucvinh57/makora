@@ -6,7 +6,7 @@ export interface CategoryNode {
   children: CategoryNode[];
 }
 
-/** Assembles the flat list `list_categories` returns into the tree the UI shows. */
+/** Assembles the flat list `category_list` returns into the tree the UI shows. */
 export function buildCategoryTree(categories: Category[]): CategoryNode[] {
   const nodes = new Map<number, CategoryNode>(
     categories.map((category) => [

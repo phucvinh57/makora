@@ -5,7 +5,7 @@ import type { Category } from "@/types";
 
 const INDENT_PER_LEVEL_PX = 12;
 
-function CategoryDot({ color }: { color: string }) {
+export function CategoryDot({ color }: { color: string }) {
   return (
     <span
       className="size-2 shrink-0 rounded-full"
@@ -51,12 +51,35 @@ export function categoryValueLabels(
   );
 }
 
+/** One row of a searchable category list. `label` is what the search matches and the trigger shows. */
+export interface CategoryChoice {
+  value: string;
+  label: string;
+  /** The category's own name, for the indented list where `label` would repeat its parents. */
+  name?: string;
+  /** Absent for the non-category rows (“Uncategorized”, “No parent”…). */
+  color?: string;
+  depth?: number;
+}
+
+export function categoryChoices(categories: Category[]): CategoryChoice[] {
+  const paths = categoryPaths(categories);
+  return orderedCategories(categories).map(({ category, depth }) => ({
+    value: String(category.id),
+    label: paths.get(category.id) ?? category.name,
+    name: category.name,
+    color: category.color,
+    depth,
+  }));
+}
+
 /** Everything a category dropdown needs, built once per category list instead of once per dropdown. */
 export interface CategoryPicker {
   categories: Category[];
   pathById: Map<number, string>;
   options: ReactNode[];
   valueLabels: Record<string, ReactNode>;
+  choices: CategoryChoice[];
 }
 
 export function useCategoryPicker(categories: Category[]): CategoryPicker {
@@ -66,6 +89,7 @@ export function useCategoryPicker(categories: Category[]): CategoryPicker {
       pathById: categoryPaths(categories),
       options: categoryOptions(categories),
       valueLabels: categoryValueLabels(categories),
+      choices: categoryChoices(categories),
     }),
     [categories],
   );

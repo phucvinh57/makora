@@ -8,8 +8,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useMemo } from "react";
-import type { CategoryPicker } from "@/components/CategoryOptions";
+import { CategoryCombobox } from "@/components/CategoryCombobox";
+import type {
+  CategoryChoice,
+  CategoryPicker,
+} from "@/components/CategoryOptions";
 import {
   ALL_CATEGORIES,
   ALL_SOURCES,
@@ -18,6 +21,11 @@ import {
 } from "./constants";
 import type { HistoryFilters } from "./filters";
 import { TimeRangeFilter } from "./TimeRangeFilter";
+
+const CATEGORY_FILTER_CHOICES: CategoryChoice[] = [
+  { value: ALL_CATEGORIES, label: "All categories" },
+  { value: UNCATEGORIZED, label: "Uncategorized" },
+];
 
 export function HistoryHeader({
   searchInput,
@@ -36,15 +44,6 @@ export function HistoryHeader({
   loading: boolean;
   onRefresh: () => void;
 }) {
-  const categoryItems = useMemo(
-    () => ({
-      [ALL_CATEGORIES]: "All categories",
-      [UNCATEGORIZED]: "Uncategorized",
-      ...picker.valueLabels,
-    }),
-    [picker.valueLabels],
-  );
-
   return (
     <header className="mb-4 flex flex-wrap items-center gap-2">
       <div className="mr-auto">
@@ -58,26 +57,16 @@ export function HistoryHeader({
         placeholder="Search app, title, or site…"
         className="h-8 min-w-40 flex-1 basis-48 sm:max-w-64"
       />
-      <Select
+      <CategoryCombobox
+        picker={picker}
+        extraChoices={CATEGORY_FILTER_CHOICES}
         value={filters.category}
-        onValueChange={(value) =>
-          onFiltersChange({ category: value ?? ALL_CATEGORIES })
-        }
-        items={categoryItems}
-      >
-        <SelectTrigger
-          size="sm"
-          className="w-40"
-          title="Picking a category also shows its subcategories"
-        >
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value={ALL_CATEGORIES}>All categories</SelectItem>
-          <SelectItem value={UNCATEGORIZED}>Uncategorized</SelectItem>
-          {picker.options}
-        </SelectContent>
-      </Select>
+        onValueChange={(category) => onFiltersChange({ category })}
+        ariaLabel="Category"
+        size="sm"
+        className="w-40"
+        title="Picking a category also shows its subcategories"
+      />
       <Select
         value={filters.source}
         onValueChange={(value) =>

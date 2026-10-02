@@ -64,14 +64,16 @@ pub struct AiVerdict {
 #[serde(rename_all = "lowercase")]
 pub enum CategorySource {
     Manual,
+    Rule,
     Ai,
 }
 
 impl CategorySource {
-    /// Reads the `manual`/`ai` marker the history query derives.
+    /// Reads the `manual`/`rule`/`ai` marker the history query derives.
     pub fn from_db(value: &str) -> Option<Self> {
         match value {
             "manual" => Some(Self::Manual),
+            "rule" => Some(Self::Rule),
             "ai" => Some(Self::Ai),
             _ => None,
         }

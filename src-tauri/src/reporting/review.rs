@@ -211,6 +211,7 @@ pub trait ReviewRepo {
 
 impl ReviewRepo for SqliteConnection {
     fn get_activities_to_label(&mut self, recheck: bool) -> QueryResult<Vec<ActivityToLabelRow>> {
+        // A rule has already decided an activity it matches, so the model has nothing to add.
         let wanted = if recheck {
             "EXISTS (SELECT 1 FROM ai_labels l WHERE l.activity_id = a.id AND l.rejected = 0)"
         } else {
@@ -221,6 +222,7 @@ impl ReviewRepo for SqliteConnection {
              FROM activities a
              JOIN sources src ON src.id = a.source_id
              WHERE a.category_id IS NULL AND {wanted}
+               AND NOT EXISTS (SELECT 1 FROM rule_matches m WHERE m.activity_id = a.id)
              ORDER BY (SELECT MAX(start_time) FROM sessions WHERE activity_id = a.id) DESC"
         ))
         .get_results(self)
@@ -343,10 +345,12 @@ impl ReviewRepo for SqliteConnection {
                COALESCE(SUM(a.category_id IS NOT NULL AND l.activity_id IS NULL
                             AND rej.activity_id IS NULL), 0) AS pinned,
                COALESCE(SUM(a.category_id IS NULL AND rej.activity_id IS NOT NULL), 0) AS rejected,
-               COALESCE(SUM(a.category_id IS NULL AND l.activity_id IS NOT NULL), 0) AS pending_review
+               COALESCE(SUM(a.category_id IS NULL AND l.activity_id IS NOT NULL
+                            AND m.activity_id IS NULL), 0) AS pending_review
              FROM activities a
              LEFT JOIN ai_labels l ON l.activity_id = a.id AND l.rejected = 0
-             LEFT JOIN ai_labels rej ON rej.activity_id = a.id AND rej.rejected = 1",
+             LEFT JOIN ai_labels rej ON rej.activity_id = a.id AND rej.rejected = 1
+             LEFT JOIN rule_matches m ON m.activity_id = a.id",
         )
         .get_result(self)
     }
@@ -356,7 +360,8 @@ impl ReviewRepo for SqliteConnection {
             "SELECT COALESCE(SUM(CASE WHEN pending THEN secs END), 0.0) AS pending_seconds,
                     COALESCE(SUM(CASE WHEN reviewed THEN secs END), 0.0) AS reviewed_seconds
              FROM (
-               SELECT (a.category_id IS NULL AND l.activity_id IS NOT NULL) AS pending,
+               SELECT (a.category_id IS NULL AND l.activity_id IS NOT NULL
+                       AND m.activity_id IS NULL) AS pending,
                       ((l.activity_id IS NOT NULL AND a.category_id IS NOT NULL)
                        OR rej.activity_id IS NOT NULL) AS reviewed,
                       (SELECT COALESCE(SUM((julianday(s.end_time) - julianday(s.start_time))
@@ -365,7 +370,8 @@ impl ReviewRepo for SqliteConnection {
                        WHERE s.activity_id = a.id AND s.end_time IS NOT NULL) AS secs
                FROM activities a
                LEFT JOIN ai_labels l ON l.activity_id = a.id AND l.rejected = 0
-               LEFT JOIN ai_labels rej ON rej.activity_id = a.id AND rej.rejected = 1)",
+               LEFT JOIN ai_labels rej ON rej.activity_id = a.id AND rej.rejected = 1
+               LEFT JOIN rule_matches m ON m.activity_id = a.id)",
         )
         .get_result(self)
     }

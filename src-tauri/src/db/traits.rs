@@ -6,8 +6,8 @@
 use diesel::QueryResult;
 
 use super::models::{
-    ActivityRow, AiLabelRow, CategoryChanges, CategoryRow, NewActivityRow, NewCategoryRow, NewSessionRow,
-    NewSourceRow, SessionRow, SourceRow,
+    ActivityIdentityRow, ActivityRow, AiLabelRow, CategoryChanges, CategoryRow, CategoryRuleRow,
+    CategoryRuleValues, NewActivityRow, NewCategoryRow, NewSessionRow, NewSourceRow, SessionRow, SourceRow,
 };
 
 pub trait ActivitiesRepo {
@@ -27,6 +27,9 @@ pub trait ActivitiesRepo {
     /// candidates for deletion once their last session goes away.
     fn get_prunable_many(&mut self, ids: &[i64]) -> QueryResult<Vec<ActivityRow>>;
     fn delete_many(&mut self, ids: &[i64]) -> QueryResult<()>;
+    /// Every activity with its source and pin, for evaluating rules against.
+    fn get_identities(&mut self) -> QueryResult<Vec<ActivityIdentityRow>>;
+    fn get_identity(&mut self, id: i64) -> QueryResult<Option<ActivityIdentityRow>>;
 }
 
 pub trait AiLabelsRepo {
@@ -91,4 +94,24 @@ pub trait SourcesRepo {
     /// Deletes every source among `ids` that nothing in `activities` points to any more, in one
     /// query.
     fn delete_unused_many(&mut self, ids: &[i64]) -> QueryResult<()>;
+}
+
+pub trait CategoryRulesRepo {
+    /// Every rule, oldest first.
+    fn get_list(&mut self) -> QueryResult<Vec<CategoryRuleRow>>;
+    fn insert(&mut self, new: &CategoryRuleValues<'_>) -> QueryResult<CategoryRuleRow>;
+    /// Replaces every editable field; `Ok(None)` when `id` does not exist.
+    fn update(&mut self, id: i64, values: &CategoryRuleValues<'_>) -> QueryResult<Option<CategoryRuleRow>>;
+    /// Returns whether a rule was deleted. Its matches go with it.
+    fn delete(&mut self, id: i64) -> QueryResult<bool>;
+    /// Deletes the rules that file under any of `category_ids` — used when those categories are
+    /// about to be deleted.
+    fn delete_for_categories(&mut self, category_ids: &[i64]) -> QueryResult<()>;
+}
+
+pub trait RuleMatchesRepo {
+    /// Makes `matches` — `(activity_id, rule_id)` pairs — the whole table.
+    fn replace_all(&mut self, matches: &[(i64, i64)]) -> QueryResult<()>;
+    /// Sets the winning rule of one activity.
+    fn set(&mut self, activity_id: i64, rule_id: i64) -> QueryResult<()>;
 }

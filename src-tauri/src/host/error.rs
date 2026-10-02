@@ -5,6 +5,7 @@ use serde::Serialize;
 
 use crate::ai::model_download::ModelDownloadError;
 use crate::categorization::application::ai_run::AiRunError;
+use crate::categorization::application::rules::RuleError;
 use crate::taxonomy::TaxonomyError;
 
 #[derive(Debug, Serialize)]
@@ -48,6 +49,22 @@ impl From<TaxonomyError> for IpcError {
             TaxonomyError::Internal(_) => "internal",
         };
         Self::new(code, err.to_string())
+    }
+}
+
+impl From<RuleError> for IpcError {
+    fn from(err: RuleError) -> Self {
+        let code = match &err {
+            RuleError::Invalid(_) => "invalid_rule",
+            RuleError::Duplicate => "duplicate_rule",
+            RuleError::CategoryMissing => "category_missing",
+            RuleError::NotFound(_) => "not_found",
+            RuleError::Failed(_) => "internal",
+        };
+        match err {
+            RuleError::Failed(cause) => Self::new(code, format!("{cause:#}")),
+            other => Self::new(code, other.to_string()),
+        }
     }
 }
 

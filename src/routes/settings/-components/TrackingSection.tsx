@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { setMinSessionSeconds } from "@/api";
+import { settings } from "@/api";
 import { queryKeys, settingsQueryOptions } from "@/queries";
 
 /** Mirrors `MIN_SESSION_SECONDS_RANGE` in the backend, which is what actually enforces it. */
@@ -18,9 +18,9 @@ export function TrackingSection() {
   const [draft, setDraft] = useState<string | null>(null);
 
   const saveMutation = useMutation({
-    mutationFn: setMinSessionSeconds,
-    onSuccess: (settings) => {
-      queryClient.setQueryData(queryKeys.settings, settings);
+    mutationFn: settings.setMinSessionSeconds,
+    onSuccess: (saved) => {
+      queryClient.setQueryData(queryKeys.settings, saved);
       setDraft(null);
     },
   });

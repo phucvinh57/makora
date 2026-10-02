@@ -109,14 +109,18 @@ pub fn modify_many(
     Ok((before, after))
 }
 
-/// Drops every pin and AI label pointing at `category_ids` — called as those categories are
-/// deleted, in the same transaction.
+/// Drops every pin, AI label and rule pointing at `category_ids` — called as those categories
+/// are deleted, in the same transaction. Activities that lose a rule fall back to the next one
+/// that matches them.
 pub fn release_categories(conn: &mut SqliteConnection, category_ids: &[i64]) -> QueryResult<()> {
     db::activities::ActivitiesRepo::unpin_categories(conn, category_ids)?;
-    db::ai_labels::AiLabelsRepo::delete_for_categories(conn, category_ids)
+    db::ai_labels::AiLabelsRepo::delete_for_categories(conn, category_ids)?;
+    db::category_rules::CategoryRulesRepo::delete_for_categories(conn, category_ids)?;
+    super::rules_store::rematch_all(conn)
 }
 
-/// Drops the AI labels of activities that are about to be deleted.
+/// Drops the AI labels of activities that are about to be deleted. Their rule matches go with
+/// them (the foreign key cascades).
 pub fn discard_labels(conn: &mut SqliteConnection, activity_ids: &[i64]) -> QueryResult<()> {
     db::ai_labels::AiLabelsRepo::delete_for_activities(conn, activity_ids)
 }

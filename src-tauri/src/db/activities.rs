@@ -3,8 +3,8 @@ use diesel::prelude::*;
 use diesel::sqlite::SqliteConnection;
 use diesel::QueryResult;
 
-use super::models::{ActivityRow, NewActivityRow};
-use super::schema::{activities, sessions};
+use super::models::{ActivityIdentityRow, ActivityRow, NewActivityRow};
+use super::schema::{activities, sessions, sources};
 
 pub use super::traits::ActivitiesRepo;
 
@@ -75,5 +75,35 @@ impl ActivitiesRepo for SqliteConnection {
     fn delete_many(&mut self, ids: &[i64]) -> QueryResult<()> {
         diesel::delete(activities::table.filter(activities::id.eq_any(ids))).execute(self)?;
         Ok(())
+    }
+
+    fn get_identities(&mut self) -> QueryResult<Vec<ActivityIdentityRow>> {
+        activities::table
+            .inner_join(sources::table)
+            .select((
+                activities::id,
+                sources::kind,
+                sources::key,
+                sources::name,
+                activities::path,
+                activities::title,
+            ))
+            .load(self)
+    }
+
+    fn get_identity(&mut self, id: i64) -> QueryResult<Option<ActivityIdentityRow>> {
+        activities::table
+            .inner_join(sources::table)
+            .filter(activities::id.eq(id))
+            .select((
+                activities::id,
+                sources::kind,
+                sources::key,
+                sources::name,
+                activities::path,
+                activities::title,
+            ))
+            .first(self)
+            .optional()
     }
 }

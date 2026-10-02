@@ -46,6 +46,11 @@ id_type!(
     CategoryId
 );
 
+id_type!(
+    /// A user-written rule that files matching activities under a category.
+    RuleId
+);
+
 /// The raw ids behind a slice of typed ones, for handing to the repository layer.
 pub fn raw<T: Copy + Into<i64>>(ids: &[T]) -> Vec<i64> {
     ids.iter().map(|&id| id.into()).collect()

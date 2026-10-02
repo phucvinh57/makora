@@ -22,7 +22,7 @@ use crate::ai::llm::{LlamaClassifier, ModelCache};
 use crate::ai::model_download::ModelDownloadState;
 use crate::categorization::application::ai_run::AiRunState;
 use crate::categorization::ports::Classifier;
-use crate::categorization::{ClassificationSvc, SqliteClassification};
+use crate::categorization::{ClassificationSvc, RuleSvc, SqliteClassification, SqliteRules};
 use crate::settings::{SettingsStore, TomlSettings};
 use crate::domain::{HistorySvc, LabelingSvc, SqliteHistory, SqliteLabeling};
 use crate::taxonomy::{CategorySvc, SqliteCategories};
@@ -52,32 +52,39 @@ pub fn run() {
 
     builder
         .invoke_handler(tauri::generate_handler![
-            host::commands::reporting::list_sessions,
+            host::commands::reporting::session_list,
             host::commands::reporting::activity_stats,
-            host::commands::reporting::list_ai_review,
-            host::commands::reporting::list_ai_review_groups,
-            host::commands::reporting::ai_feedback_stats,
-            host::commands::taxonomy::list_categories,
-            host::commands::taxonomy::create_category,
-            host::commands::taxonomy::update_category,
-            host::commands::taxonomy::delete_category,
-            host::commands::categorization::set_session_row_category,
-            host::commands::categorization::set_sessions_category,
-            host::commands::categorization::set_activities_category,
-            host::commands::categorization::accept_ai_labels,
-            host::commands::categorization::reset_categorization,
-            host::commands::categorization::categorize,
-            host::commands::categorization::categorize_status,
-            host::commands::categorization::cancel_categorize,
-            host::commands::models::ai_model_loaded,
-            host::commands::models::unload_ai_model,
-            host::commands::models::download_ai_model,
-            host::commands::models::model_download_status,
-            host::commands::models::cancel_model_download,
-            host::commands::models::ai_model_installed,
-            host::commands::models::list_installed_ai_models,
-            host::commands::settings::get_settings,
-            host::commands::settings::set_min_session_seconds,
+            host::commands::reporting::ai_review_list,
+            host::commands::reporting::ai_review_list_groups,
+            host::commands::reporting::ai_review_feedback_stats,
+            host::commands::taxonomy::category_list,
+            host::commands::taxonomy::category_create,
+            host::commands::taxonomy::category_update,
+            host::commands::taxonomy::category_delete,
+            host::commands::categorization::session_set_row_category,
+            host::commands::categorization::session_set_category,
+            host::commands::categorization::activity_set_category,
+            host::commands::categorization::ai_review_accept,
+            host::commands::categorization::categorization_reset,
+            host::commands::categorization::categorization_run,
+            host::commands::categorization::categorization_status,
+            host::commands::categorization::categorization_cancel,
+            host::commands::categorization::category_rule_list,
+            host::commands::categorization::category_rule_create,
+            host::commands::categorization::category_rule_update,
+            host::commands::categorization::category_rule_delete,
+            host::commands::categorization::category_rule_preview,
+            host::commands::categorization::suggestion_sources,
+            host::commands::categorization::suggestion_paths,
+            host::commands::models::ai_model_is_loaded,
+            host::commands::models::ai_model_unload,
+            host::commands::models::ai_model_download,
+            host::commands::models::ai_model_download_status,
+            host::commands::models::ai_model_cancel_download,
+            host::commands::models::ai_model_is_installed,
+            host::commands::models::ai_model_list_installed,
+            host::commands::settings::settings_get,
+            host::commands::settings::settings_set_min_session_seconds,
         ])
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
@@ -107,6 +114,7 @@ pub fn run() {
             app.manage(Box::new(SqliteHistory::new(conn.clone())) as Box<dyn HistorySvc>);
             app.manage(Box::new(SqliteCategories::new(conn.clone())) as Box<dyn CategorySvc>);
             app.manage(Box::new(SqliteClassification::new(conn.clone())) as Box<dyn ClassificationSvc>);
+            app.manage(Box::new(SqliteRules::new(conn.clone())) as Box<dyn RuleSvc>);
             app.manage(Box::new(SqliteLabeling::new(conn)) as Box<dyn LabelingSvc>);
             app.manage(settings);
             app.manage(AiRunState::default());

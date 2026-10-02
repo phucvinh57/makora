@@ -13,40 +13,40 @@ struct ModelDownloadProgress {
 
 /// Whether the model is currently held in memory.
 #[tauri::command]
-pub fn ai_model_loaded(models: State<ModelCache>) -> bool {
+pub fn ai_model_is_loaded(models: State<ModelCache>) -> bool {
     models.is_loaded()
 }
 
 /// Releases the cached model's memory.
 #[tauri::command]
-pub fn unload_ai_model(models: State<ModelCache>) {
+pub fn ai_model_unload(models: State<ModelCache>) {
     models.unload();
 }
 
 /// Whether `model` can be loaded right now (downloaded here, pulled by Ollama, or a file).
 #[tauri::command]
-pub fn ai_model_installed(model: String) -> bool {
+pub fn ai_model_is_installed(model: String) -> bool {
     llm::resolve_model(model.trim()).is_ok()
 }
 
 /// Lists models available to categorize with right now: those downloaded into Makora or pulled
 /// by Ollama.
 #[tauri::command]
-pub fn list_installed_ai_models() -> Vec<String> {
+pub fn ai_model_list_installed() -> Vec<String> {
     llm::installed_models()
 }
 
 /// Lets a page that reloaded mid-download find out it is still going and resync its progress
 /// bar, instead of just losing track of it.
 #[tauri::command]
-pub fn model_download_status(state: State<ModelDownloadState>) -> ModelDownloadStatus {
+pub fn ai_model_download_status(state: State<ModelDownloadState>) -> ModelDownloadStatus {
     state.status()
 }
 
 /// Downloads an Ollama-library model (`llama3.2:3b`) and reports `ai-model-download-progress`
 /// events. Returns `false` when the user stopped it; the partial file is kept for resuming.
 #[tauri::command]
-pub async fn download_ai_model(app: AppHandle, model: String) -> Result<bool, IpcError> {
+pub async fn ai_model_download(app: AppHandle, model: String) -> Result<bool, IpcError> {
     let model = model.trim().to_string();
     let root = llm::download_root().ok_or_else(|| IpcError::internal("model directory is not ready"))?;
 
@@ -71,6 +71,6 @@ pub async fn download_ai_model(app: AppHandle, model: String) -> Result<bool, Ip
 
 /// Asks a running model download to stop.
 #[tauri::command]
-pub fn cancel_model_download(state: State<ModelDownloadState>) {
+pub fn ai_model_cancel_download(state: State<ModelDownloadState>) {
     state.cancel();
 }

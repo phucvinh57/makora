@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { toast } from "sonner";
-import { aiModelInstalled, cancelModelDownload, downloadAiModel } from "@/api";
+import { aiModel } from "@/api";
 import { formatBytes } from "@/bytes";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { useDialog } from "@/hooks/useDialog";
 import {
   downloadStatusQueryOptions,
   markDownloadStarted,
@@ -76,7 +77,7 @@ function AddModelForm({
 
   const installedQuery = useQuery({
     queryKey: [...queryKeys.aiModelInstalled, trimmed],
-    queryFn: () => aiModelInstalled(trimmed),
+    queryFn: () => aiModel.isInstalled(trimmed),
     enabled: trimmed !== "",
   });
   const canDownload =
@@ -150,21 +151,18 @@ function AddModelForm({
   );
 }
 
-export function AddModelDialog({
-  open,
-  onOpenChange,
-  onDownloaded,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
+export interface AddModelDialogData {
   /** Called with the model's name once its download has finished and it is listed as installed. */
-  onDownloaded: (model: string) => void;
-}) {
+  onDownloaded?: (model: string) => void;
+}
+
+export function AddModelDialog() {
   const queryClient = useQueryClient();
+  const { open, setOpen, data } = useDialog<AddModelDialogData>("add-model");
   const status = useQuery(downloadStatusQueryOptions).data;
 
   const downloadMutation = useMutation({
-    mutationFn: downloadAiModel,
+    mutationFn: aiModel.download,
     onMutate: (model) => markDownloadStarted(queryClient, model),
     onSuccess: async (finished, model) => {
       if (!finished) return;
@@ -172,8 +170,8 @@ export function AddModelDialog({
       await queryClient.invalidateQueries({
         queryKey: queryKeys.aiInstalledModels,
       });
-      onDownloaded(model);
-      onOpenChange(false);
+      data?.onDownloaded?.(model);
+      setOpen(false);
     },
     onSettled: () =>
       Promise.all([
@@ -186,7 +184,7 @@ export function AddModelDialog({
       ]),
   });
   const stopMutation = useMutation({
-    mutationFn: cancelModelDownload,
+    mutationFn: aiModel.cancelDownload,
     onError: (err) => toast.error(String(err)),
   });
 
@@ -195,7 +193,7 @@ export function AddModelDialog({
   function handleOpenChange(next: boolean) {
     // A failed download's message should not greet the next time the dialog opens.
     if (!next && !downloadMutation.isPending) downloadMutation.reset();
-    onOpenChange(next);
+    setOpen(next);
   }
 
   return (

@@ -1,32 +1,21 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { toast } from "sonner";
-import { type CategoryDraft, deleteCategory, updateCategory } from "@/api";
-import { useCategoryPicker } from "@/components/CategoryOptions";
+import { category as categoryApi, type CategoryDraft } from "@/api";
+import type { AddCategoryDialogData } from "@/components/dialogs/AddCategoryDialog";
+import type { DeleteCategoryDialogData } from "@/components/dialogs/DeleteCategoryDialog";
 import { Button } from "@/components/ui/button";
-import { categorySubtreeIds, orderedCategories } from "@/categories";
+import { orderedCategories } from "@/categories";
 import { useCategories } from "@/hooks/useCategories";
+import { openDialog } from "@/hooks/useDialog";
 import { invalidateCategorizationQueries } from "@/queries";
 import type { Category } from "@/types";
-import { AddCategoryDialog } from "./AddCategoryDialog";
 import { CategoryCard } from "./CategoryCard";
-import { DeleteCategoryDialog } from "./DeleteCategoryDialog";
 
 export function CategoriesTab() {
   const queryClient = useQueryClient();
   const { categories, isLoading, error } = useCategories();
-  const picker = useCategoryPicker(categories);
   const tree = useMemo(() => orderedCategories(categories), [categories]);
-
-  // `parent` outlives `open` so the dialog keeps its content while it fades out.
-  const [add, setAdd] = useState<{ open: boolean; parent: Category | null }>({
-    open: false,
-    parent: null,
-  });
-  const [remove, setRemove] = useState<{
-    open: boolean;
-    category: Category | null;
-  }>({ open: false, category: null });
 
   const saveCategoryMutation = useMutation({
     mutationFn: ({
@@ -35,13 +24,7 @@ export function CategoriesTab() {
     }: {
       category: Category;
       draft: CategoryDraft;
-    }) => updateCategory(category.id, draft),
-    onSuccess: () => invalidateCategorizationQueries(queryClient),
-    onError: (err) => toast.error(String(err)),
-  });
-
-  const deleteCategoryMutation = useMutation({
-    mutationFn: (category: Category) => deleteCategory(category.id),
+    }) => categoryApi.update(category.id, draft),
     onSuccess: () => invalidateCategorizationQueries(queryClient),
     onError: (err) => toast.error(String(err)),
   });
@@ -55,7 +38,12 @@ export function CategoriesTab() {
       )}
 
       <div className="mb-4 flex justify-end">
-        <Button size="sm" onClick={() => setAdd({ open: true, parent: null })}>
+        <Button
+          size="sm"
+          onClick={() =>
+            openDialog<AddCategoryDialogData>("add-category", { parent: null })
+          }
+        >
           Add category
         </Button>
       </div>
@@ -76,32 +64,19 @@ export function CategoriesTab() {
             onSave={(cat, draft) =>
               saveCategoryMutation.mutate({ category: cat, draft })
             }
-            onDelete={(cat) => setRemove({ open: true, category: cat })}
-            onAddSubcategory={() => setAdd({ open: true, parent: category })}
+            onDelete={(cat) =>
+              openDialog<DeleteCategoryDialogData>("delete-category", {
+                category: cat,
+              })
+            }
+            onAddSubcategory={() =>
+              openDialog<AddCategoryDialogData>("add-category", {
+                parent: category,
+              })
+            }
           />
         ))}
       </div>
-
-      <AddCategoryDialog
-        open={add.open}
-        onOpenChange={(open) => setAdd((prev) => ({ ...prev, open }))}
-        parent={add.parent}
-        picker={picker}
-      />
-      <DeleteCategoryDialog
-        open={remove.open}
-        onOpenChange={(open) => setRemove((prev) => ({ ...prev, open }))}
-        category={remove.category}
-        descendantCount={
-          remove.category
-            ? categorySubtreeIds(remove.category.id, categories).size - 1
-            : 0
-        }
-        onConfirm={(category) => {
-          deleteCategoryMutation.mutate(category);
-          setRemove((prev) => ({ ...prev, open: false }));
-        }}
-      />
     </>
   );
 }

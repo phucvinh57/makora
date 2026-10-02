@@ -2,12 +2,7 @@ import { Check, X } from "lucide-react";
 import type { CategoryPicker } from "@/components/CategoryOptions";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { CreatableCategoryCombobox } from "@/components/CreatableCategoryCombobox";
 import type { AiReviewGroup } from "@/types";
 
 export function groupId(group: AiReviewGroup): string {
@@ -37,19 +32,16 @@ export function CategorySelect({
   onChange: (categoryId: number) => void;
 }) {
   return (
-    <Select
+    <CreatableCategoryCombobox
+      picker={picker}
       value={String(value)}
       disabled={disabled}
       onValueChange={(next) => {
-        if (next && Number(next) !== value) onChange(Number(next));
+        if (Number(next) !== value) onChange(Number(next));
       }}
-      items={picker.valueLabels}
-    >
-      <SelectTrigger size="sm" className="h-6 w-full px-1.5 text-xs">
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>{picker.options}</SelectContent>
-    </Select>
+      size="sm"
+      className="h-6 w-full px-1.5 text-xs"
+    />
   );
 }
 

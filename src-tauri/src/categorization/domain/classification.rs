@@ -4,7 +4,8 @@
 //! model's, possibly since rejected by the user). The rules that tie them together live here and
 //! nowhere else:
 //!
-//! - a pin always wins over a suggestion when the category is resolved;
+//! - a pin always wins over a suggestion when the category is resolved, and a user-written rule
+//!   (see [`super::rules`]) ranks between the two: it yields to a pin and beats a suggestion;
 //! - unpinning rejects whatever suggestion is active, so "Uncategorized" sticks and the model
 //!   learns from it;
 //! - the model can never overwrite a pin — a suggestion made for a pinned activity is dropped;

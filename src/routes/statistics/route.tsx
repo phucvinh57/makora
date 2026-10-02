@@ -2,7 +2,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { RefreshCw } from "lucide-react";
 import { useState } from "react";
-import { activityStats } from "@/api";
+import { activity } from "@/api";
 import { Button } from "@/components/ui/button";
 import { useCategories } from "@/hooks/useCategories";
 import { cn } from "@/lib/utils";
@@ -64,7 +64,7 @@ function StatisticsPage() {
     queryKey: [...queryKeys.activityStats, range],
     queryFn: () => {
       const { start, end } = computeRange(range);
-      return activityStats(start, end);
+      return activity.stats(start, end);
     },
     placeholderData: keepPreviousData,
   });

@@ -1,13 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PlusIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { toast } from "sonner";
-import {
-  aiModelLoaded,
-  cancelCategorize,
-  categorize,
-  unloadAiModel,
-} from "@/api";
+import { aiModel, categorization } from "@/api";
+import type { AddModelDialogData } from "@/components/dialogs/AddModelDialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -18,6 +14,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { openDialog } from "@/hooks/useDialog";
 import { STRING_CODEC, usePersistentState } from "@/hooks/usePersistentState";
 import {
   aiFeedbackStatsQueryOptions,
@@ -28,8 +25,6 @@ import {
   markCategorizeStarted,
   queryKeys,
 } from "@/queries";
-import { AddModelDialog } from "./AddModelDialog";
-import { ResetCategorizationDialog } from "./ResetCategorizationDialog";
 
 const MODEL_STORAGE_KEY = "makora.aiModel";
 const ADD_MODEL_VALUE = "__add_model__";
@@ -42,13 +37,11 @@ export function AiCategorizationSection() {
     "",
     STRING_CODEC,
   );
-  const [addModelOpen, setAddModelOpen] = useState(false);
-  const [resetOpen, setResetOpen] = useState(false);
 
   const statsQuery = useQuery(aiFeedbackStatsQueryOptions);
   const loadedQuery = useQuery({
     queryKey: queryKeys.aiModelLoaded,
-    queryFn: aiModelLoaded,
+    queryFn: aiModel.isLoaded,
     refetchInterval: 15_000,
   });
   const installedModelsQuery = useQuery(installedModelsQueryOptions);
@@ -66,12 +59,14 @@ export function AiCategorizationSection() {
   // found, so its progress bar and Stop button are reachable again.
   const backendDownloading = downloadStatus?.running ?? false;
   useEffect(() => {
-    if (backendDownloading) setAddModelOpen(true);
-  }, [backendDownloading]);
+    if (backendDownloading) {
+      openDialog<AddModelDialogData>("add-model", { onDownloaded: setModel });
+    }
+  }, [backendDownloading, setModel]);
 
   const categorizeMutation = useMutation({
     mutationFn: (recheck: boolean) =>
-      categorize(recheck, effectiveModel || undefined),
+      categorization.run(recheck, effectiveModel || undefined),
     onMutate: (recheck) => markCategorizeStarted(queryClient, recheck),
     onSuccess: (outcome, recheck) => {
       toast.success(
@@ -97,11 +92,11 @@ export function AiCategorizationSection() {
       ]),
   });
   const stopMutation = useMutation({
-    mutationFn: cancelCategorize,
+    mutationFn: categorization.cancel,
     onError: (err) => toast.error(String(err)),
   });
   const unloadMutation = useMutation({
-    mutationFn: unloadAiModel,
+    mutationFn: aiModel.unload,
     onSettled: () =>
       queryClient.invalidateQueries({ queryKey: queryKeys.aiModelLoaded }),
   });
@@ -139,7 +134,9 @@ export function AiCategorizationSection() {
             onValueChange={(value) => {
               if (!value) return;
               if (value === ADD_MODEL_VALUE) {
-                setAddModelOpen(true);
+                openDialog<AddModelDialogData>("add-model", {
+                  onDownloaded: setModel,
+                });
                 return;
               }
               setModel(value);
@@ -214,7 +211,7 @@ export function AiCategorizationSection() {
           <Button
             variant="destructive"
             className="ml-auto"
-            onClick={() => setResetOpen(true)}
+            onClick={() => openDialog("reset-categorization")}
           >
             Reset data
           </Button>
@@ -238,13 +235,6 @@ export function AiCategorizationSection() {
           </p>
         )}
       </CardContent>
-
-      <ResetCategorizationDialog open={resetOpen} onOpenChange={setResetOpen} />
-      <AddModelDialog
-        open={addModelOpen}
-        onOpenChange={setAddModelOpen}
-        onDownloaded={setModel}
-      />
     </Card>
   );
 }

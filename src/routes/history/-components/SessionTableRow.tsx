@@ -2,16 +2,13 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { Check } from "lucide-react";
 import { memo } from "react";
 import { toast } from "sonner";
-import type { CategoryPicker } from "@/components/CategoryOptions";
+import type {
+  CategoryChoice,
+  CategoryPicker,
+} from "@/components/CategoryOptions";
+import { CreatableCategoryCombobox } from "@/components/CreatableCategoryCombobox";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { TableCell, TableRow } from "@/components/ui/table";
 import {
   Tooltip,
@@ -21,6 +18,10 @@ import {
 import { formatDuration, formatTimestamp } from "@/duration";
 import type { SessionRow } from "@/types";
 import { UNCATEGORIZED } from "./constants";
+
+const UNCATEGORIZED_CHOICES: CategoryChoice[] = [
+  { value: UNCATEGORIZED, label: "Uncategorized" },
+];
 
 function openSite(url: string) {
   void openUrl(url).catch((error) => {
@@ -74,43 +75,37 @@ export const SessionTableRow = memo(function SessionTableRow({
       </TableCell>
       <TableCell>
         <div className="flex min-w-0 items-center gap-1">
-          <Select
+          <CreatableCategoryCombobox
+            picker={picker}
+            extraChoices={UNCATEGORIZED_CHOICES}
             value={String(row.category_id ?? UNCATEGORIZED)}
-            onValueChange={(value) =>
-              onCategoryChange(row, value ?? UNCATEGORIZED)
-            }
-          >
-            <SelectTrigger
-              size="sm"
-              className="h-6 min-w-0 flex-1 px-1.5 text-xs"
-              title={
-                row.category_is_pinned
-                  ? `${path} — pinned to this activity`
+            onValueChange={(value) => onCategoryChange(row, value)}
+            ariaLabel="Category"
+            size="sm"
+            className="h-6 min-w-0 flex-1 px-1.5 text-xs"
+            title={
+              row.category_is_pinned
+                ? `${path} — pinned to this activity`
+                : row.category_source === "rule"
+                  ? `${path} — matched by a rule`
                   : row.category_source === "ai"
                     ? `${path} — suggested by AI`
                     : path
-              }
-            >
-              <SelectValue>
-                <span className="flex min-w-0 items-center gap-1.5">
-                  <span
-                    className="size-2 shrink-0 rounded-full"
-                    style={{
-                      backgroundColor:
-                        row.category_color ?? "var(--muted-foreground)",
-                    }}
-                  />
-                  <span className="truncate">
-                    {row.category_name ?? "Uncategorized"}
-                  </span>
-                </span>
-              </SelectValue>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={UNCATEGORIZED}>Uncategorized</SelectItem>
-              {picker.options}
-            </SelectContent>
-          </Select>
+            }
+          >
+            <span className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
+              <span
+                className="size-2 shrink-0 rounded-full"
+                style={{
+                  backgroundColor:
+                    row.category_color ?? "var(--muted-foreground)",
+                }}
+              />
+              <span className="truncate">
+                {row.category_name ?? "Uncategorized"}
+              </span>
+            </span>
+          </CreatableCategoryCombobox>
           {row.category_source === "ai" && (
             <Button
               size="icon-xs"

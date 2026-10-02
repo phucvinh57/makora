@@ -3,7 +3,7 @@ import { Moon, Sun } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
-import { isAutostartEnabled, setAutostartEnabled } from "@/api";
+import { autostart } from "@/api";
 import { toggleTheme, useTheme } from "@/theme";
 
 export function GeneralSection() {
@@ -12,12 +12,12 @@ export function GeneralSection() {
 
   const autostartQuery = useQuery({
     queryKey: ["autostartEnabled"],
-    queryFn: isAutostartEnabled,
+    queryFn: autostart.isEnabled,
     enabled: !import.meta.env.DEV,
   });
 
   const toggleMutation = useMutation({
-    mutationFn: (enabled: boolean) => setAutostartEnabled(enabled),
+    mutationFn: (enabled: boolean) => autostart.setEnabled(enabled),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["autostartEnabled"] });
     },

@@ -12,7 +12,7 @@ use crate::shared::time::TimeRange;
 
 #[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
-pub fn list_sessions(
+pub fn session_list(
     history: State<Box<dyn HistorySvc>>,
     page: i64,
     page_size: i64,
@@ -48,7 +48,7 @@ pub fn activity_stats(
 }
 
 #[tauri::command(async)]
-pub fn list_ai_review(
+pub fn ai_review_list(
     labeling: State<Box<dyn LabelingSvc>>,
     page: i64,
     page_size: i64,
@@ -58,7 +58,7 @@ pub fn list_ai_review(
 }
 
 #[tauri::command(async)]
-pub fn list_ai_review_groups(
+pub fn ai_review_list_groups(
     labeling: State<Box<dyn LabelingSvc>>,
     page: i64,
     page_size: i64,
@@ -68,7 +68,7 @@ pub fn list_ai_review_groups(
 }
 
 #[tauri::command(async)]
-pub fn ai_feedback_stats(labeling: State<Box<dyn LabelingSvc>>) -> Result<FeedbackStats, IpcError> {
+pub fn ai_review_feedback_stats(labeling: State<Box<dyn LabelingSvc>>) -> Result<FeedbackStats, IpcError> {
     Ok(labeling.get_feedback_stats()?)
 }
 

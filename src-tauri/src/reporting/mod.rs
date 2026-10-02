@@ -3,11 +3,12 @@
 //! that Diesel's typed builder cannot express cleanly, and they never write.
 //!
 //! The category of an activity is not re-derived here: every query joins the `activity_category`
-//! view (migration 7), the SQL form of the precedence rules in
+//! view (migration 8), the SQL form of the precedence rules in
 //! [`crate::categorization::domain::classification`].
 
 pub mod history;
 pub mod review;
+pub mod rules;
 mod scope;
 
 pub use scope::CategoryScope;

@@ -6,12 +6,12 @@ use crate::shared::ids::CategoryId;
 use crate::taxonomy::CategorySvc;
 
 #[tauri::command(async)]
-pub fn list_categories(categories: State<Box<dyn CategorySvc>>) -> Result<Vec<Category>, IpcError> {
+pub fn category_list(categories: State<Box<dyn CategorySvc>>) -> Result<Vec<Category>, IpcError> {
     Ok(categories.get_list()?)
 }
 
 #[tauri::command]
-pub fn create_category(
+pub fn category_create(
     categories: State<Box<dyn CategorySvc>>,
     name: String,
     color: String,
@@ -27,7 +27,7 @@ pub fn create_category(
 }
 
 #[tauri::command]
-pub fn update_category(
+pub fn category_update(
     categories: State<Box<dyn CategorySvc>>,
     id: CategoryId,
     name: String,
@@ -48,6 +48,6 @@ pub fn update_category(
 }
 
 #[tauri::command]
-pub fn delete_category(categories: State<Box<dyn CategorySvc>>, id: CategoryId) -> Result<(), IpcError> {
+pub fn category_delete(categories: State<Box<dyn CategorySvc>>, id: CategoryId) -> Result<(), IpcError> {
     Ok(categories.delete(id)?)
 }

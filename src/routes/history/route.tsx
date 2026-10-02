@@ -7,12 +7,7 @@ import {
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
-import {
-  acceptAiLabels,
-  listSessions,
-  setSessionRowCategory,
-  setSessionsCategory,
-} from "@/api";
+import { aiReview, session } from "@/api";
 import { useCategoryPicker } from "@/components/CategoryOptions";
 import { PaginationControls } from "@/components/PaginationControls";
 import { useCategories } from "@/hooks/useCategories";
@@ -164,7 +159,7 @@ function HistoryPage() {
     // The range is resolved per fetch, so "Today" is still today after midnight.
     queryFn: () => {
       const { start, end } = resolveRange(filters.range);
-      return listSessions({
+      return session.list({
         page,
         pageSize: PAGE_SIZE,
         search: query || undefined,
@@ -203,16 +198,23 @@ function HistoryPage() {
   const { mutate: changeRowCategory } = useMutation({
     mutationFn: async ({ row, value }: { row: SessionRow; value: string }) => {
       const categoryId = value === UNCATEGORIZED ? null : Number(value);
-      await setSessionRowCategory(row.id, categoryId);
+      await session.setRowCategory(row.id, categoryId);
       return { row, categoryId };
     },
     onSuccess: ({ row, categoryId }) => {
       if (categoryId === null) {
-        toast.success(
-          row.category_source === "ai"
-            ? "Rejected the AI suggestion"
-            : "Cleared this activity's category",
-        );
+        if (row.category_source === "rule") {
+          toast.info("This activity matches a rule", {
+            description:
+              "Pin another category to override it, or edit the rule on the Categories page.",
+          });
+        } else {
+          toast.success(
+            row.category_source === "ai"
+              ? "Rejected the AI suggestion"
+              : "Cleared this activity's category",
+          );
+        }
       } else {
         toast.success(
           `Set to ${picker.pathById.get(categoryId) ?? "category"}`,
@@ -227,14 +229,14 @@ function HistoryPage() {
   });
 
   const { mutate: acceptAiLabel } = useMutation({
-    mutationFn: (row: SessionRow) => acceptAiLabels([row.activity_id]),
+    mutationFn: (row: SessionRow) => aiReview.accept([row.activity_id]),
     onSuccess: () => invalidateCategorizationQueries(queryClient),
     onError: (err) => toast.error(String(err)),
   });
 
   const bulkApplyMutation = useMutation({
     mutationFn: ({ ids, categoryId }: { ids: number[]; categoryId: number }) =>
-      setSessionsCategory(ids, categoryId),
+      session.setCategory(ids, categoryId),
     onSuccess: (_, { ids }) => {
       clearSelection();
       toast.success(`Categorized ${ids.length} activities`);

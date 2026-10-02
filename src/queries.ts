@@ -1,17 +1,20 @@
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import {
-  aiFeedbackStats,
-  categorizeStatus,
-  getSettings,
-  listCategories,
-  listInstalledAiModels,
-  modelDownloadStatus,
+  aiModel,
+  aiReview,
+  categorization,
+  category,
+  categoryRule,
+  settings,
+  suggestion,
 } from "./api";
 import type { AiCategorizeStatus, ModelDownloadStatus } from "./types";
 
 /** Every query key in one place, so invalidation cannot drift from what the pages register. */
 export const queryKeys = {
   categories: ["categories"],
+  categoryRules: ["categoryRules"],
+  sourceSuggestions: ["sourceSuggestions"],
   sessions: ["sessions"],
   activityStats: ["activityStats"],
   aiReview: ["aiReview"],
@@ -31,34 +34,46 @@ const RUNNING_POLL_MS = 1_000;
 
 export const categoriesQueryOptions = queryOptions({
   queryKey: queryKeys.categories,
-  queryFn: listCategories,
+  queryFn: category.list,
+});
+
+export const categoryRulesQueryOptions = queryOptions({
+  queryKey: queryKeys.categoryRules,
+  queryFn: categoryRule.list,
+});
+
+/** Apps and sites already in the history; fresh enough for a minute while a rule is typed. */
+export const sourceSuggestionsQueryOptions = queryOptions({
+  queryKey: queryKeys.sourceSuggestions,
+  queryFn: suggestion.sources,
+  staleTime: 60_000,
 });
 
 export const settingsQueryOptions = queryOptions({
   queryKey: queryKeys.settings,
-  queryFn: getSettings,
+  queryFn: settings.get,
 });
 
 export const aiFeedbackStatsQueryOptions = queryOptions({
   queryKey: queryKeys.aiFeedbackStats,
-  queryFn: aiFeedbackStats,
+  queryFn: aiReview.feedbackStats,
 });
 
 export const installedModelsQueryOptions = queryOptions({
   queryKey: queryKeys.aiInstalledModels,
-  queryFn: listInstalledAiModels,
+  queryFn: aiModel.listInstalled,
 });
 
 export const categorizeStatusQueryOptions = queryOptions({
   queryKey: queryKeys.aiCategorizeStatus,
-  queryFn: categorizeStatus,
+  queryFn: categorization.status,
   refetchInterval: (query) =>
     query.state.data?.running ? RUNNING_POLL_MS : false,
 });
 
 export const downloadStatusQueryOptions = queryOptions({
   queryKey: queryKeys.aiModelDownloadStatus,
-  queryFn: modelDownloadStatus,
+  queryFn: aiModel.downloadStatus,
   refetchInterval: (query) =>
     query.state.data?.running ? RUNNING_POLL_MS : false,
 });
@@ -73,6 +88,7 @@ export function invalidateCategorizationQueries(
   return Promise.all(
     [
       queryKeys.categories,
+      queryKeys.categoryRules,
       queryKeys.sessions,
       queryKeys.activityStats,
       queryKeys.aiReview,

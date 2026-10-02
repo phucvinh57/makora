@@ -4,7 +4,7 @@
 
 use diesel::prelude::*;
 
-use super::schema::{activities, ai_labels, categories, sessions, sources};
+use super::schema::{activities, ai_labels, categories, category_rules, sessions, sources};
 
 #[derive(Debug, Clone, Queryable, Selectable, Identifiable)]
 #[diesel(table_name = categories)]
@@ -94,4 +94,34 @@ pub struct AiLabelRow {
     pub category_id: i64,
     pub confidence: Option<f64>,
     pub rejected: bool,
+}
+
+#[derive(Debug, Clone, Queryable, Selectable, Identifiable)]
+#[diesel(table_name = category_rules)]
+pub struct CategoryRuleRow {
+    pub id: i64,
+    pub category_id: i64,
+    pub kind: String,
+    pub field: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Insertable, AsChangeset)]
+#[diesel(table_name = category_rules)]
+pub struct CategoryRuleValues<'a> {
+    pub category_id: i64,
+    pub kind: &'a str,
+    pub field: &'a str,
+    pub value: &'a str,
+}
+
+/// An activity with the source it belongs to: everything a rule can look at.
+#[derive(Debug, Clone, Queryable)]
+pub struct ActivityIdentityRow {
+    pub id: i64,
+    pub source_kind: String,
+    pub source_key: String,
+    pub source_name: String,
+    pub path: String,
+    pub title: String,
 }

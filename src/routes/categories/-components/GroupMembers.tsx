@@ -1,6 +1,6 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { listAiReview } from "@/api";
+import { aiReview } from "@/api";
 import type { CategoryPicker } from "@/components/CategoryOptions";
 import { PaginationControls } from "@/components/PaginationControls";
 import { Table, TableBody, TableCell, TableRow } from "@/components/ui/table";
@@ -39,7 +39,7 @@ export function GroupMembers({
   const membersQuery = useQuery({
     // The ids stay out of the key: a decision shrinks them, and a new key would drop the rows on screen.
     queryKey: [...queryKeys.aiReview, groupId(group), page],
-    queryFn: () => listAiReview(page, MEMBER_PAGE_SIZE, filter),
+    queryFn: () => aiReview.list(page, MEMBER_PAGE_SIZE, filter),
     placeholderData: keepPreviousData,
   });
   const rows = membersQuery.data?.rows ?? [];

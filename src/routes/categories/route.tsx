@@ -9,16 +9,18 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AiCategorizationSection } from "./-components/AiCategorizationSection";
 import { CategoriesTab } from "./-components/CategoriesTab";
 import { ReviewQueue } from "./-components/ReviewQueue";
+import { RulesTab } from "./-components/RulesTab";
 
 export const Route = createFileRoute("/categories")({
   component: CategoriesPage,
 });
 
 const TAB_STORAGE_KEY = "makora-categories-tab";
-type TabName = "taxonomy" | "review";
+type TabName = "taxonomy" | "rules" | "review";
 
 const TAB_CODEC: StorageCodec<TabName> = {
-  parse: (raw) => (raw === "review" || raw === "taxonomy" ? raw : undefined),
+  parse: (raw) =>
+    raw === "review" || raw === "rules" || raw === "taxonomy" ? raw : undefined,
   serialize: (tab) => tab,
 };
 
@@ -32,7 +34,7 @@ function CategoriesPage() {
   const pending = statsQuery.data?.pending_review ?? 0;
 
   function changeTab(value: unknown) {
-    setTab(value === "review" ? "review" : "taxonomy");
+    setTab(value === "review" || value === "rules" ? value : "taxonomy");
   }
 
   return (
@@ -40,12 +42,13 @@ function CategoriesPage() {
       <header className="mb-4">
         <h1 className="m-0 text-lg font-semibold">Categories</h1>
         <p className="m-0 text-sm text-muted-foreground">
-          Organize activity with categories and teach the AI what belongs where
+          Organize activity with categories, rules and the AI
         </p>
       </header>
       <Tabs value={tab} onValueChange={changeTab}>
         <TabsList>
           <TabsTrigger value="taxonomy">Taxonomy</TabsTrigger>
+          <TabsTrigger value="rules">Rules</TabsTrigger>
           <TabsTrigger value="review">
             AI review
             {pending > 0 && (
@@ -57,6 +60,9 @@ function CategoriesPage() {
         </TabsList>
         <TabsContent value="taxonomy" className="flex flex-col">
           <CategoriesTab />
+        </TabsContent>
+        <TabsContent value="rules" className="flex flex-col">
+          <RulesTab />
         </TabsContent>
         <TabsContent value="review" className="flex flex-col gap-6 mt-4">
           <AiCategorizationSection />

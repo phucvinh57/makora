@@ -1,7 +1,11 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { createCategory } from "@/api";
-import type { CategoryPicker } from "@/components/CategoryOptions";
+import { category } from "@/api";
+import { CategoryCombobox } from "@/components/CategoryCombobox";
+import {
+  type CategoryChoice,
+  useCategoryPicker,
+} from "@/components/CategoryOptions";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -11,18 +15,16 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { useCategories } from "@/hooks/useCategories";
+import { useDialog } from "@/hooks/useDialog";
 import { invalidateCategorizationQueries } from "@/queries";
 import type { Category } from "@/types";
-import { NO_PARENT } from "./CategoryCard";
 
 const DEFAULT_COLOR = "#6366f1";
+const NO_PARENT = "none";
+const NO_PARENT_CHOICES: CategoryChoice[] = [
+  { value: NO_PARENT, label: "No parent (top level)" },
+];
 
 /**
  * The form is its own component because the dialog unmounts its content on close: the fields
@@ -30,24 +32,28 @@ const DEFAULT_COLOR = "#6366f1";
  */
 function AddCategoryForm({
   parent,
-  picker,
+  onCreated,
   onClose,
 }: {
   parent: Category | null;
-  picker: CategoryPicker;
+  onCreated?: (category: Category) => void;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
+  const { categories } = useCategories();
+  const picker = useCategoryPicker(categories);
   const [name, setName] = useState("");
   const [color, setColor] = useState(parent?.color ?? DEFAULT_COLOR);
   const [description, setDescription] = useState("");
   const [parentId, setParentId] = useState<number | null>(parent?.id ?? null);
 
   const createMutation = useMutation({
-    mutationFn: createCategory,
-    onSuccess: () => {
+    mutationFn: category.create,
+    onSuccess: async (created) => {
+      // The list has to know the new category before anyone can select it.
+      await invalidateCategorizationQueries(queryClient);
+      onCreated?.(created);
       onClose();
-      return invalidateCategorizationQueries(queryClient);
     },
   });
 
@@ -108,24 +114,16 @@ function AddCategoryForm({
       >
         Describe what belongs here.
       </p>
-      <Select
+      <CategoryCombobox
+        picker={picker}
+        extraChoices={NO_PARENT_CHOICES}
         value={parentId === null ? NO_PARENT : String(parentId)}
         onValueChange={(value) =>
-          setParentId(!value || value === NO_PARENT ? null : Number(value))
+          setParentId(value === NO_PARENT ? null : Number(value))
         }
-        items={{
-          [NO_PARENT]: "No parent (top level)",
-          ...picker.valueLabels,
-        }}
-      >
-        <SelectTrigger className="w-full" aria-label="Parent category">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value={NO_PARENT}>No parent (top level)</SelectItem>
-          {picker.options}
-        </SelectContent>
-      </Select>
+        ariaLabel="Parent category"
+        className="w-full"
+      />
       {createMutation.isError && (
         <p className="text-xs text-destructive">
           {String(createMutation.error)}
@@ -146,25 +144,24 @@ function AddCategoryForm({
   );
 }
 
-export function AddCategoryDialog({
-  open,
-  onOpenChange,
-  parent,
-  picker,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
+export interface AddCategoryDialogData {
   /** The category the new one goes under; `null` for a top-level one. */
   parent: Category | null;
-  picker: CategoryPicker;
-}) {
+  /** Called once the new category is in the list, so the opener can select it. */
+  onCreated?: (category: Category) => void;
+}
+
+export function AddCategoryDialog() {
+  const { open, setOpen, data } =
+    useDialog<AddCategoryDialogData>("add-category");
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent>
         <AddCategoryForm
-          parent={parent}
-          picker={picker}
-          onClose={() => onOpenChange(false)}
+          parent={data?.parent ?? null}
+          onCreated={data?.onCreated}
+          onClose={() => setOpen(false)}
         />
       </DialogContent>
     </Dialog>

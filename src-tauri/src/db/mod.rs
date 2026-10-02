@@ -6,8 +6,10 @@
 pub mod activities;
 pub mod ai_labels;
 pub mod categories;
+pub mod category_rules;
 mod migrate;
 pub mod models;
+pub mod rule_matches;
 pub mod schema;
 pub mod sessions;
 pub(crate) mod sql;

@@ -12,7 +12,7 @@ export interface SessionRow {
   category_name: string | null;
   category_color: string | null;
   category_is_pinned: boolean;
-  category_source: "manual" | "ai" | null;
+  category_source: "manual" | "rule" | "ai" | null;
 }
 
 export interface SessionsPage {
@@ -157,4 +157,50 @@ export interface Settings {
     /** Activity that ends sooner than this after it began is discarded. */
     min_session_seconds: number;
   };
+}
+
+export type RuleKind = "app" | "site" | "page" | "pattern";
+
+/** What a pattern rule is matched against. */
+export type PatternField = "url" | "title" | "app";
+
+/** What the person writes to make a rule. */
+export interface RuleDraft {
+  kind: RuleKind;
+  /** Only for a pattern. */
+  field: PatternField | null;
+  value: string;
+  categoryId: number;
+}
+
+export interface CategoryRule {
+  id: number;
+  kind: RuleKind;
+  field: PatternField | null;
+  value: string;
+  category_id: number;
+  /** Activities the rule decides now; ones pinned elsewhere are not counted. */
+  activity_count: number;
+  total_seconds: number;
+}
+
+/** What a draft rule would catch among the tracked history. */
+export interface RulePreview {
+  activity_count: number;
+  total_seconds: number;
+  /** Of those, how many the user pinned themselves, which the rule leaves alone. */
+  pinned_count: number;
+  samples: string[];
+}
+
+export interface SourceSuggestion {
+  kind: KeyKind;
+  key: string;
+  name: string;
+  total_seconds: number;
+}
+
+export interface PathSuggestion {
+  path: string;
+  total_seconds: number;
 }
