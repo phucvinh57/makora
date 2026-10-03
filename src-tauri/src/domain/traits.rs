@@ -1,15 +1,10 @@
-//! The read-side services' public interface, one trait per service, gathered here so the whole
-//! surface can be read in one place. Each trait is implemented by its `Sqlite`-prefixed struct in
-//! the sibling module of the same name (`HistorySvc` by `SqliteHistory` in `history.rs`, and so
-//! on); `mod.rs` re-exports both.
-
 use anyhow::Result;
 
 use crate::shared::time::TimeRange;
 
 use super::types::{
-    ActivityStats, AiReviewGroupPage, AiReviewPage, FeedbackStats, LabeledActivity, ReviewFilter,
-    SessionFilter, SessionsPage, UncategorizedActivity,
+    ActivityStats, AiReviewGroupPage, AiReviewPage, FeedbackStats, ReviewFilter, SessionFilter, SessionsPage,
+    UncategorizedActivity,
 };
 
 pub trait HistorySvc: Send + Sync {
@@ -22,8 +17,6 @@ pub trait LabelingSvc: Send + Sync {
     /// pin nor an AI label nor a rejected one; with `recheck`, those carrying an AI label the
     /// user has not confirmed.
     fn get_activities_to_label(&self, recheck: bool) -> Result<Vec<UncategorizedActivity>>;
-    /// Every activity the user has pinned or rejected an AI label for, newest first.
-    fn get_labeled_activities(&self) -> Result<Vec<LabeledActivity>>;
     /// AI labels awaiting review, longest-tracked first so the ones that matter come up first.
     /// Filtering by a category includes everything under it.
     fn get_review_page(&self, page: i64, page_size: i64, filter: &ReviewFilter) -> Result<AiReviewPage>;

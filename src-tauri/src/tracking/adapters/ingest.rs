@@ -68,7 +68,6 @@ fn handle_request(request: &mut tiny_http::Request, tracker: &Arc<Mutex<Box<dyn 
     204
 }
 
-/// The browser names the extension sends; anything else is a browser we cannot tell apart.
 fn browser_from_wire(value: &str) -> BrowserKind {
     match value {
         "chrome" => BrowserKind::Chrome,

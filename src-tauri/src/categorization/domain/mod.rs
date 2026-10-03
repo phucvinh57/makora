@@ -1,3 +1,3 @@
 pub mod classification;
-pub mod feedback;
+pub mod retrieval;
 pub mod rules;

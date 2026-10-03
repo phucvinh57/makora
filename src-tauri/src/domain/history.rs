@@ -1,5 +1,3 @@
-//! Read-only access to tracked sessions, for the history list and the stats page.
-
 use anyhow::Result;
 use diesel::sqlite::SqliteConnection;
 use diesel::Connection;

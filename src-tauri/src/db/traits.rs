@@ -1,13 +1,9 @@
-//! The repository layer's public interface, one trait per table, gathered here so the whole
-//! surface can be read in one place. Each trait is implemented for [`SqliteConnection`]
-//! in the sibling module of the same name (`ActivitiesRepo` in `activities.rs`, and so on); that
-//! module also re-exports its trait so callers keep writing `db::activities::ActivitiesRepo`.
-
 use diesel::QueryResult;
 
 use super::models::{
-    ActivityIdentityRow, ActivityRow, AiLabelRow, CategoryChanges, CategoryRow, CategoryRuleRow,
-    CategoryRuleValues, NewActivityRow, NewCategoryRow, NewSessionRow, NewSourceRow, SessionRow, SourceRow,
+    ActivityIdentityRow, ActivityRow, AiLabelRow, CategorizedEmbeddingRow, CategoryChanges, CategoryRow,
+    CategoryRuleRow, CategoryRuleValues, NewActivityRow, NewCategoryRow, NewSessionRow, NewSourceRow, SessionRow,
+    SourceRow,
 };
 
 pub trait ActivitiesRepo {
@@ -16,18 +12,13 @@ pub trait ActivitiesRepo {
     fn insert(&mut self, new: &NewActivityRow<'_>) -> QueryResult<ActivityRow>;
     /// `(id, category_id)` for each of `ids` that exists; `None` means unpinned. One query.
     fn get_pins_many(&mut self, ids: &[i64]) -> QueryResult<Vec<(i64, Option<i64>)>>;
-    /// Pins every activity in `ids` to `category_id`, or unpins them with `None`, in one query.
     fn set_category_many(&mut self, ids: &[i64], category_id: Option<i64>) -> QueryResult<()>;
-    /// Unpins every activity currently pinned to one of `category_ids` — used when those
-    /// categories are about to be deleted.
     fn unpin_categories(&mut self, category_ids: &[i64]) -> QueryResult<()>;
-    /// Clears every manual pin. Returns how many were cleared.
     fn clear_all_pins(&mut self) -> QueryResult<usize>;
     /// Every activity among `ids` that is unpinned and no session references any more —
     /// candidates for deletion once their last session goes away.
     fn get_prunable_many(&mut self, ids: &[i64]) -> QueryResult<Vec<ActivityRow>>;
     fn delete_many(&mut self, ids: &[i64]) -> QueryResult<()>;
-    /// Every activity with its source and pin, for evaluating rules against.
     fn get_identities(&mut self) -> QueryResult<Vec<ActivityIdentityRow>>;
     fn get_identity(&mut self, id: i64) -> QueryResult<Option<ActivityIdentityRow>>;
 }
@@ -35,15 +26,12 @@ pub trait ActivitiesRepo {
 pub trait AiLabelsRepo {
     /// The labels among `activity_ids`, rejected ones included, in one query.
     fn get_many(&mut self, activity_ids: &[i64]) -> QueryResult<Vec<AiLabelRow>>;
-    /// Sets the AI label for every `(activity_id, category_id, confidence)` in `labels`,
-    /// replacing whatever was there (rejected or not), in one query. `activity_id` is the
-    /// table's primary key, so this is insert-or-overwrite per row.
+    /// Sets the label of every `(activity_id, category_id, confidence)`, replacing whatever was
+    /// there, a rejection included.
     fn upsert_many(&mut self, labels: &[(i64, i64, Option<f64>)]) -> QueryResult<()>;
-    /// Removes the active (non-rejected) labels for `activity_ids`, leaving them with none.
-    /// Returns how many were actually removed.
+    /// Removes the labels that are not rejected. Returns how many were removed.
     fn clear_active_many(&mut self, activity_ids: &[i64]) -> QueryResult<usize>;
-    /// Marks the active label(s) rejected instead of deleting them, so the model can be told
-    /// "not this" next time.
+    /// Marks the labels rejected instead of deleting them, so "not this" is remembered.
     fn reject_active_many(&mut self, activity_ids: &[i64]) -> QueryResult<()>;
     fn delete_for_activities(&mut self, activity_ids: &[i64]) -> QueryResult<()>;
     fn delete_for_categories(&mut self, category_ids: &[i64]) -> QueryResult<()>;
@@ -56,9 +44,7 @@ pub trait CategoriesRepo {
     /// parent; the caller assembles the tree from `parent_id`.
     fn get_list(&mut self) -> QueryResult<Vec<CategoryRow>>;
     fn get(&mut self, id: i64) -> QueryResult<Option<CategoryRow>>;
-    /// The subset of `ids` that exist, in one query.
     fn filter_existing(&mut self, ids: &[i64]) -> QueryResult<Vec<i64>>;
-    /// `(id, parent_id)` for every category, to build a [`crate::taxonomy::domain::CategoryTree`] from.
     fn get_parent_pairs(&mut self) -> QueryResult<Vec<(i64, Option<i64>)>>;
     fn insert(&mut self, new: &NewCategoryRow<'_>) -> QueryResult<CategoryRow>;
     /// Replaces every editable field; `Ok(None)` when `id` does not exist.
@@ -73,11 +59,8 @@ pub trait SessionsRepo {
     /// The most recently opened session, whether or not it has closed yet.
     fn get_last(&mut self) -> QueryResult<Option<SessionRow>>;
     fn insert(&mut self, new: &NewSessionRow<'_>) -> QueryResult<SessionRow>;
-    /// Reopens a session that was closed within the merge gap.
     fn reopen(&mut self, id: i64) -> QueryResult<()>;
     fn set_end(&mut self, id: i64, end_time: &str) -> QueryResult<()>;
-    /// Moves a session onto a different activity — used when a refined title resolves to a
-    /// different activity row than the one the session opened against.
     fn reassign_activity(&mut self, id: i64, activity_id: i64) -> QueryResult<()>;
     fn delete(&mut self, id: i64) -> QueryResult<()>;
     /// The activities behind `session_ids`. Ids with no matching session are silently skipped.
@@ -91,27 +74,33 @@ pub trait SourcesRepo {
     fn get_by_key(&mut self, kind: &str, key: &str) -> QueryResult<Option<SourceRow>>;
     fn insert(&mut self, new: &NewSourceRow<'_>) -> QueryResult<SourceRow>;
     fn set_name(&mut self, id: i64, name: &str) -> QueryResult<()>;
-    /// Deletes every source among `ids` that nothing in `activities` points to any more, in one
-    /// query.
     fn delete_unused_many(&mut self, ids: &[i64]) -> QueryResult<()>;
 }
 
 pub trait CategoryRulesRepo {
-    /// Every rule, oldest first.
     fn get_list(&mut self) -> QueryResult<Vec<CategoryRuleRow>>;
     fn insert(&mut self, new: &CategoryRuleValues<'_>) -> QueryResult<CategoryRuleRow>;
     /// Replaces every editable field; `Ok(None)` when `id` does not exist.
     fn update(&mut self, id: i64, values: &CategoryRuleValues<'_>) -> QueryResult<Option<CategoryRuleRow>>;
     /// Returns whether a rule was deleted. Its matches go with it.
     fn delete(&mut self, id: i64) -> QueryResult<bool>;
-    /// Deletes the rules that file under any of `category_ids` — used when those categories are
-    /// about to be deleted.
     fn delete_for_categories(&mut self, category_ids: &[i64]) -> QueryResult<()>;
 }
 
 pub trait RuleMatchesRepo {
-    /// Makes `matches` — `(activity_id, rule_id)` pairs — the whole table.
     fn replace_all(&mut self, matches: &[(i64, i64)]) -> QueryResult<()>;
-    /// Sets the winning rule of one activity.
     fn set(&mut self, activity_id: i64, rule_id: i64) -> QueryResult<()>;
+}
+
+pub trait ActivityEmbeddingsRepo {
+    /// Up to `limit` activities with no vector from `model` — none at all, or one from another
+    /// model — the most recently created first.
+    fn get_missing(&mut self, model: &str, limit: i64) -> QueryResult<Vec<ActivityIdentityRow>>;
+    /// Sets the vector of every `(activity_id, vector)`, replacing whatever was there. An
+    /// activity deleted in the meantime is skipped.
+    fn upsert_many(&mut self, model: &str, vectors: &[(i64, Vec<u8>)]) -> QueryResult<()>;
+    /// The vectors from `model` of those among `activity_ids` that have one.
+    fn get_many(&mut self, model: &str, activity_ids: &[i64]) -> QueryResult<Vec<(i64, Vec<u8>)>>;
+    /// Every activity the user has filed, by pin or by rule, that has a vector from `model`.
+    fn get_categorized(&mut self, model: &str) -> QueryResult<Vec<CategorizedEmbeddingRow>>;
 }

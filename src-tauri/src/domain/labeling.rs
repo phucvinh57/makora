@@ -14,11 +14,9 @@ use crate::taxonomy::store::load_tree;
 use crate::tracking::domain::source_key::KeyKind;
 
 use super::types::{
-    AiReviewGroup, AiReviewGroupPage, AiReviewPage, AiReviewRow, FeedbackStats, LabeledActivity,
-    ReviewFilter, UncategorizedActivity,
+    AiReviewGroup, AiReviewGroupPage, AiReviewPage, AiReviewRow, FeedbackStats, ReviewFilter, UncategorizedActivity,
 };
 
-/// Labels the model was at least this sure of are left out of the default review queue.
 const CONFIDENT: f64 = 0.85;
 
 pub use super::traits::LabelingSvc;
@@ -40,28 +38,9 @@ impl LabelingSvc for SqliteLabeling {
             .into_iter()
             .map(|row| UncategorizedActivity {
                 id: row.id.into(),
-                key_kind: KeyKind::from_db(&row.key_kind),
-                key: row.key,
                 app_name: row.app_name,
                 url: row.url,
                 title: row.title,
-            })
-            .collect())
-    }
-
-    fn get_labeled_activities(&self) -> Result<Vec<LabeledActivity>> {
-        let mut conn = self.db.read()?;
-        Ok(reporting::review::ReviewRepo::get_labeled_activities(&mut *conn)?
-            .into_iter()
-            .map(|row| LabeledActivity {
-                key_kind: KeyKind::from_db(&row.key_kind),
-                key: row.key,
-                app_name: row.app_name,
-                url: row.url,
-                title: row.title,
-                category_id: row.category_id.map(Into::into),
-                ai_category_id: row.ai_category_id.map(Into::into),
-                ai_rejected_category_id: row.ai_rejected_category_id.map(Into::into),
             })
             .collect())
     }

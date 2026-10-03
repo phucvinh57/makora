@@ -44,7 +44,6 @@ const RANGE_KINDS: TimeRangeKind[] = [
   "custom",
 ];
 
-/** Everything the page filters by lives in the URL, so it survives navigating away and back. */
 interface HistorySearch extends TimeRange {
   q?: string;
   category?: string;
@@ -103,7 +102,6 @@ function HistoryPage() {
     range: { kind: search.kind, from: search.from, to: search.to },
   };
 
-  /** Any filter change goes back to the first page. */
   const changeSearch = useCallback(
     (patch: Partial<HistorySearch>, replace = false) =>
       navigate({

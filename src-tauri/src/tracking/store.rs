@@ -1,7 +1,3 @@
-//! The tables behind tracking — `sources`, `activities`, `sessions` — as the recorder needs
-//! them: finding or creating the source and activity a block belongs to, and pruning the ones
-//! nothing refers to any more.
-
 use diesel::sqlite::SqliteConnection;
 use diesel::QueryResult;
 
@@ -31,21 +27,22 @@ pub fn ensure_source(conn: &mut SqliteConnection, source: &SourceKey, name: &str
     Ok(inserted.id)
 }
 
-/// Finds the activity by its identity (source, path, title), or creates it and matches it
-/// against the user's rules.
-pub fn ensure_activity(conn: &mut SqliteConnection, source_id: i64, path: &str, title: &str) -> QueryResult<ActivityRow> {
+/// The activity with this identity, and whether this call created it.
+pub fn ensure_activity(
+    conn: &mut SqliteConnection,
+    source_id: i64,
+    path: &str,
+    title: &str,
+) -> QueryResult<(ActivityRow, bool)> {
     if let Some(existing) = db::activities::ActivitiesRepo::get_by_identity(conn, source_id, path, title)? {
-        return Ok(existing);
+        return Ok((existing, false));
     }
     let created = db::activities::ActivitiesRepo::insert(conn, &NewActivityRow { source_id, path, title })?;
     // A rule the person already wrote may cover it, so it is categorized from its first moment.
     categorization::rules_store::match_new(conn, created.id)?;
-    Ok(created)
+    Ok((created, true))
 }
 
-/// Deletes every activity among `activity_ids` (and its source, if nothing else uses it) that
-/// has no category pin and no session referencing it any more, in a handful of queries
-/// regardless of how many ids are given.
 pub fn prune_orphans(conn: &mut SqliteConnection, activity_ids: &[i64]) -> QueryResult<()> {
     if activity_ids.is_empty() {
         return Ok(());

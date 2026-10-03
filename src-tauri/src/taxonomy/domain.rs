@@ -1,7 +1,6 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 
-/// The shape of the category tree, built from every category's `(id, parent_id)`.
 #[derive(Debug, Clone)]
 pub(crate) struct CategoryTree {
     ids: HashSet<i64>,

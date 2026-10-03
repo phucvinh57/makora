@@ -14,7 +14,6 @@ pub fn parse_db(value: &str) -> Option<DateTime<Utc>> {
         .map(|time| time.with_timezone(&Utc))
 }
 
-/// A span of time: `start` inclusive, `end` exclusive.
 #[derive(Debug, Clone, Copy)]
 pub struct TimeRange {
     pub start: DateTime<Utc>,

@@ -1,6 +1,3 @@
-//! What the operating-system watchers observe, before it becomes the domain's own vocabulary
-//! ([`crate::tracking::domain::events`]).
-
 use chrono::{DateTime, Utc};
 
 use crate::tracking::domain::events::{FocusChange, FocusedApp, PresenceChange};

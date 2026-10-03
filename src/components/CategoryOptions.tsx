@@ -51,13 +51,11 @@ export function categoryValueLabels(
   );
 }
 
-/** One row of a searchable category list. `label` is what the search matches and the trigger shows. */
 export interface CategoryChoice {
   value: string;
   label: string;
   /** The category's own name, for the indented list where `label` would repeat its parents. */
   name?: string;
-  /** Absent for the non-category rows (“Uncategorized”, “No parent”…). */
   color?: string;
   depth?: number;
 }
@@ -73,7 +71,6 @@ export function categoryChoices(categories: Category[]): CategoryChoice[] {
   }));
 }
 
-/** Everything a category dropdown needs, built once per category list instead of once per dropdown. */
 export interface CategoryPicker {
   categories: Category[];
   pathById: Map<number, string>;

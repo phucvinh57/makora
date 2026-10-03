@@ -28,8 +28,6 @@ pub enum ModelDownloadError {
     Failed(#[from] anyhow::Error),
 }
 
-/// Guards against two downloads at once, carries the stop request, and holds enough progress
-/// for a page that reloaded mid-download to resync instead of losing track of it.
 #[derive(Default)]
 pub struct ModelDownloadState {
     running: AtomicBool,
@@ -66,7 +64,6 @@ impl ModelDownloadState {
         }
     }
 
-    /// Asks a running download to stop.
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Release);
     }

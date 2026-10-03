@@ -15,10 +15,8 @@ use crate::db::sql::{bind_all, in_clause, Param};
 
 use super::CategoryScope;
 
-/// Rebuilds the browsable URL for a domain activity, `NULL` for an exe one.
 const ACTIVITY_URL: &str = "CASE WHEN src.kind = 'domain' THEN 'https://' || src.key || a.path END";
 
-/// Tracked seconds of the activity `a` in a query that left-joins `sessions s` onto it.
 const SECONDS: &str = "COALESCE(SUM((julianday(s.end_time) - julianday(s.start_time)) * 86400.0), 0.0)";
 
 #[derive(QueryableByName)]
@@ -26,35 +24,11 @@ pub struct ActivityToLabelRow {
     #[diesel(sql_type = BigInt)]
     pub id: i64,
     #[diesel(sql_type = Text)]
-    pub key_kind: String,
-    #[diesel(sql_type = Text)]
-    pub key: String,
-    #[diesel(sql_type = Text)]
     pub app_name: String,
     #[diesel(sql_type = Nullable<Text>)]
     pub url: Option<String>,
     #[diesel(sql_type = Text)]
     pub title: String,
-}
-
-#[derive(QueryableByName)]
-pub struct LabeledActivityRow {
-    #[diesel(sql_type = Text)]
-    pub key_kind: String,
-    #[diesel(sql_type = Text)]
-    pub key: String,
-    #[diesel(sql_type = Text)]
-    pub app_name: String,
-    #[diesel(sql_type = Nullable<Text>)]
-    pub url: Option<String>,
-    #[diesel(sql_type = Text)]
-    pub title: String,
-    #[diesel(sql_type = Nullable<BigInt>)]
-    pub category_id: Option<i64>,
-    #[diesel(sql_type = Nullable<BigInt>)]
-    pub ai_category_id: Option<i64>,
-    #[diesel(sql_type = Nullable<BigInt>)]
-    pub ai_rejected_category_id: Option<i64>,
 }
 
 /// The `WHERE` clause for pending AI labels (over `activity_category ac`), and its binds. Ends in
@@ -147,7 +121,6 @@ pub struct ReviewGroupRow {
     pub total_seconds: f64,
     #[diesel(sql_type = Nullable<Double>)]
     pub min_confidence: Option<f64>,
-    /// Comma-separated activity ids; the group's members.
     #[diesel(sql_type = Text)]
     pub activity_ids: String,
 }
@@ -175,13 +148,7 @@ pub struct FeedbackSecondsRow {
 }
 
 pub trait ReviewRepo {
-    /// Activities for the LLM to label, most recently seen first. Normally those with neither a
-    /// pin nor an AI label nor a rejected one; with `recheck`, those carrying an AI label the user
-    /// has not confirmed.
     fn get_activities_to_label(&mut self, recheck: bool) -> QueryResult<Vec<ActivityToLabelRow>>;
-    /// Every activity the user has pinned or rejected an AI label for, newest first.
-    fn get_labeled_activities(&mut self) -> QueryResult<Vec<LabeledActivityRow>>;
-    /// AI labels awaiting review, longest-tracked first so the ones that matter come up first.
     #[allow(clippy::too_many_arguments)]
     fn get_review_page(
         &mut self,
@@ -193,8 +160,6 @@ pub trait ReviewRepo {
         confident: f64,
         min_seconds: f64,
     ) -> QueryResult<(Vec<ReviewRow>, i64)>;
-    /// The pending AI labels folded into one row per source and suggested category, longest-tracked
-    /// first.
     fn get_review_groups(
         &mut self,
         page: i64,
@@ -218,26 +183,11 @@ impl ReviewRepo for SqliteConnection {
             "NOT EXISTS (SELECT 1 FROM ai_labels l WHERE l.activity_id = a.id)"
         };
         sql_query(format!(
-            "SELECT a.id, src.kind AS key_kind, src.key, src.name AS app_name, {ACTIVITY_URL} AS url, a.title
+            "SELECT a.id, src.name AS app_name, {ACTIVITY_URL} AS url, a.title
              FROM activities a
              JOIN sources src ON src.id = a.source_id
              WHERE a.category_id IS NULL AND {wanted}
                AND NOT EXISTS (SELECT 1 FROM rule_matches m WHERE m.activity_id = a.id)
-             ORDER BY (SELECT MAX(start_time) FROM sessions WHERE activity_id = a.id) DESC"
-        ))
-        .get_results(self)
-    }
-
-    fn get_labeled_activities(&mut self) -> QueryResult<Vec<LabeledActivityRow>> {
-        sql_query(format!(
-            "SELECT src.kind AS key_kind, src.key, src.name AS app_name, {ACTIVITY_URL} AS url, a.title,
-                    a.category_id,
-                    CASE WHEN l.rejected = 0 THEN l.category_id END AS ai_category_id,
-                    CASE WHEN l.rejected = 1 THEN l.category_id END AS ai_rejected_category_id
-             FROM activities a
-             JOIN sources src ON src.id = a.source_id
-             LEFT JOIN ai_labels l ON l.activity_id = a.id
-             WHERE a.category_id IS NOT NULL OR l.rejected = 1
              ORDER BY (SELECT MAX(start_time) FROM sessions WHERE activity_id = a.id) DESC"
         ))
         .get_results(self)

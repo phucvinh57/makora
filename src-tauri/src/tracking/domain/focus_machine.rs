@@ -1,7 +1,3 @@
-//! Turns focus, tab and presence changes into blocks of activity: opens one when an app or tab
-//! gains focus, closes it when it loses focus or the person leaves, and folds a browser's
-//! tab-title update into the block already open for that tab.
-
 use std::collections::HashMap;
 
 use anyhow::Result;

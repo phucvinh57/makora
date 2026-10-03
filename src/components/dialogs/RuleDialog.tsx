@@ -52,13 +52,11 @@ const FIELD_ITEMS = Object.fromEntries(
 interface Form {
   kind: RuleKind;
   field: PatternField;
-  /** The app, domain or glob; for a page, just the domain. */
   value: string;
   /** Only for a page: what follows the domain, e.g. `/acme/api`. */
   path: string;
 }
 
-/** One rule being written. The `id` keeps a row's state with it as others come and go. */
 interface Row extends Form {
   id: number;
 }
@@ -83,7 +81,6 @@ function formOf(rule: CategoryRule): Form {
   };
 }
 
-/** What the backend is asked to match: for a page, the domain with its path. */
 function matchValue(form: Form): string {
   if (form.kind !== "page") return form.value.trim();
   const domain = form.value.trim();
@@ -101,7 +98,6 @@ function sourceHint(name: string, key: string, seconds: number): string {
   return `${label}${formatSeconds(seconds)}`;
 }
 
-/** One rule's fields, and what it would match. */
 function RuleFields({
   form,
   onChange,
@@ -313,7 +309,6 @@ function RuleFields({
 }
 
 interface SaveResult {
-  /** The rows that were saved. */
   saved: number[];
   /** The row that stopped the save, if one did; the rows after it were not tried. */
   failed: { id: number; message: string } | null;
@@ -488,7 +483,6 @@ function RuleForm({
 }
 
 export interface RuleDialogData {
-  /** The rule being edited; `null` for new ones. */
   rule: CategoryRule | null;
 }
 

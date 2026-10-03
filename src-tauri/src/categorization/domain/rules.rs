@@ -47,14 +47,11 @@ impl RuleKind {
     }
 }
 
-/// What a pattern rule looks at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PatternField {
-    /// `domain/path` of a browser tab; an app has none.
     Url,
     Title,
-    /// The name of the source: an app's display name, or a site's domain.
     App,
 }
 
@@ -77,7 +74,6 @@ impl PatternField {
     }
 }
 
-/// A rule the person wrote that cannot be used, with the reason to show them.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
 pub struct InvalidRule(pub &'static str);
@@ -126,7 +122,6 @@ impl RuleMatcher {
         }
     }
 
-    /// The `(kind, field, value)` to store.
     pub fn parts(&self) -> (RuleKind, Option<PatternField>, String) {
         match self {
             Self::App(key) => (RuleKind::App, None, key.clone()),
@@ -161,7 +156,6 @@ impl RuleMatcher {
     }
 }
 
-/// The part of a domain-source's path a page rule covers: the path itself, or anything below it.
 fn path_within(activity_path: &str, rule_path: &str) -> bool {
     match activity_path.strip_prefix(rule_path) {
         Some("") => true,
@@ -208,7 +202,6 @@ pub fn glob_matches(pattern: &str, text: &str) -> bool {
     pattern[p..].iter().all(|&c| c == '*')
 }
 
-/// What a rule can look at about an activity, lowercased once so many rules can be tried on it.
 #[derive(Debug, Clone)]
 pub struct ActivityFacts {
     kind: KeyKind,
@@ -216,7 +209,6 @@ pub struct ActivityFacts {
     name: String,
     path: String,
     title: String,
-    /// `domain/path` for a browser tab.
     url: Option<String>,
 }
 
@@ -244,7 +236,6 @@ pub struct CategoryRule {
     pub matcher: RuleMatcher,
 }
 
-/// Every rule, ready to be asked which one wins for an activity.
 #[derive(Debug, Clone, Default)]
 pub struct RuleSet {
     rules: Vec<CategoryRule>,
@@ -259,7 +250,6 @@ impl RuleSet {
         self.rules.is_empty()
     }
 
-    /// The rule that decides this activity's category, if any matches.
     pub fn resolve(&self, facts: &ActivityFacts) -> Option<&CategoryRule> {
         self.rules
             .iter()

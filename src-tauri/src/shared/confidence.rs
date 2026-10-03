@@ -1,6 +1,5 @@
 use serde::Serialize;
 
-/// How sure the model was of a label, always within 0 to 1.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
 pub struct Confidence(f64);

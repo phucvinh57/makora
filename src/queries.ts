@@ -10,7 +10,6 @@ import {
 } from "./api";
 import type { AiCategorizeStatus, ModelDownloadStatus } from "./types";
 
-/** Every query key in one place, so invalidation cannot drift from what the pages register. */
 export const queryKeys = {
   categories: ["categories"],
   categoryRules: ["categoryRules"],
@@ -42,7 +41,6 @@ export const categoryRulesQueryOptions = queryOptions({
   queryFn: categoryRule.list,
 });
 
-/** Apps and sites already in the history; fresh enough for a minute while a rule is typed. */
 export const sourceSuggestionsQueryOptions = queryOptions({
   queryKey: queryKeys.sourceSuggestions,
   queryFn: suggestion.sources,

@@ -27,7 +27,6 @@ import type {
   SourceSuggestion,
 } from "./types";
 
-/** Why a command failed, stable enough to branch on. */
 export type ApiErrorCode =
   | "name_taken"
   | "parent_missing"
@@ -37,6 +36,7 @@ export type ApiErrorCode =
   | "duplicate_rule"
   | "category_missing"
   | "already_running"
+  | "no_categories"
   | "invalid_input"
   | "internal";
 
@@ -69,7 +69,6 @@ function isWireError(
   );
 }
 
-/** Invokes a command, turning whatever it rejects with into an `ApiError`. */
 async function call<T>(command: string, args?: InvokeArgs): Promise<T> {
   try {
     return await invoke<T>(command, args);
@@ -92,7 +91,6 @@ export interface SessionsQuery {
   end?: string;
 }
 
-/** What a category is made of; the id is the backend's to assign. */
 export interface CategoryDraft {
   name: string;
   color: string;
@@ -112,7 +110,6 @@ export const session = {
     return call("session_list", { ...query });
   },
 
-  /** Pins one session row's activity to a category; `null` clears the pin. */
   setRowCategory(sessionId: number, categoryId: number | null): Promise<void> {
     return call("session_set_row_category", { sessionId, categoryId });
   },
@@ -127,7 +124,6 @@ export const activity = {
     return call("activity_stats", { start, end });
   },
 
-  /** Pins activities to a category; `null` rejects their AI label. */
   setCategory(activityIds: number[], categoryId: number | null): Promise<void> {
     return call("activity_set_category", { activityIds, categoryId });
   },
@@ -168,7 +164,6 @@ export const categoryRule = {
     return call("category_rule_delete", { id });
   },
 
-  /** What a rule written like this would catch, without saving it. */
   preview(
     kind: RuleKind,
     field: PatternField | null,
@@ -178,14 +173,11 @@ export const categoryRule = {
   },
 };
 
-/** Hints for writing a rule, drawn from the history. */
 export const suggestion = {
-  /** The apps and sites in the history, longest-tracked first. */
   sources(): Promise<SourceSuggestion[]> {
     return call("suggestion_sources");
   },
 
-  /** The pages tracked on a domain, and the folders above them. */
   paths(domain: string): Promise<PathSuggestion[]> {
     return call("suggestion_paths", { domain });
   },
@@ -196,9 +188,8 @@ export const categorization = {
     return call("categorization_reset");
   },
 
-  /** Runs the AI over the uncategorized activities (all of them when `recheck`). */
-  run(recheck = false, model?: string): Promise<AiCategorizeOutcome> {
-    return call("categorization_run", { model, recheck });
+  run(recheck = false): Promise<AiCategorizeOutcome> {
+    return call("categorization_run", { recheck });
   },
 
   status(): Promise<AiCategorizeStatus> {
@@ -272,9 +263,16 @@ export const settings = {
     return call("settings_get");
   },
 
-  /** Resolves to the settings as saved. */
   setMinSessionSeconds(seconds: number): Promise<Settings> {
     return call("settings_set_min_session_seconds", { seconds });
+  },
+
+  setLlmModel(model: string): Promise<Settings> {
+    return call("settings_set_llm_model", { model });
+  },
+
+  setEmbeddingModel(model: string): Promise<Settings> {
+    return call("settings_set_embedding_model", { model });
   },
 };
 

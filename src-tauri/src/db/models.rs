@@ -1,7 +1,3 @@
-//! Row types for the repository functions in this module. These mirror the schema exactly and
-//! carry no business meaning; the public shapes returned to the rest of the app live in
-//! [`crate::domain::types`].
-
 use diesel::prelude::*;
 
 use super::schema::{activities, ai_labels, categories, category_rules, sessions, sources};
@@ -115,7 +111,6 @@ pub struct CategoryRuleValues<'a> {
     pub value: &'a str,
 }
 
-/// An activity with the source it belongs to: everything a rule can look at.
 #[derive(Debug, Clone, Queryable)]
 pub struct ActivityIdentityRow {
     pub id: i64,
@@ -124,4 +119,26 @@ pub struct ActivityIdentityRow {
     pub source_name: String,
     pub path: String,
     pub title: String,
+}
+
+/// An activity with a category from the user (a pin or a rule) and its vector, to be compared
+/// against the one being labeled.
+#[derive(Debug, Clone, QueryableByName)]
+pub struct CategorizedEmbeddingRow {
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub activity_id: i64,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub source_kind: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub source_key: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub source_name: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub path: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub title: String,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub category_id: i64,
+    #[diesel(sql_type = diesel::sql_types::Binary)]
+    pub vector: Vec<u8>,
 }

@@ -15,6 +15,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { useCategories } from "@/hooks/useCategories";
 import { useDialog } from "@/hooks/useDialog";
 import { invalidateCategorizationQueries } from "@/queries";
@@ -101,8 +102,7 @@ function AddCategoryForm({
           autoFocus
         />
       </div>
-      <Input
-        type="text"
+      <Textarea
         value={description}
         onChange={(e) => setDescription(e.target.value)}
         placeholder="Description (optional)"
@@ -145,9 +145,7 @@ function AddCategoryForm({
 }
 
 export interface AddCategoryDialogData {
-  /** The category the new one goes under; `null` for a top-level one. */
   parent: Category | null;
-  /** Called once the new category is in the list, so the opener can select it. */
   onCreated?: (category: Category) => void;
 }
 

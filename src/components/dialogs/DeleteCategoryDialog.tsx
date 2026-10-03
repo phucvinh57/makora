@@ -26,7 +26,6 @@ export function DeleteCategoryDialog() {
     useDialog<DeleteCategoryDialogData>("delete-category");
   const { categories } = useCategories();
   const category = data?.category;
-  // How many categories sit under this one and go with it.
   const descendantCount = category
     ? categorySubtreeIds(category.id, categories).size - 1
     : 0;

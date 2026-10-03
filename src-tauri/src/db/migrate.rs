@@ -4,8 +4,6 @@ use diesel::prelude::*;
 use diesel::sql_query;
 use diesel::sqlite::SqliteConnection;
 
-/// The SQL run to reach each schema version, in order. Index 0 takes a fresh database to
-/// version 1, index 1 to version 2, and so on.
 const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0001_init.sql"),
     include_str!("migrations/0002_ai_category.sql"),
@@ -15,6 +13,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0006_normalize.sql"),
     include_str!("migrations/0007_activity_category_view.sql"),
     include_str!("migrations/0008_category_rules.sql"),
+    include_str!("migrations/0009_activity_embeddings.sql"),
 ];
 
 /// `user_version` the 28 migrations this schema replaced ended at. Such a database already has

@@ -1,6 +1,3 @@
-//! Reading the category tree, and turning the database's constraint errors into ones about
-//! categories.
-
 use diesel::result::{DatabaseErrorKind, Error as DieselError};
 use diesel::sqlite::SqliteConnection;
 use diesel::QueryResult;
@@ -23,7 +20,6 @@ pub fn load_tree(conn: &mut SqliteConnection) -> QueryResult<CategoryTree> {
     Ok(CategoryTree::new(db::categories::CategoriesRepo::get_parent_pairs(conn)?))
 }
 
-/// The category-level meaning of a failed insert or update.
 pub fn translate_write_error(err: DieselError, name: &str, parent_id: Option<CategoryId>) -> TaxonomyError {
     match &err {
         DieselError::DatabaseError(DatabaseErrorKind::UniqueViolation, _) => match parent_id {

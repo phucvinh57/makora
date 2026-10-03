@@ -23,7 +23,6 @@ function ResizableHead({
   children,
 }: {
   column: ResizableColumn;
-  /** Whether the header carries the column's width (see the Window title column). */
   sized?: boolean;
   handleProps: ReturnType<ReturnType<typeof useColumnResize>["handleProps"]>;
   className?: string;
@@ -59,7 +58,6 @@ export function SessionsTable({
   rows: SessionRow[];
   picker: CategoryPicker;
   loading: boolean;
-  /** Whether a search or filter is narrowing the list, for the empty message. */
   filtered: boolean;
   selectedIds: ReadonlySet<number>;
   onToggleRow: (id: number, checked: boolean) => void;

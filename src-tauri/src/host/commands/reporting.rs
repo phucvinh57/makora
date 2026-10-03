@@ -2,8 +2,8 @@ use chrono::{DateTime, Utc};
 use tauri::State;
 
 use crate::domain::types::{
-    ActivityStats, AiReviewGroupPage, AiReviewPage, CategoryFilter, CategorySourceFilter, FeedbackStats,
-    ReviewFilter, SessionFilter, SessionsPage,
+    ActivityStats, AiReviewGroupPage, AiReviewPage, CategoryFilter, CategorySourceFilter, FeedbackStats, ReviewFilter,
+    SessionFilter, SessionsPage,
 };
 use crate::domain::{HistorySvc, LabelingSvc};
 use crate::host::error::IpcError;

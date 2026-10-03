@@ -15,18 +15,13 @@ use crate::domain::types::AiVerdict;
 use crate::shared::ids::{raw, ActivityId, CategoryId, SessionId};
 
 pub trait ClassificationSvc: Send + Sync {
-    /// Pins the activity behind each session row to `category_id` (or unpins with `None`).
     fn assign_sessions(&self, session_ids: &[SessionId], category_id: Option<CategoryId>) -> Result<()>;
-    /// Like [`assign_sessions`](Self::assign_sessions), for activities picked directly.
     fn assign_activities(&self, activity_ids: &[ActivityId], category_id: Option<CategoryId>) -> Result<()>;
-    /// Stores the model's verdicts; a verdict without a category clears a label the model no
+    /// Stores the model's verdicts; a verdict without a category forgets an answer the model no
     /// longer stands by. A manual pin made in the meantime is untouched: reads prefer it over
     /// the AI label. Returns how many labels actually changed.
     fn assign_ai(&self, verdicts: &[AiVerdict]) -> Result<usize>;
-    /// Turns each activity's AI label into a manual pin.
     fn accept_ai_labels(&self, activity_ids: &[ActivityId]) -> Result<()>;
-    /// Clears every pin and AI label in one transaction while keeping the taxonomy and tracking
-    /// history intact. Returns how many were removed.
     fn reset(&self) -> Result<usize>;
 }
 
@@ -41,7 +36,6 @@ impl SqliteClassification {
 
 }
 
-/// Files each of `activity_ids` under `category_id`, or takes it out of its category with `None`.
 fn assign(conn: &mut SqliteConnection, activity_ids: &[ActivityId], category_id: Option<CategoryId>) -> QueryResult<()> {
     store::modify_many(conn, activity_ids, |classifications| {
         for classification in classifications {

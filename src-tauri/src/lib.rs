@@ -18,11 +18,15 @@ use chrono::Utc;
 use tauri::Manager;
 use tracing::{error, info};
 
+use crate::ai::embedding::LlamaEmbedder;
 use crate::ai::llm::{LlamaClassifier, ModelCache};
 use crate::ai::model_download::ModelDownloadState;
 use crate::categorization::application::ai_run::AiRunState;
-use crate::categorization::ports::Classifier;
-use crate::categorization::{ClassificationSvc, RuleSvc, SqliteClassification, SqliteRules};
+use crate::categorization::ports::{Classifier, Embedder};
+use crate::categorization::{
+    ActivityIndexer, BackgroundIndexer, ClassificationSvc, EmbeddingSvc, RuleSvc, SqliteClassification,
+    SqliteEmbeddings, SqliteRules,
+};
 use crate::settings::{SettingsStore, TomlSettings};
 use crate::domain::{HistorySvc, LabelingSvc, SqliteHistory, SqliteLabeling};
 use crate::taxonomy::{CategorySvc, SqliteCategories};
@@ -42,7 +46,6 @@ pub fn run() {
             host::tray::show_main_window(app);
         }));
 
-    // Do not autostart on dev mode
     if !cfg!(debug_assertions) {
         builder = builder.plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -85,6 +88,8 @@ pub fn run() {
             host::commands::models::ai_model_list_installed,
             host::commands::settings::settings_get,
             host::commands::settings::settings_set_min_session_seconds,
+            host::commands::settings::settings_set_llm_model,
+            host::commands::settings::settings_set_embedding_model,
         ])
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
@@ -105,8 +110,18 @@ pub fn run() {
             info!(path = %settings_path.display(), "reading settings");
             let settings: Arc<dyn SettingsStore> = Arc::new(TomlSettings::load(settings_path));
 
+            let models = ModelCache::default();
+            let embedder: Arc<dyn Embedder> = Arc::new(LlamaEmbedder::new(models.clone()));
+            let embeddings: Arc<dyn EmbeddingSvc> = Arc::new(SqliteEmbeddings::new(conn.clone()));
+            let indexer: Arc<dyn ActivityIndexer> = Arc::new(
+                BackgroundIndexer::spawn(embeddings.clone(), embedder.clone(), settings.clone())
+                    .context("spawning activity-embedder thread")?,
+            );
+            // Activities recorded before they were embedded as they were saved.
+            indexer.refresh();
+
             let recorder: Box<dyn SessionRecorder> =
-                Box::new(SqliteSessionRecorder::new(conn.clone(), settings.clone()));
+                Box::new(SqliteSessionRecorder::new(conn.clone(), settings.clone(), indexer.clone()));
             let session_tracker = FocusStateMachine::new(recorder).context("initializing session tracker")?;
             let tracker: SharedTracker = Arc::new(Mutex::new(Box::new(session_tracker) as Box<dyn SessionTracker>));
             ai::llm::set_download_root(data_dir.join("models"));
@@ -119,8 +134,10 @@ pub fn run() {
             app.manage(settings);
             app.manage(AiRunState::default());
             app.manage(ModelDownloadState::default());
-            let models = ModelCache::default();
             app.manage(Box::new(LlamaClassifier::new(models.clone())) as Box<dyn Classifier>);
+            app.manage(embedder);
+            app.manage(embeddings);
+            app.manage(indexer);
             app.manage(models);
             app.manage(tracker.clone());
             let (tx, rx) = mpsc::channel::<WatchEvent>();

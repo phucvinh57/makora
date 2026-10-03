@@ -29,18 +29,14 @@ pub enum SourceScope {
 }
 
 pub struct SessionQuery {
-    /// Trimmed, non-empty search term; matched against the source name, title and key/path.
     pub search: Option<String>,
     pub category: CategoryScope,
     pub source: SourceScope,
     /// Inclusive lower bound on `end_time` (a still-open session always passes).
     pub start: Option<String>,
-    /// Exclusive upper bound on `start_time`.
     pub end: Option<String>,
 }
 
-/// Builds the `WHERE` clause and its bind values for [`SessionQuery`], in the order the `?`
-/// placeholders appear.
 fn where_clause(query: &SessionQuery) -> (String, Vec<Param>) {
     let mut clauses = vec!["1=1".to_string()];
     let mut binds = Vec::new();

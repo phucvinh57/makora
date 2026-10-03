@@ -34,24 +34,19 @@ macro_rules! id_type {
 }
 
 id_type!(
-    /// A block of tracked time: one row per focus interval.
     SessionId
 );
 id_type!(
-    /// What was being done: a source, a page path and a title.
     ActivityId
 );
 id_type!(
-    /// A node of the category tree.
     CategoryId
 );
 
 id_type!(
-    /// A user-written rule that files matching activities under a category.
     RuleId
 );
 
-/// The raw ids behind a slice of typed ones, for handing to the repository layer.
 pub fn raw<T: Copy + Into<i64>>(ids: &[T]) -> Vec<i64> {
     ids.iter().map(|&id| id.into()).collect()
 }

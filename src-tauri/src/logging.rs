@@ -17,7 +17,6 @@ use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::EnvFilter;
 
-/// Directory under the app-data dir that holds the rotated log files.
 pub const LOG_DIR_NAME: &str = "logs";
 
 const LOG_FILE_PREFIX: &str = "makora";
@@ -58,8 +57,6 @@ pub fn init(app_data_dir: &Path) -> Result<Option<PathBuf>> {
     Ok(Some(dir))
 }
 
-/// Opens `<dir>/makora.<yyyy-mm-dd>.log`, creating `dir` if needed. The appender rolls
-/// over on its own at midnight and deletes everything past the newest [`MAX_LOG_FILES`].
 fn daily_writer(dir: &Path) -> Result<(NonBlocking, WorkerGuard)> {
     std::fs::create_dir_all(dir)
         .with_context(|| format!("creating log directory {}", dir.display()))?;

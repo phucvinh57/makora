@@ -13,7 +13,6 @@ export const PATTERN_FIELD_LABELS: Record<PatternField, string> = {
   app: "App or site name",
 };
 
-/** What the person types for each kind of rule, as the placeholder of the value field. */
 export const RULE_VALUE_PLACEHOLDERS: Record<RuleKind, string> = {
   app: "code",
   site: "github.com",

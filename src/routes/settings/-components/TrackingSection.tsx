@@ -14,7 +14,6 @@ export function TrackingSection() {
   const settingsQuery = useQuery(settingsQueryOptions);
   const saved = settingsQuery.data?.tracking.min_session_seconds;
 
-  // What is being typed, until it is saved or abandoned. `null` shows the saved value.
   const [draft, setDraft] = useState<string | null>(null);
 
   const saveMutation = useMutation({

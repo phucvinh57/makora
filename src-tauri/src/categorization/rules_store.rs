@@ -42,7 +42,6 @@ pub fn load_rules(conn: &mut SqliteConnection) -> QueryResult<RuleSet> {
     ))
 }
 
-/// Recomputes which rule wins for every activity.
 pub fn rematch_all(conn: &mut SqliteConnection) -> QueryResult<()> {
     let rules = load_rules(conn)?;
     let matches: Vec<(i64, i64)> = if rules.is_empty() {
@@ -59,7 +58,6 @@ pub fn rematch_all(conn: &mut SqliteConnection) -> QueryResult<()> {
     db::rule_matches::RuleMatchesRepo::replace_all(conn, &matches)
 }
 
-/// Matches an activity that was just created.
 pub fn match_new(conn: &mut SqliteConnection, activity_id: i64) -> QueryResult<()> {
     let rules = load_rules(conn)?;
     if rules.is_empty() {

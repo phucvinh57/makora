@@ -6,7 +6,6 @@ export interface CategoryNode {
   children: CategoryNode[];
 }
 
-/** Assembles the flat list `category_list` returns into the tree the UI shows. */
 export function buildCategoryTree(categories: Category[]): CategoryNode[] {
   const nodes = new Map<number, CategoryNode>(
     categories.map((category) => [
@@ -43,12 +42,10 @@ export function buildCategoryTree(categories: Category[]): CategoryNode[] {
   return roots;
 }
 
-/** The tree in reading order, each node carrying the depth to indent it by. */
 export function flattenCategoryTree(nodes: CategoryNode[]): CategoryNode[] {
   return nodes.flatMap((node) => [node, ...flattenCategoryTree(node.children)]);
 }
 
-/** Categories in tree order — what every category picker and dropdown lists. */
 export function orderedCategories(categories: Category[]): CategoryNode[] {
   return flattenCategoryTree(buildCategoryTree(categories));
 }
@@ -67,7 +64,6 @@ function pathOf(category: Category, byId: Map<number, Category>): string {
   return names.join(" / ");
 }
 
-/** `"Work / Reading"` — how a nested category reads outside the tree itself. */
 export function categoryPath(
   category: Category,
   categories: Category[],
@@ -81,7 +77,6 @@ export function categoryPaths(categories: Category[]): Map<number, string> {
   return new Map(categories.map((c) => [c.id, pathOf(c, byId)]));
 }
 
-/** A category plus everything nested under it — what picking it now covers. */
 export function categorySubtreeIds(
   rootId: number,
   categories: Category[],

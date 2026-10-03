@@ -13,7 +13,6 @@ export function sourceName(group: AiReviewGroup): string {
   return group.key_kind === "domain" ? group.key : group.app_name;
 }
 
-/** What accepting, rejecting or recategorizing activities does, and whether one is in flight. */
 export type Decide = {
   busy: boolean;
   accept: (ids: number[]) => void;

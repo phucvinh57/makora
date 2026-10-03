@@ -24,5 +24,7 @@ Database: `makora.sqlite` in Tauri's app-data dir (`~/.local/share/dev.phucvinh5
 ## Rules
 
 - **Do not write tests for now**
+- **Do not add unnecessary comments.**
 - **No `println!`/`eprintln!`** — use `tracing::{info, warn, error}`. The only exception is the bootstrap fallback in `lib.rs`, for when the subscriber failed to install.
 - **Build process-wide state inside `setup`**, never before `tauri::Builder`.
+- **Before applying new migration, make sure to back up the db first.

@@ -12,7 +12,6 @@ export function PaginationControls({
 }: {
   page: number;
   pageCount: number;
-  /** What is being counted, e.g. "120 sessions". */
   label: string;
   onPage: (page: number) => void;
   className?: string;

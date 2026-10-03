@@ -4,6 +4,7 @@
 //! The read models behind the history and review pages are in [`crate::reporting`].
 
 pub mod activities;
+pub mod activity_embeddings;
 pub mod ai_labels;
 pub mod categories;
 pub mod category_rules;
@@ -25,9 +26,7 @@ use diesel::r2d2::{ConnectionManager, CustomizeConnection, Pool, PooledConnectio
 use diesel::sqlite::SqliteConnection;
 use diesel::Connection;
 
-/// How long a connection waits on a lock held by another one before giving up.
 const BUSY_TIMEOUT_MS: u32 = 5000;
-/// Readers alive at once. Each is a cheap SQLite handle, and a read never waits on the writer.
 const MAX_READERS: u32 = 4;
 
 type ReadPool = Pool<ConnectionManager<SqliteConnection>>;
@@ -43,18 +42,15 @@ pub struct Db {
 }
 
 impl Db {
-    /// The write connection. Holding it blocks other writers, never readers.
     pub fn write(&self) -> MutexGuard<'_, SqliteConnection> {
         self.writer.lock().unwrap()
     }
 
-    /// A read-only connection from the pool. Writing through it fails.
     pub fn read(&self) -> Result<ReadConn> {
         self.readers.get().context("getting a read connection")
     }
 }
 
-/// Puts each pooled connection into read-only mode.
 #[derive(Debug)]
 struct ReaderSetup;
 

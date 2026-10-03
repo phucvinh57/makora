@@ -2,11 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 
 const OPEN_EVENT = "makora:open-dialog";
 
-/** Every dialog in the app. A new one is added here, then mounted in `Dialogs`. */
 export type DialogName =
   | "add-category"
   | "add-model"
   | "delete-category"
+  | "edit-category"
   | "reset-categorization"
   | "rule";
 
@@ -15,10 +15,6 @@ interface OpenDialogDetail {
   data: unknown;
 }
 
-/**
- * Asks the dialog registered under `name` to open, handing it `data`. Whoever calls this needs
- * no reference to the dialog, only its name and the shape of its data.
- */
 export function openDialog<T = undefined>(name: DialogName, data?: T) {
   window.dispatchEvent(
     new CustomEvent<OpenDialogDetail>(OPEN_EVENT, { detail: { name, data } }),

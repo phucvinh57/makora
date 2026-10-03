@@ -54,7 +54,6 @@ export interface AiReviewPage {
   total: number;
 }
 
-/** One executable or domain whose pending AI labels all suggest the same category. */
 export interface AiReviewGroup {
   key_kind: "exe" | "domain";
   key: string;
@@ -64,7 +63,6 @@ export interface AiReviewGroup {
   category_color: string;
   activity_count: number;
   total_seconds: number;
-  /** The least sure the model was about any member; null when unknown. */
   min_confidence: number | null;
   activity_ids: number[];
 }
@@ -75,13 +73,9 @@ export interface AiReviewGroupPage {
 }
 
 export interface ReviewFilter {
-  /** Only suggestions in this category or under it. */
   category?: number;
-  /** Only these activities, e.g. the members of one group. */
   activities?: number[];
-  /** Hide labels the model was confident about. */
   uncertain_only?: boolean;
-  /** Hide activities (or groups) tracked for less than this. */
   min_seconds?: number;
 }
 
@@ -91,9 +85,7 @@ export interface FeedbackStats {
   pinned: number;
   rejected: number;
   pending_review: number;
-  /** Tracked time still waiting for review. */
   pending_seconds: number;
-  /** Tracked time of the AI labels the user has judged. */
   reviewed_seconds: number;
 }
 
@@ -102,7 +94,6 @@ export interface AiCategorizeProgress {
   total: number;
 }
 
-/** Lets a page that reloaded mid-run find out a categorization is still going. */
 export interface AiCategorizeStatus {
   running: boolean;
   recheck: boolean;
@@ -110,7 +101,9 @@ export interface AiCategorizeStatus {
   total: number;
 }
 
-/** Lets a page that reloaded mid-download find out it is still going. */
+/** The LLM labels activities; the embedding model finds the filed ones most like each. */
+export type ModelRole = "llm" | "embedding";
+
 export interface ModelDownloadStatus {
   running: boolean;
   model: string;
@@ -119,7 +112,6 @@ export interface ModelDownloadStatus {
 }
 
 export interface CategorizationResetOutcome {
-  /** Manual pins and AI labels removed. */
   labels_cleared: number;
 }
 
@@ -154,17 +146,18 @@ export interface ActivityStats {
 
 export interface Settings {
   tracking: {
-    /** Activity that ends sooner than this after it began is discarded. */
     min_session_seconds: number;
+  };
+  ai: {
+    llm_model: string;
+    embedding_model: string;
   };
 }
 
 export type RuleKind = "app" | "site" | "page" | "pattern";
 
-/** What a pattern rule is matched against. */
 export type PatternField = "url" | "title" | "app";
 
-/** What the person writes to make a rule. */
 export interface RuleDraft {
   kind: RuleKind;
   /** Only for a pattern. */
@@ -184,7 +177,6 @@ export interface CategoryRule {
   total_seconds: number;
 }
 
-/** What a draft rule would catch among the tracked history. */
 export interface RulePreview {
   activity_count: number;
   total_seconds: number;

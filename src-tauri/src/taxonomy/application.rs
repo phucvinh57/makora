@@ -1,6 +1,3 @@
-//! Creating, editing and deleting categories. Filing activities under them is
-//! [`crate::categorization`]'s job.
-
 use diesel::Connection;
 
 use crate::categorization;
@@ -19,7 +16,6 @@ pub trait CategorySvc: Send + Sync {
     #[allow(dead_code)]
     fn get(&self, id: CategoryId) -> Result<Option<Category>, TaxonomyError>;
     fn create(&self, new: &NewCategory) -> Result<Category, TaxonomyError>;
-    /// Replaces every editable field.
     fn update(&self, id: CategoryId, new: &NewCategory) -> Result<Category, TaxonomyError>;
     /// Deletes a category *and everything nested under it* — a subcategory has no meaning
     /// without its parent, so the whole branch goes, taking its pins with it.

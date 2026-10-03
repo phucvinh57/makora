@@ -1,6 +1,5 @@
 use crate::shared::ids::CategoryId;
 
-/// Why a change to the category tree was refused.
 #[derive(Debug, thiserror::Error)]
 pub enum TaxonomyError {
     /// Names only have to be unique among siblings, so the same name elsewhere is fine.

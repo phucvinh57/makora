@@ -14,14 +14,37 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { useDialog } from "@/hooks/useDialog";
+import type { ModelRole } from "@/types";
 import {
   downloadStatusQueryOptions,
   markDownloadStarted,
   queryKeys,
 } from "@/queries";
 
-const DEFAULT_MODEL = "qwen2.5:7b-instruct";
-const SUGGESTED_MODELS = ["llama3.2", "llama3.2:1b", DEFAULT_MODEL];
+const ROLE_OPTIONS: {
+  role: ModelRole;
+  label: string;
+  hint: string;
+  suggestions: string[];
+}[] = [
+  {
+    role: "embedding",
+    label: "Embedding model",
+    hint: "Small and fast. Finds the activities you filed that are most like each new one. Runs on any machine.",
+    suggestions: [
+      "all-minilm",
+      "nomic-embed-text",
+      "mxbai-embed-large",
+      "paraphrase-multilingual",
+    ],
+  },
+  {
+    role: "llm",
+    label: "LLM",
+    hint: "A language model that labels each activity, shown the ones you filed that look like it. Accurate, but needs a capable machine.",
+    suggestions: ["llama3.2", "llama3.2:1b", "qwen2.5:7b-instruct"],
+  },
+];
 
 function DownloadProgress({
   downloaded,
@@ -54,6 +77,8 @@ function DownloadProgress({
 
 /** Mounted only while the dialog is open, so the typed name starts empty every time. */
 function AddModelForm({
+  initialRole,
+  initialModel,
   downloading,
   progress,
   error,
@@ -62,16 +87,20 @@ function AddModelForm({
   onStop,
   onCancel,
 }: {
+  initialRole: ModelRole;
+  initialModel: string;
   downloading: boolean;
   progress: { downloaded: number; total: number } | null;
   error: unknown;
-  /** The model the backend is already downloading, if a reload found one in flight. */
   runningModel: string | undefined;
-  onDownload: (model: string) => void;
+  onDownload: (role: ModelRole, model: string) => void;
   onStop: () => void;
   onCancel: () => void;
 }) {
-  const [typedName, setTypedName] = useState("");
+  const [role, setRole] = useState(initialRole);
+  const [typedName, setTypedName] = useState(initialModel);
+  const { hint, suggestions } =
+    ROLE_OPTIONS.find((option) => option.role === role) ?? ROLE_OPTIONS[0];
   const name = downloading && runningModel ? runningModel : typedName;
   const trimmed = name.trim();
 
@@ -97,20 +126,37 @@ function AddModelForm({
           >
             Ollama library
           </a>{" "}
-          to use for AI categorization, e.g. <code>llama3.1:8b</code>.
+          to use for AI categorization.
         </DialogDescription>
       </DialogHeader>
       <div className="flex flex-col gap-2">
+        <div className="flex gap-2" role="radiogroup" aria-label="Model type">
+          {ROLE_OPTIONS.map((option) => (
+            <Button
+              key={option.role}
+              type="button"
+              size="sm"
+              role="radio"
+              aria-checked={role === option.role}
+              variant={role === option.role ? "default" : "outline"}
+              disabled={downloading}
+              onClick={() => setRole(option.role)}
+            >
+              {option.label}
+            </Button>
+          ))}
+        </div>
+        <p className="m-0 text-xs text-muted-foreground">{hint}</p>
         <Input
           list="ai-model-suggestions"
           value={name}
           disabled={downloading}
-          placeholder={DEFAULT_MODEL}
+          placeholder={suggestions[0]}
           autoFocus
           onChange={(event) => setTypedName(event.target.value)}
         />
         <datalist id="ai-model-suggestions">
-          {SUGGESTED_MODELS.map((suggestion) => (
+          {suggestions.map((suggestion) => (
             <option key={suggestion} value={suggestion} />
           ))}
         </datalist>
@@ -142,7 +188,7 @@ function AddModelForm({
         <Button
           type="button"
           disabled={!canDownload || downloading}
-          onClick={() => onDownload(trimmed)}
+          onClick={() => onDownload(role, trimmed)}
         >
           {downloading ? "Downloading…" : "Download"}
         </Button>
@@ -152,8 +198,11 @@ function AddModelForm({
 }
 
 export interface AddModelDialogData {
-  /** Called with the model's name once its download has finished and it is listed as installed. */
-  onDownloaded?: (model: string) => void;
+  /** The role and name to start from, e.g. the model a run needs and does not have yet. */
+  role?: ModelRole;
+  model?: string;
+  /** Called with the model's role and name once its download has finished and it is installed. */
+  onDownloaded?: (role: ModelRole, model: string) => void;
 }
 
 export function AddModelDialog() {
@@ -162,15 +211,16 @@ export function AddModelDialog() {
   const status = useQuery(downloadStatusQueryOptions).data;
 
   const downloadMutation = useMutation({
-    mutationFn: aiModel.download,
-    onMutate: (model) => markDownloadStarted(queryClient, model),
-    onSuccess: async (finished, model) => {
+    mutationFn: ({ model }: { role: ModelRole; model: string }) =>
+      aiModel.download(model),
+    onMutate: ({ model }) => markDownloadStarted(queryClient, model),
+    onSuccess: async (finished, { role, model }) => {
       if (!finished) return;
       toast.success(`Downloaded ${model}`);
       await queryClient.invalidateQueries({
         queryKey: queryKeys.aiInstalledModels,
       });
-      data?.onDownloaded?.(model);
+      data?.onDownloaded?.(role, model);
       setOpen(false);
     },
     onSettled: () =>
@@ -200,11 +250,13 @@ export function AddModelDialog() {
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent>
         <AddModelForm
+          initialRole={data?.role ?? "embedding"}
+          initialModel={data?.model ?? ""}
           downloading={downloading}
           progress={status?.running ? status : null}
           error={downloadMutation.error}
           runningModel={status?.running ? status.model : undefined}
-          onDownload={(model) => downloadMutation.mutate(model)}
+          onDownload={(role, model) => downloadMutation.mutate({ role, model })}
           onStop={() => stopMutation.mutate()}
           onCancel={() => handleOpenChange(false)}
         />

@@ -1,14 +1,9 @@
-//! Read models behind the rules page: how much each rule covers now, what to suggest while
-//! one is being written, and the activities a draft rule would be tried on.
-
 use diesel::sql_types::{BigInt, Bool, Double, Text};
 use diesel::sqlite::SqliteConnection;
 use diesel::{sql_query, QueryResult, QueryableByName, RunQueryDsl};
 
-/// Tracked seconds of the activity `a` in a query that left-joins `sessions s` onto it.
 const SECONDS: &str = "COALESCE(SUM((julianday(s.end_time) - julianday(s.start_time)) * 86400.0), 0.0)";
 
-/// Most sources offered while typing; the page filters them further as the person types.
 const SOURCE_SUGGESTION_LIMIT: i64 = 1000;
 
 #[derive(QueryableByName)]
@@ -41,7 +36,6 @@ pub struct PathSecondsRow {
     pub total_seconds: f64,
 }
 
-/// An activity as a draft rule is tried on it.
 #[derive(QueryableByName)]
 pub struct ActivityPreviewRow {
     #[diesel(sql_type = Text)]
@@ -64,11 +58,8 @@ pub trait RulesReportRepo {
     /// For each rule that currently decides some activity: how many, and their tracked time.
     /// Activities with a pin are not counted, since the rule does not decide them.
     fn get_rule_stats(&mut self) -> QueryResult<Vec<RuleStatRow>>;
-    /// Every app and site in the history, the longest-tracked first.
     fn get_source_suggestions(&mut self) -> QueryResult<Vec<SourceSuggestionRow>>;
-    /// Every page tracked on `domain`, with its tracked time.
     fn get_paths_of(&mut self, domain: &str) -> QueryResult<Vec<PathSecondsRow>>;
-    /// Every activity, with its tracked time.
     fn get_activities_for_preview(&mut self) -> QueryResult<Vec<ActivityPreviewRow>>;
 }
 

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
 
-/** A stable function that runs `callback` once calls have stopped for `delayMs`. */
 export function useDebouncedCallback<Args extends unknown[]>(
   callback: (...args: Args) => void,
   delayMs: number,

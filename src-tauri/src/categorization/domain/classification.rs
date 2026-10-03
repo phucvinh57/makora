@@ -16,17 +16,14 @@
 use crate::shared::confidence::Confidence;
 use crate::shared::ids::{ActivityId, CategoryId};
 
-/// The model's opinion on one activity.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AiSuggestion {
     pub category: CategoryId,
     /// `None` for a label stored without one, and for a rejected label (a rejection forgets it).
     pub confidence: Option<Confidence>,
-    /// The user said "not this"; kept so the model can be told next time.
     pub rejected: bool,
 }
 
-/// Two activities that both carry a pin, to different categories, cannot be merged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PinConflict;
 
@@ -58,7 +55,6 @@ impl ActivityClassification {
         self.suggestion.as_ref()
     }
 
-    /// The category of the suggestion the user has not rejected.
     pub fn active_suggestion(&self) -> Option<CategoryId> {
         self.suggestion
             .filter(|suggestion| !suggestion.rejected)
@@ -69,13 +65,10 @@ impl ActivityClassification {
         self.pin.is_some()
     }
 
-    /// The user files the activity under `category`. Any suggestion is left as it was.
     pub fn pin_to(&mut self, category: CategoryId) {
         self.pin = Some(category);
     }
 
-    /// The user takes the activity out of its category, and rejects the AI suggestion it was
-    /// carrying, if any.
     pub fn unpin(&mut self) {
         self.pin = None;
         if let Some(suggestion) = &mut self.suggestion {
@@ -109,8 +102,6 @@ impl ActivityClassification {
         }
     }
 
-    /// The user agrees with the AI suggestion: it becomes a pin, unless the activity already
-    /// has one.
     pub fn accept_suggestion(&mut self) {
         if self.is_pinned() {
             return;

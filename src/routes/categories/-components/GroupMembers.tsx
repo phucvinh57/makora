@@ -21,7 +21,6 @@ import {
 
 const MEMBER_PAGE_SIZE = 20;
 
-/** The activities behind one group, for correcting the outliers before accepting the rest. */
 export function GroupMembers({
   group,
   picker,

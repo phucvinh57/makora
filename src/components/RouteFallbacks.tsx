@@ -1,7 +1,6 @@
 import { type ErrorComponentProps, Link } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 
-/** What a route that threw renders, so one broken page does not blank the whole window. */
 export function RouteError({ error, reset }: ErrorComponentProps) {
   return (
     <div className="mx-auto flex max-w-md flex-col items-start gap-3 py-16">

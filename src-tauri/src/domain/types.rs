@@ -1,7 +1,3 @@
-//! The shapes the rest of the app (Tauri commands, the frontend, the AI code) sees. These are
-//! what [`crate::domain`]'s services take and return; how they map onto rows is
-//! [`crate::db`]'s job.
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -26,29 +22,12 @@ pub struct NewCategory {
     pub parent_id: Option<CategoryId>,
 }
 
-/// An activity the LLM is asked to label, as it needs to see it.
 #[derive(Debug, Clone)]
 pub struct UncategorizedActivity {
     pub id: ActivityId,
-    pub key_kind: KeyKind,
-    pub key: String,
     pub app_name: String,
     pub url: Option<String>,
     pub title: String,
-}
-
-/// An activity the user has judged, either by pinning it or by rejecting an AI label. These
-/// are the examples the LLM learns from.
-#[derive(Debug, Clone)]
-pub struct LabeledActivity {
-    pub key_kind: KeyKind,
-    pub key: String,
-    pub app_name: String,
-    pub url: Option<String>,
-    pub title: String,
-    pub category_id: Option<CategoryId>,
-    pub ai_category_id: Option<CategoryId>,
-    pub ai_rejected_category_id: Option<CategoryId>,
 }
 
 /// What the model made of one activity: a category, or `None` when it found none it stands by.
@@ -59,7 +38,6 @@ pub struct AiVerdict {
     pub confidence: Confidence,
 }
 
-/// Where a session's resolved category came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CategorySource {
@@ -69,7 +47,6 @@ pub enum CategorySource {
 }
 
 impl CategorySource {
-    /// Reads the `manual`/`rule`/`ai` marker the history query derives.
     pub fn from_db(value: &str) -> Option<Self> {
         match value {
             "manual" => Some(Self::Manual),
@@ -80,7 +57,6 @@ impl CategorySource {
     }
 }
 
-/// An AI label waiting for the user to accept, change or reject it.
 #[derive(Debug, Clone, Serialize)]
 pub struct AiReviewRow {
     pub activity_id: ActivityId,
@@ -100,8 +76,6 @@ pub struct AiReviewPage {
     pub total: i64,
 }
 
-/// AI labels of one source (an executable or a domain) that suggest the same category, so one
-/// decision can cover all of them.
 #[derive(Debug, Clone, Serialize)]
 pub struct AiReviewGroup {
     pub key_kind: KeyKind,
@@ -112,7 +86,6 @@ pub struct AiReviewGroup {
     pub category_color: String,
     pub activity_count: i64,
     pub total_seconds: f64,
-    /// The least sure the model was about any member; `None` when unknown.
     pub min_confidence: Option<Confidence>,
     pub activity_ids: Vec<ActivityId>,
 }
@@ -123,21 +96,16 @@ pub struct AiReviewGroupPage {
     pub total: i64,
 }
 
-/// Which pending AI labels the review queue shows.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ReviewFilter {
-    /// Only labels in this category or under it.
     pub category: Option<CategoryId>,
-    /// Only these activities, e.g. the members of one group.
     pub activities: Option<Vec<ActivityId>>,
-    /// Hide labels the model was confident about.
     pub uncertain_only: bool,
     /// Hide activities (or groups) tracked for less than this, in seconds.
     pub min_seconds: f64,
 }
 
-/// How much the user has taught the model so far.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct FeedbackStats {
     pub corrected: i64,
@@ -145,9 +113,7 @@ pub struct FeedbackStats {
     pub pinned: i64,
     pub rejected: i64,
     pub pending_review: i64,
-    /// Tracked time of the activities still waiting for review.
     pub pending_seconds: f64,
-    /// Tracked time of the AI labels the user has already judged.
     pub reviewed_seconds: f64,
 }
 
@@ -231,6 +197,5 @@ pub struct SessionFilter {
     pub source: CategorySourceFilter,
     /// Sessions that ended after this (a still-open one always qualifies).
     pub start: Option<DateTime<Utc>>,
-    /// Sessions that started before this.
     pub end: Option<DateTime<Utc>>,
 }

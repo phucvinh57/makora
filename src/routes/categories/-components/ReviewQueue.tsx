@@ -45,7 +45,6 @@ const ALL = "all";
 const ALL_CHOICES: CategoryChoice[] = [
   { value: ALL, label: "All suggestions" },
 ];
-/** Groups tracked for less than this are not worth a decision. */
 const MIN_SECONDS = 60;
 
 function toggle(set: Set<string>, id: string, on: boolean): Set<string> {

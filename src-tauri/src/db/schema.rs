@@ -1,4 +1,4 @@
-//! Hand-written to match `db/migrations/*.sql` (the tables after migration 8). There is no
+//! Hand-written to match `db/migrations/*.sql` (the tables after migration 9). There is no
 //! `diesel print-schema` step: this crate does not keep a `DATABASE_URL` around to generate
 //! against, and the table set is small enough to maintain by hand. The `activity_category` view
 //! is not declared here: only the raw-SQL read models in [`crate::reporting`] use it.
@@ -67,6 +67,14 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    activity_embeddings (activity_id) {
+        activity_id -> BigInt,
+        model -> Text,
+        vector -> Binary,
+    }
+}
+
 diesel::joinable!(activities -> sources (source_id));
 diesel::joinable!(activities -> categories (category_id));
 diesel::joinable!(sessions -> activities (activity_id));
@@ -75,9 +83,11 @@ diesel::joinable!(ai_labels -> categories (category_id));
 diesel::joinable!(category_rules -> categories (category_id));
 diesel::joinable!(rule_matches -> activities (activity_id));
 diesel::joinable!(rule_matches -> category_rules (rule_id));
+diesel::joinable!(activity_embeddings -> activities (activity_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     activities,
+    activity_embeddings,
     ai_labels,
     categories,
     category_rules,

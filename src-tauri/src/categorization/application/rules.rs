@@ -17,12 +17,9 @@ use crate::reporting::rules::RulesReportRepo;
 use crate::shared::ids::{CategoryId, RuleId};
 use crate::tracking::domain::source_key::KeyKind;
 
-/// How many pages are offered for a domain while a page rule is being written.
 const PATH_SUGGESTION_LIMIT: usize = 50;
-/// How many example activities a preview names.
 const PREVIEW_SAMPLES: usize = 5;
 
-/// Why a change to the rules was refused.
 #[derive(Debug, thiserror::Error)]
 pub enum RuleError {
     #[error(transparent)]
@@ -47,7 +44,6 @@ impl From<DieselError> for RuleError {
     }
 }
 
-/// What the person typed into the rule form.
 #[derive(Debug, Clone)]
 pub struct RuleDraft {
     pub kind: RuleKind,
@@ -57,7 +53,6 @@ pub struct RuleDraft {
     pub category_id: CategoryId,
 }
 
-/// A rule as the rules page lists it, with how much it covers right now.
 #[derive(Debug, Clone, Serialize)]
 pub struct CategoryRuleView {
     pub id: RuleId,
@@ -70,7 +65,6 @@ pub struct CategoryRuleView {
     pub total_seconds: f64,
 }
 
-/// What a draft rule would catch among the tracked history.
 #[derive(Debug, Clone, Serialize)]
 pub struct RulePreview {
     pub activity_count: i64,
@@ -78,7 +72,6 @@ pub struct RulePreview {
     /// Of those, how many the user pinned to a category themselves, which the rule will not
     /// change.
     pub pinned_count: i64,
-    /// The longest-tracked matches, to recognize them by.
     pub samples: Vec<String>,
 }
 
@@ -97,18 +90,14 @@ pub struct PathSuggestion {
 }
 
 pub trait RuleSvc: Send + Sync {
-    /// Every rule, newest first.
     fn list(&self) -> Result<Vec<CategoryRuleView>, RuleError>;
     fn create(&self, draft: &RuleDraft) -> Result<RuleId, RuleError>;
-    /// Replaces everything the rule says.
     fn update(&self, id: RuleId, draft: &RuleDraft) -> Result<(), RuleError>;
     fn delete(&self, id: RuleId) -> Result<(), RuleError>;
     /// What a rule written like this would catch, without saving it. The category does not
     /// matter, so none is asked for.
     fn preview(&self, kind: RuleKind, field: Option<PatternField>, value: &str) -> Result<RulePreview, RuleError>;
-    /// The apps and sites in the history, longest-tracked first.
     fn source_suggestions(&self) -> Result<Vec<SourceSuggestion>, RuleError>;
-    /// The pages tracked on `domain`, and the folders above them, longest-tracked first.
     fn path_suggestions(&self, domain: &str) -> Result<Vec<PathSuggestion>, RuleError>;
 }
 
@@ -122,7 +111,6 @@ impl SqliteRules {
     }
 }
 
-/// The columns to store for a rule filing under `category`.
 fn values_of(category: CategoryId, parts: &(RuleKind, Option<PatternField>, String)) -> CategoryRuleValues<'_> {
     CategoryRuleValues {
         category_id: category.into(),
@@ -249,7 +237,6 @@ impl RuleSvc for SqliteRules {
     }
 }
 
-/// What to call a matched activity in a preview: its title, else its address, else its source.
 fn sample_label(row: &crate::reporting::rules::ActivityPreviewRow) -> String {
     if !row.title.is_empty() {
         return row.title.clone();

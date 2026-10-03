@@ -10,18 +10,19 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+use crate::ai::{embedding, llm};
 use crate::tracking::domain::session_policy::{DEFAULT_MIN_SESSION_SECONDS, MIN_SESSION_SECONDS_RANGE};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub tracking: TrackingSettings,
+    pub ai: AiSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TrackingSettings {
-    /// Activity that ends sooner than this after it began is discarded.
     pub min_session_seconds: i64,
 }
 
@@ -33,11 +34,28 @@ impl Default for TrackingSettings {
     }
 }
 
+/// The models AI categorization runs on: an Ollama name or a `.gguf` path each.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AiSettings {
+    pub llm_model: String,
+    pub embedding_model: String,
+}
+
+impl Default for AiSettings {
+    fn default() -> Self {
+        Self {
+            llm_model: llm::DEFAULT_MODEL.to_string(),
+            embedding_model: embedding::DEFAULT_MODEL.to_string(),
+        }
+    }
+}
+
 pub trait SettingsStore: Send + Sync {
     fn get(&self) -> Settings;
-    /// Rejects a value outside [`MIN_SESSION_SECONDS_RANGE`]; otherwise applies it and saves the
-    /// file. Returns the settings as they now stand.
     fn set_min_session_seconds(&self, seconds: i64) -> Result<Settings>;
+    fn set_llm_model(&self, model: &str) -> Result<Settings>;
+    fn set_embedding_model(&self, model: &str) -> Result<Settings>;
 }
 
 pub struct TomlSettings {
@@ -76,11 +94,37 @@ impl TomlSettings {
             settings.tracking.min_session_seconds = clamped;
         }
 
+        let defaults = AiSettings::default();
+        if settings.ai.llm_model.trim().is_empty() {
+            settings.ai.llm_model = defaults.llm_model;
+        }
+        if settings.ai.embedding_model.trim().is_empty() {
+            settings.ai.embedding_model = defaults.embedding_model;
+        }
+
         Self {
             path,
             current: RwLock::new(settings),
         }
     }
+
+    fn update(&self, change: impl FnOnce(&mut Settings)) -> Result<Settings> {
+        // Held across the write so two saves cannot reach the file out of order.
+        let mut current = self.current.write().unwrap();
+        let mut next = current.clone();
+        change(&mut next);
+        write_atomically(&self.path, &next)?;
+        *current = next.clone();
+        Ok(next)
+    }
+}
+
+fn model_name(model: &str) -> Result<String> {
+    let model = model.trim();
+    if model.is_empty() {
+        bail!("a model needs a name");
+    }
+    Ok(model.to_string())
 }
 
 impl SettingsStore for TomlSettings {
@@ -96,13 +140,17 @@ impl SettingsStore for TomlSettings {
                 MIN_SESSION_SECONDS_RANGE.end()
             );
         }
-        // Held across the write so two saves cannot reach the file out of order.
-        let mut current = self.current.write().unwrap();
-        let mut next = current.clone();
-        next.tracking.min_session_seconds = seconds;
-        write_atomically(&self.path, &next)?;
-        *current = next.clone();
-        Ok(next)
+        self.update(|settings| settings.tracking.min_session_seconds = seconds)
+    }
+
+    fn set_llm_model(&self, model: &str) -> Result<Settings> {
+        let model = model_name(model)?;
+        self.update(|settings| settings.ai.llm_model = model)
+    }
+
+    fn set_embedding_model(&self, model: &str) -> Result<Settings> {
+        let model = model_name(model)?;
+        self.update(|settings| settings.ai.embedding_model = model)
     }
 }
 

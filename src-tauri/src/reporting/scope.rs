@@ -1,9 +1,7 @@
 use crate::db::sql::{in_clause, Param};
 
-/// Which resolved categories a report is limited to.
 pub enum CategoryScope {
     Any,
-    /// Activities with no category, pinned or suggested.
     Uncategorized,
     /// Already expanded to include every descendant; an empty list matches nothing.
     Ids(Vec<i64>),

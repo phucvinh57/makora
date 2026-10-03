@@ -22,12 +22,10 @@ impl IpcError {
         }
     }
 
-    /// The request itself was malformed: a filter or timestamp that cannot be read.
     pub fn invalid_input(message: impl Into<String>) -> Self {
         Self::new("invalid_input", message)
     }
 
-    /// Anything that is not the caller's doing: I/O, the database, the model.
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new("internal", message)
     }
@@ -72,6 +70,7 @@ impl From<AiRunError> for IpcError {
     fn from(err: AiRunError) -> Self {
         match err {
             AiRunError::AlreadyRunning => Self::new("already_running", err.to_string()),
+            AiRunError::NoCategories => Self::new("no_categories", err.to_string()),
             AiRunError::Failed(cause) => Self::internal(format!("{cause:#}")),
         }
     }

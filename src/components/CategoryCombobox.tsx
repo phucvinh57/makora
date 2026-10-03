@@ -43,7 +43,6 @@ export function CategoryCombobox({
   disabled?: boolean;
   title?: string;
   onCreate?: () => void;
-  /** Replaces the trigger's default content. */
   children?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);

@@ -82,7 +82,6 @@ export function useBackgroundTaskSync() {
   }, [downloading, queryClient]);
 }
 
-/** What the sidebar lists as running, so a task keeps being reported off the page that began it. */
 export function useBackgroundTasks(): BackgroundTask[] {
   const categorizeStatus = useQuery(categorizeStatusQueryOptions).data;
   const downloadStatus = useQuery(downloadStatusQueryOptions).data;
@@ -93,7 +92,7 @@ export function useBackgroundTasks(): BackgroundTask[] {
     tasks.push({
       id: "categorize",
       label: recheck ? "Re-checking AI labels" : "Categorizing activities",
-      progress: total > 0 ? `${done}/${total}` : "Loading model…",
+      progress: total > 0 ? `${done}/${total}` : "Starting…",
     });
   }
 

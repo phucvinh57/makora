@@ -1,8 +1,11 @@
+use std::sync::Arc;
+
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::ai::llm::{self, ModelCache};
 use crate::ai::model_download::{ModelDownloadState, ModelDownloadStatus};
+use crate::categorization::ActivityIndexer;
 use crate::host::error::IpcError;
 
 #[derive(Serialize, Clone)]
@@ -11,13 +14,11 @@ struct ModelDownloadProgress {
     total: u64,
 }
 
-/// Whether the model is currently held in memory.
 #[tauri::command]
 pub fn ai_model_is_loaded(models: State<ModelCache>) -> bool {
     models.is_loaded()
 }
 
-/// Releases the cached model's memory.
 #[tauri::command]
 pub fn ai_model_unload(models: State<ModelCache>) {
     models.unload();
@@ -29,15 +30,11 @@ pub fn ai_model_is_installed(model: String) -> bool {
     llm::resolve_model(model.trim()).is_ok()
 }
 
-/// Lists models available to categorize with right now: those downloaded into Makora or pulled
-/// by Ollama.
 #[tauri::command]
 pub fn ai_model_list_installed() -> Vec<String> {
     llm::installed_models()
 }
 
-/// Lets a page that reloaded mid-download find out it is still going and resync its progress
-/// bar, instead of just losing track of it.
 #[tauri::command]
 pub fn ai_model_download_status(state: State<ModelDownloadState>) -> ModelDownloadStatus {
     state.status()
@@ -53,7 +50,7 @@ pub async fn ai_model_download(app: AppHandle, model: String) -> Result<bool, Ip
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<ModelDownloadState>();
         let mut last_emit = std::time::Instant::now();
-        state.run(root, &model, &mut |downloaded, total| {
+        let downloaded = state.run(root, &model, &mut |downloaded, total| {
             // ~10 events a second is plenty for a progress bar.
             if last_emit.elapsed() >= std::time::Duration::from_millis(100) || downloaded == total {
                 last_emit = std::time::Instant::now();
@@ -62,14 +59,18 @@ pub async fn ai_model_download(app: AppHandle, model: String) -> Result<bool, Ip
                     ModelDownloadProgress { downloaded, total },
                 );
             }
-        })
+        });
+        // The model may be the embedding one, and activities may be waiting for it.
+        if matches!(downloaded, Ok(true)) {
+            app.state::<Arc<dyn ActivityIndexer>>().refresh();
+        }
+        downloaded
     })
     .await
     .map_err(|e| IpcError::internal(e.to_string()))?
     .map_err(IpcError::from)
 }
 
-/// Asks a running model download to stop.
 #[tauri::command]
 pub fn ai_model_cancel_download(state: State<ModelDownloadState>) {
     state.cancel();

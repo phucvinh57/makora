@@ -1,6 +1,3 @@
-//! Where an activity comes from: a domain for a browser tab, an executable for everything else,
-//! plus the URL handling that gets a page down to the part worth remembering.
-
 use serde::Serialize;
 use url::Url;
 
@@ -28,7 +25,6 @@ impl KeyKind {
     }
 }
 
-/// What identifies a source: the domain of the tab in focus, or else the executable's file name.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct SourceKey {
     pub kind: KeyKind,
@@ -49,8 +45,6 @@ impl SourceKey {
         }
     }
 
-    /// The name shown for the source: the domain itself for a browser tab, or the app's display
-    /// name.
     pub fn display_name(&self, app_name: &str) -> String {
         match self.kind {
             KeyKind::Domain => self.key.clone(),
@@ -103,7 +97,6 @@ pub fn url_path(url: &str) -> String {
     key.strip_prefix(&domain).unwrap_or("").to_string()
 }
 
-/// Rebuilds a browsable URL from a domain source's key and an activity's `path`.
 pub fn source_url(key: &str, path: &str) -> String {
     format!("https://{key}{path}")
 }

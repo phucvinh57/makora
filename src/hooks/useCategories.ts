@@ -4,7 +4,6 @@ import type { Category } from "@/types";
 
 const NO_CATEGORIES: Category[] = [];
 
-/** The category list, never `undefined` and with a stable identity while it loads. */
 export function useCategories() {
   const query = useQuery(categoriesQueryOptions);
   return {

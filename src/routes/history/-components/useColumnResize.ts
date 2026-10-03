@@ -22,7 +22,6 @@ export type ResizableColumn = keyof typeof DEFAULT_COLUMN_WIDTHS;
 
 type HandleEvent = PointerEvent<HTMLButtonElement>;
 
-/** Drag-to-resize column widths; double-click a handle to put the column back. */
 export function useColumnResize() {
   const [widths, setWidths] = useState<Record<ResizableColumn, number>>(
     DEFAULT_COLUMN_WIDTHS,

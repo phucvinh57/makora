@@ -2,9 +2,7 @@ import { Autocomplete } from "@base-ui/react/autocomplete";
 import { Input } from "@/components/ui/input";
 
 export interface Suggestion {
-  /** What goes into the field when picked. */
   value: string;
-  /** Muted text on the right of the row. */
   hint?: string;
   /** More text the typed query is matched against, besides `value`. */
   search?: string;
@@ -18,10 +16,6 @@ function matches(suggestion: Suggestion, query: string): boolean {
     .includes(needle);
 }
 
-/**
- * A text field that offers suggestions as you type but takes anything: the value is whatever
- * is in the box, whether or not it was picked from the list.
- */
 export function SuggestInput({
   value,
   onValueChange,
