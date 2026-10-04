@@ -144,9 +144,17 @@ export interface ActivityStats {
   daily: DailyStat[];
 }
 
+export interface Exclusion {
+  kind: RuleKind;
+  /** Only for a pattern. */
+  field?: PatternField;
+  value: string;
+}
+
 export interface Settings {
   tracking: {
     min_session_seconds: number;
+    excluded: Exclusion[];
   };
   ai: {
     llm_model: string;

@@ -2,9 +2,11 @@ use std::sync::Arc;
 
 use tauri::State;
 
+use crate::categorization::domain::rules::{PatternField, RuleKind};
 use crate::categorization::ActivityIndexer;
 use crate::host::error::IpcError;
 use crate::settings::{Settings, SettingsStore};
+use crate::tracking::domain::exclusion::Exclusion;
 use crate::tracking::domain::session_policy::MIN_SESSION_SECONDS_RANGE;
 
 #[tauri::command]
@@ -23,6 +25,27 @@ pub fn settings_set_min_session_seconds(settings: State<Arc<dyn SettingsStore>>,
         )));
     }
     Ok(settings.set_min_session_seconds(seconds)?)
+}
+
+#[tauri::command]
+pub fn settings_add_exclusion(
+    settings: State<Arc<dyn SettingsStore>>,
+    kind: RuleKind,
+    field: Option<PatternField>,
+    value: String,
+) -> Result<Settings, IpcError> {
+    let exclusion = Exclusion::parse(kind, field, &value).map_err(|err| IpcError::new("invalid_rule", err.to_string()))?;
+    Ok(settings.add_exclusion(exclusion)?)
+}
+
+#[tauri::command]
+pub fn settings_remove_exclusion(
+    settings: State<Arc<dyn SettingsStore>>,
+    kind: RuleKind,
+    field: Option<PatternField>,
+    value: String,
+) -> Result<Settings, IpcError> {
+    Ok(settings.remove_exclusion(&Exclusion { kind, field, value })?)
 }
 
 #[tauri::command]

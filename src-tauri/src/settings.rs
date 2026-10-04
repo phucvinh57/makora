@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::ai::{embedding, llm};
+use crate::tracking::domain::exclusion::Exclusion;
 use crate::tracking::domain::session_policy::{DEFAULT_MIN_SESSION_SECONDS, MIN_SESSION_SECONDS_RANGE};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -24,12 +25,15 @@ pub struct Settings {
 #[serde(default)]
 pub struct TrackingSettings {
     pub min_session_seconds: i64,
+    /// Apps, sites, pages and patterns that are never recorded.
+    pub excluded: Vec<Exclusion>,
 }
 
 impl Default for TrackingSettings {
     fn default() -> Self {
         Self {
             min_session_seconds: DEFAULT_MIN_SESSION_SECONDS,
+            excluded: Vec::new(),
         }
     }
 }
@@ -54,6 +58,8 @@ impl Default for AiSettings {
 pub trait SettingsStore: Send + Sync {
     fn get(&self) -> Settings;
     fn set_min_session_seconds(&self, seconds: i64) -> Result<Settings>;
+    fn add_exclusion(&self, exclusion: Exclusion) -> Result<Settings>;
+    fn remove_exclusion(&self, exclusion: &Exclusion) -> Result<Settings>;
     fn set_llm_model(&self, model: &str) -> Result<Settings>;
     fn set_embedding_model(&self, model: &str) -> Result<Settings>;
 }
@@ -94,6 +100,8 @@ impl TomlSettings {
             settings.tracking.min_session_seconds = clamped;
         }
 
+        settings.tracking.excluded = normalized_exclusions(std::mem::take(&mut settings.tracking.excluded));
+
         let defaults = AiSettings::default();
         if settings.ai.llm_model.trim().is_empty() {
             settings.ai.llm_model = defaults.llm_model;
@@ -119,6 +127,20 @@ impl TomlSettings {
     }
 }
 
+/// Puts each entry in its normalized form and drops the ones that cannot be read or repeat an
+/// earlier one, so what the page lists is exactly what is matched.
+fn normalized_exclusions(entries: Vec<Exclusion>) -> Vec<Exclusion> {
+    let mut kept: Vec<Exclusion> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        match Exclusion::parse(entry.kind, entry.field, &entry.value) {
+            Ok(exclusion) if !kept.contains(&exclusion) => kept.push(exclusion),
+            Ok(_) => {}
+            Err(err) => warn!(value = %entry.value, error = %err, "tracking.excluded entry is not valid; ignoring"),
+        }
+    }
+    kept
+}
+
 fn model_name(model: &str) -> Result<String> {
     let model = model.trim();
     if model.is_empty() {
@@ -141,6 +163,18 @@ impl SettingsStore for TomlSettings {
             );
         }
         self.update(|settings| settings.tracking.min_session_seconds = seconds)
+    }
+
+    fn add_exclusion(&self, exclusion: Exclusion) -> Result<Settings> {
+        self.update(|settings| {
+            if !settings.tracking.excluded.contains(&exclusion) {
+                settings.tracking.excluded.push(exclusion);
+            }
+        })
+    }
+
+    fn remove_exclusion(&self, exclusion: &Exclusion) -> Result<Settings> {
+        self.update(|settings| settings.tracking.excluded.retain(|entry| entry != exclusion))
     }
 
     fn set_llm_model(&self, model: &str) -> Result<Settings> {

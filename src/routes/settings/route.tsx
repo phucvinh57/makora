@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { GeneralSection } from "./-components/GeneralSection";
+import { ExclusionsSection } from "./-components/ExclusionsSection";
 import { TrackingSection } from "./-components/TrackingSection";
 
 export const Route = createFileRoute("/settings")({
@@ -17,6 +18,7 @@ function SettingsPage() {
       </header>
       <GeneralSection />
       <TrackingSection />
+      <ExclusionsSection />
     </div>
   );
 }

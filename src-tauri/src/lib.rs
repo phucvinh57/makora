@@ -33,9 +33,9 @@ use crate::taxonomy::{CategorySvc, SqliteCategories};
 use crate::tracking::adapters::model::WatchEvent;
 use crate::tracking::adapters::platform::PlatformFocusWatcher;
 use crate::tracking::adapters::watcher::FocusWatcher;
-use crate::tracking::application::SqliteSessionRecorder;
+use crate::tracking::application::{SettingsExclusions, SqliteSessionRecorder};
 use crate::tracking::domain::focus_machine::FocusStateMachine;
-use crate::tracking::ports::{SessionRecorder, SessionTracker};
+use crate::tracking::ports::{ExclusionPolicy, SessionRecorder, SessionTracker};
 
 type SharedTracker = Arc<Mutex<Box<dyn SessionTracker>>>;
 
@@ -88,6 +88,8 @@ pub fn run() {
             host::commands::models::ai_model_list_installed,
             host::commands::settings::settings_get,
             host::commands::settings::settings_set_min_session_seconds,
+            host::commands::settings::settings_add_exclusion,
+            host::commands::settings::settings_remove_exclusion,
             host::commands::settings::settings_set_llm_model,
             host::commands::settings::settings_set_embedding_model,
         ])
@@ -122,7 +124,9 @@ pub fn run() {
 
             let recorder: Box<dyn SessionRecorder> =
                 Box::new(SqliteSessionRecorder::new(conn.clone(), settings.clone(), indexer.clone()));
-            let session_tracker = FocusStateMachine::new(recorder).context("initializing session tracker")?;
+            let exclusions: Box<dyn ExclusionPolicy> = Box::new(SettingsExclusions::new(settings.clone()));
+            let session_tracker =
+                FocusStateMachine::new(recorder, exclusions).context("initializing session tracker")?;
             let tracker: SharedTracker = Arc::new(Mutex::new(Box::new(session_tracker) as Box<dyn SessionTracker>));
             ai::llm::set_download_root(data_dir.join("models"));
 

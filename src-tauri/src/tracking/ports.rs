@@ -24,3 +24,9 @@ pub trait SessionRecorder: Send + Sync {
     fn refine_title(&self, id: SessionId, app: &FocusedApp, window_title: &str, url: Option<&str>) -> Result<()>;
     fn close_dangling(&self) -> Result<()>;
 }
+
+/// Whether the person asked for this activity not to be recorded (`tracking.excluded` in
+/// [`crate::settings`]). Asked each time a block would open, so a change applies to the next one.
+pub trait ExclusionPolicy: Send + Sync {
+    fn is_excluded(&self, app: &FocusedApp, window_title: &str, url: Option<&str>) -> bool;
+}

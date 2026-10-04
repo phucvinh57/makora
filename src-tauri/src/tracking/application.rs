@@ -13,10 +13,11 @@ use crate::settings::SettingsStore;
 use crate::shared::time;
 
 use super::domain::events::FocusedApp;
+use super::domain::exclusion::ExclusionSet;
 use super::domain::session_policy::{is_noise, should_merge};
 use super::domain::source_key::{url_path, SourceKey};
 use super::domain::title::canonical_title;
-use super::ports::SessionRecorder;
+use super::ports::{ExclusionPolicy, SessionRecorder};
 use super::store::{ensure_activity, ensure_source, prune_orphans};
 
 pub struct SqliteSessionRecorder {
@@ -140,5 +141,21 @@ impl SessionRecorder for SqliteSessionRecorder {
             Ok(())
         })
         .map_err(Into::into)
+    }
+}
+
+pub struct SettingsExclusions {
+    settings: Arc<dyn SettingsStore>,
+}
+
+impl SettingsExclusions {
+    pub fn new(settings: Arc<dyn SettingsStore>) -> Self {
+        Self { settings }
+    }
+}
+
+impl ExclusionPolicy for SettingsExclusions {
+    fn is_excluded(&self, app: &FocusedApp, window_title: &str, url: Option<&str>) -> bool {
+        ExclusionSet::new(&self.settings.get().tracking.excluded).excludes(app, window_title, url)
     }
 }

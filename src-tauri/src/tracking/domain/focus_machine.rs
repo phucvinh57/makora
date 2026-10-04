@@ -4,7 +4,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 
 use crate::shared::ids::SessionId;
-use crate::tracking::ports::{SessionRecorder, SessionTracker};
+use crate::tracking::ports::{ExclusionPolicy, SessionRecorder, SessionTracker};
 
 use super::events::{BrowserKind, FocusChange, FocusedApp, PresenceChange, TabChange};
 use super::session_policy::is_ignored_app;
@@ -24,6 +24,7 @@ struct LastTab {
 
 pub struct FocusStateMachine {
     recorder: Box<dyn SessionRecorder>,
+    exclusions: Box<dyn ExclusionPolicy>,
     current: Option<Current>,
     /// Latest tab the extension reported per browser. The extension only reports on
     /// change, so this is what a browser regaining focus is still showing.
@@ -32,10 +33,11 @@ pub struct FocusStateMachine {
 }
 
 impl FocusStateMachine {
-    pub fn new(recorder: Box<dyn SessionRecorder>) -> Result<Self> {
+    pub fn new(recorder: Box<dyn SessionRecorder>, exclusions: Box<dyn ExclusionPolicy>) -> Result<Self> {
         recorder.close_dangling()?;
         Ok(Self {
             recorder,
+            exclusions,
             current: None,
             last_tabs: HashMap::new(),
             present: true,
@@ -65,6 +67,9 @@ impl FocusStateMachine {
         let app = current.app.clone();
         let title = current.window_title.clone();
         let url = current.url.clone();
+        if self.exclusions.is_excluded(&app, &title, url.as_deref()) {
+            return Ok(());
+        }
         let id = self.recorder.start(&app, &title, url.as_deref(), at)?;
         self.current.as_mut().expect("checked above").id = Some(id);
         Ok(())
@@ -119,9 +124,17 @@ impl SessionTracker for FocusStateMachine {
         }
         if current.url.as_deref() == Some(change.url.as_str()) {
             let id = current.id;
+            // The real title can be what an exclusion pattern was waiting for.
+            let excluded = self
+                .exclusions
+                .is_excluded(&current.app, &change.title, current.url.as_deref());
             if let Some(id) = id {
-                self.recorder
-                    .refine_title(id, &current.app, &change.title, current.url.as_deref())?;
+                if excluded {
+                    self.end_current_row(change.at)?;
+                } else {
+                    self.recorder
+                        .refine_title(id, &current.app, &change.title, current.url.as_deref())?;
+                }
             }
             self.current.as_mut().expect("checked above").window_title = change.title;
             return Ok(());

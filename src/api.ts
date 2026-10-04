@@ -14,6 +14,7 @@ import type {
   Category,
   CategorizationResetOutcome,
   CategoryRule,
+  Exclusion,
   FeedbackStats,
   ModelDownloadStatus,
   PathSuggestion,
@@ -265,6 +266,22 @@ export const settings = {
 
   setMinSessionSeconds(seconds: number): Promise<Settings> {
     return call("settings_set_min_session_seconds", { seconds });
+  },
+
+  addExclusion(
+    kind: RuleKind,
+    field: PatternField | null,
+    value: string,
+  ): Promise<Settings> {
+    return call("settings_add_exclusion", { kind, field, value });
+  },
+
+  removeExclusion({ kind, field, value }: Exclusion): Promise<Settings> {
+    return call("settings_remove_exclusion", {
+      kind,
+      field: field ?? null,
+      value,
+    });
   },
 
   setLlmModel(model: string): Promise<Settings> {
