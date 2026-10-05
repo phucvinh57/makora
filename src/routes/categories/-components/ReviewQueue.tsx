@@ -17,7 +17,6 @@ import { PaginationControls } from "@/components/PaginationControls";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Switch } from "@/components/ui/switch";
 import {
   Table,
   TableBody,
@@ -45,7 +44,6 @@ const ALL = "all";
 const ALL_CHOICES: CategoryChoice[] = [
   { value: ALL, label: "All suggestions" },
 ];
-const MIN_SECONDS = 60;
 
 function toggle(set: Set<string>, id: string, on: boolean): Set<string> {
   const next = new Set(set);
@@ -58,18 +56,14 @@ export function ReviewQueue() {
   const queryClient = useQueryClient();
   const [page, setPage] = useState(0);
   const [category, setCategory] = useState(ALL);
-  const [uncertainOnly, setUncertainOnly] = useState(true);
-  const [hideShort, setHideShort] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const filter = useMemo<ReviewFilter>(
     () => ({
       category: category === ALL ? undefined : Number(category),
-      uncertain_only: uncertainOnly,
-      min_seconds: hideShort ? MIN_SECONDS : 0,
     }),
-    [category, uncertainOnly, hideShort],
+    [category],
   );
 
   const { categories } = useCategories();
@@ -137,28 +131,6 @@ export function ReviewQueue() {
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <h2 className="m-0 text-sm font-semibold">Review AI labels</h2>
-        <div className="ml-auto flex items-center gap-2 text-xs">
-          <Switch
-            id="review-uncertain"
-            checked={uncertainOnly}
-            onCheckedChange={(on) => {
-              setUncertainOnly(on);
-              resetView();
-            }}
-          />
-          <label htmlFor="review-uncertain">Only uncertain</label>
-        </div>
-        <div className="flex items-center gap-2 text-xs">
-          <Switch
-            id="review-hide-short"
-            checked={hideShort}
-            onCheckedChange={(on) => {
-              setHideShort(on);
-              resetView();
-            }}
-          />
-          <label htmlFor="review-hide-short">Hide under 1 min</label>
-        </div>
         <CategoryCombobox
           picker={picker}
           extraChoices={ALL_CHOICES}
@@ -169,7 +141,7 @@ export function ReviewQueue() {
           }}
           ariaLabel="Category"
           size="sm"
-          className="w-52"
+          className="ml-auto w-52"
         />
       </div>
 
@@ -324,11 +296,9 @@ export function ReviewQueue() {
                   colSpan={7}
                   className="py-8 text-center text-muted-foreground"
                 >
-                  {uncertainOnly || hideShort
-                    ? "Nothing left to review with these filters. Turn off “Only uncertain” or “Hide under 1 min” to see more."
-                    : category === ALL
-                      ? "Nothing to review. Run “Categorize uncategorized” to get AI suggestions."
-                      : "No pending suggestions in this category."}
+                  {category === ALL
+                    ? "Nothing to review. Run “Categorize” to get AI suggestions."
+                    : "No pending suggestions in this category."}
                 </TableCell>
               </TableRow>
             )}

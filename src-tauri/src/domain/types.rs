@@ -101,9 +101,6 @@ pub struct AiReviewGroupPage {
 pub struct ReviewFilter {
     pub category: Option<CategoryId>,
     pub activities: Option<Vec<ActivityId>>,
-    pub uncertain_only: bool,
-    /// Hide activities (or groups) tracked for less than this, in seconds.
-    pub min_seconds: f64,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]

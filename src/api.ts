@@ -197,6 +197,11 @@ export const categorization = {
     return call("categorization_status");
   },
 
+  /** When the next scheduled run is due (RFC 3339); null while automatic runs are off. */
+  nextAutoRun(): Promise<string | null> {
+    return call("categorization_next_auto_run");
+  },
+
   cancel(): Promise<void> {
     return call("categorization_cancel");
   },
@@ -290,6 +295,10 @@ export const settings = {
 
   setEmbeddingModel(model: string): Promise<Settings> {
     return call("settings_set_embedding_model", { model });
+  },
+
+  setAutoCategorizeHours(hours: number): Promise<Settings> {
+    return call("settings_set_auto_categorize_hours", { hours });
   },
 };
 

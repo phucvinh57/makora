@@ -75,8 +75,6 @@ export interface AiReviewGroupPage {
 export interface ReviewFilter {
   category?: number;
   activities?: number[];
-  uncertain_only?: boolean;
-  min_seconds?: number;
 }
 
 export interface FeedbackStats {
@@ -159,6 +157,8 @@ export interface Settings {
   ai: {
     llm_model: string;
     embedding_model: string;
+    /** Hours between automatic runs: 3, 6, 12, 24, 72 or 168; 0 means off. */
+    auto_categorize_hours: number;
   };
 }
 

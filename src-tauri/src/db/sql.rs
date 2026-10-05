@@ -2,7 +2,7 @@
 //! typed query builder cannot do, so the [`reporting`](crate::reporting) read models fall back
 //! to boxed raw SQL for it. This is the shared plumbing for that.
 
-use diesel::sql_types::{BigInt, Double, Text};
+use diesel::sql_types::{BigInt, Text};
 use diesel::sqlite::Sqlite;
 
 pub(crate) type BoxedQuery<'a> = diesel::query_builder::BoxedSqlQuery<'a, Sqlite, diesel::query_builder::SqlQuery>;
@@ -11,7 +11,6 @@ pub(crate) type BoxedQuery<'a> = diesel::query_builder::BoxedSqlQuery<'a, Sqlite
 pub(crate) enum Param {
     Text(String),
     I64(i64),
-    F64(f64),
 }
 
 pub(crate) fn bind_all(mut query: BoxedQuery<'static>, binds: Vec<Param>) -> BoxedQuery<'static> {
@@ -19,7 +18,6 @@ pub(crate) fn bind_all(mut query: BoxedQuery<'static>, binds: Vec<Param>) -> Box
         query = match param {
             Param::Text(v) => query.bind::<Text, _>(v),
             Param::I64(v) => query.bind::<BigInt, _>(v),
-            Param::F64(v) => query.bind::<Double, _>(v),
         };
     }
     query

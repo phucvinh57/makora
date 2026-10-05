@@ -38,12 +38,19 @@ impl Default for TrackingSettings {
     }
 }
 
-/// The models AI categorization runs on: an Ollama name or a `.gguf` path each.
+pub const DEFAULT_AUTO_CATEGORIZE_HOURS: u32 = 24;
+/// The periods automatic categorization can be set to: 3, 6 and 12 hours, 1 and 3 days, a week.
+pub const AUTO_CATEGORIZE_HOURS_OPTIONS: [u32; 6] = [3, 6, 12, 24, 72, 168];
+
+/// The models AI categorization runs on (an Ollama name or a `.gguf` path each), and how often it
+/// runs on its own.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AiSettings {
     pub llm_model: String,
     pub embedding_model: String,
+    /// Hours between background runs; `0` turns them off.
+    pub auto_categorize_hours: u32,
 }
 
 impl Default for AiSettings {
@@ -51,6 +58,7 @@ impl Default for AiSettings {
         Self {
             llm_model: llm::DEFAULT_MODEL.to_string(),
             embedding_model: embedding::DEFAULT_MODEL.to_string(),
+            auto_categorize_hours: DEFAULT_AUTO_CATEGORIZE_HOURS,
         }
     }
 }
@@ -62,6 +70,7 @@ pub trait SettingsStore: Send + Sync {
     fn remove_exclusion(&self, exclusion: &Exclusion) -> Result<Settings>;
     fn set_llm_model(&self, model: &str) -> Result<Settings>;
     fn set_embedding_model(&self, model: &str) -> Result<Settings>;
+    fn set_auto_categorize_hours(&self, hours: u32) -> Result<Settings>;
 }
 
 pub struct TomlSettings {
@@ -108,6 +117,16 @@ impl TomlSettings {
         }
         if settings.ai.embedding_model.trim().is_empty() {
             settings.ai.embedding_model = defaults.embedding_model;
+        }
+
+        let hours = settings.ai.auto_categorize_hours;
+        if hours != 0 && !AUTO_CATEGORIZE_HOURS_OPTIONS.contains(&hours) {
+            let nearest = AUTO_CATEGORIZE_HOURS_OPTIONS
+                .into_iter()
+                .min_by_key(|option| option.abs_diff(hours))
+                .unwrap_or(DEFAULT_AUTO_CATEGORIZE_HOURS);
+            warn!(hours, nearest, "ai.auto_categorize_hours is not one of the allowed periods; using the nearest");
+            settings.ai.auto_categorize_hours = nearest;
         }
 
         Self {
@@ -185,6 +204,13 @@ impl SettingsStore for TomlSettings {
     fn set_embedding_model(&self, model: &str) -> Result<Settings> {
         let model = model_name(model)?;
         self.update(|settings| settings.ai.embedding_model = model)
+    }
+
+    fn set_auto_categorize_hours(&self, hours: u32) -> Result<Settings> {
+        if hours != 0 && !AUTO_CATEGORIZE_HOURS_OPTIONS.contains(&hours) {
+            bail!("automatic categorization must run every one of {AUTO_CATEGORIZE_HOURS_OPTIONS:?} hours, or 0 to turn it off");
+        }
+        self.update(|settings| settings.ai.auto_categorize_hours = hours)
     }
 }
 

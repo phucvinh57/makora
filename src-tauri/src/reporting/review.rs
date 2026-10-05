@@ -1,7 +1,7 @@
 //! Read models behind AI-label review: which activities still need a label, which ones the
 //! user has already judged, and the paged/grouped review queue. Like [`super::history`], the
 //! aggregate shape here stays hand-written SQL; [`crate::domain::labeling`] decides the filter
-//! values and owns the confidence threshold.
+//! values.
 //!
 //! The review queue reads the `activity_category` view: an activity is pending exactly when its
 //! resolved category is an AI suggestion (`ac.source = 'ai'`). The two "what has the user
@@ -31,16 +31,9 @@ pub struct ActivityToLabelRow {
     pub title: String,
 }
 
-/// The `WHERE` clause for pending AI labels (over `activity_category ac`), and its binds. Ends in
-/// two placeholders: `? = 0 OR ac.confidence IS NULL OR ac.confidence < ?` (the "hide confident
-/// labels" toggle and its threshold). A scope that matches nothing yields `0=1`, so the queries
-/// simply come back empty.
-fn pending_fragment(
-    category: &CategoryScope,
-    activity_ids: Option<&[i64]>,
-    uncertain_only: bool,
-    confident: f64,
-) -> (String, Vec<Param>) {
+/// The `WHERE` clause for pending AI labels (over `activity_category ac`), and its binds. A scope
+/// that matches nothing yields `0=1`, so the queries simply come back empty.
+fn pending_fragment(category: &CategoryScope, activity_ids: Option<&[i64]>) -> (String, Vec<Param>) {
     let mut binds = Vec::new();
 
     let scope = match category.clause("ac.category_id") {
@@ -60,17 +53,7 @@ fn pending_fragment(
         None => String::new(),
     };
 
-    binds.push(Param::I64(uncertain_only as i64));
-    binds.push(Param::F64(confident));
-
-    (
-        format!(
-            "ac.source = 'ai'
-             {scope} {only}
-             AND (? = 0 OR ac.confidence IS NULL OR ac.confidence < ?)"
-        ),
-        binds,
-    )
+    (format!("ac.source = 'ai' {scope} {only}"), binds)
 }
 
 #[derive(QueryableByName)]
@@ -149,25 +132,18 @@ pub struct FeedbackSecondsRow {
 
 pub trait ReviewRepo {
     fn get_activities_to_label(&mut self, recheck: bool) -> QueryResult<Vec<ActivityToLabelRow>>;
-    #[allow(clippy::too_many_arguments)]
     fn get_review_page(
         &mut self,
         page: i64,
         page_size: i64,
         category: &CategoryScope,
         activity_ids: Option<&[i64]>,
-        uncertain_only: bool,
-        confident: f64,
-        min_seconds: f64,
     ) -> QueryResult<(Vec<ReviewRow>, i64)>;
     fn get_review_groups(
         &mut self,
         page: i64,
         page_size: i64,
         category: &CategoryScope,
-        uncertain_only: bool,
-        confident: f64,
-        min_seconds: f64,
     ) -> QueryResult<(Vec<ReviewGroupRow>, i64)>;
     fn get_feedback_counts(&mut self) -> QueryResult<FeedbackCountsRow>;
     /// Time, not rows: a few long activities matter more than many short ones.
@@ -199,29 +175,19 @@ impl ReviewRepo for SqliteConnection {
         page_size: i64,
         category: &CategoryScope,
         activity_ids: Option<&[i64]>,
-        uncertain_only: bool,
-        confident: f64,
-        min_seconds: f64,
     ) -> QueryResult<(Vec<ReviewRow>, i64)> {
-        let (pending, pending_binds) = pending_fragment(category, activity_ids, uncertain_only, confident);
+        let (pending, pending_binds) = pending_fragment(category, activity_ids);
 
-        let mut binds = pending_binds.clone();
-        binds.push(Param::F64(min_seconds));
         let total_sql = format!(
-            "SELECT COUNT(*) AS count FROM (
-                 SELECT a.id FROM activities a
-                 JOIN activity_category ac ON ac.activity_id = a.id
-                 LEFT JOIN sessions s ON s.activity_id = a.id AND s.end_time IS NOT NULL
-                 WHERE {pending}
-                 GROUP BY a.id
-                 HAVING {SECONDS} >= ?)"
+            "SELECT COUNT(*) AS count FROM activities a
+             JOIN activity_category ac ON ac.activity_id = a.id
+             WHERE {pending}"
         );
-        let total = bind_all(sql_query(total_sql).into_boxed(), binds)
+        let total = bind_all(sql_query(total_sql).into_boxed(), pending_binds.clone())
             .get_result::<CountRow>(self)?
             .count;
 
         let mut binds = pending_binds;
-        binds.push(Param::F64(min_seconds));
         binds.push(Param::I64(page_size));
         binds.push(Param::I64(page * page_size));
         let rows_sql = format!(
@@ -235,7 +201,6 @@ impl ReviewRepo for SqliteConnection {
              LEFT JOIN sessions s ON s.activity_id = a.id AND s.end_time IS NOT NULL
              WHERE {pending}
              GROUP BY a.id
-             HAVING {SECONDS} >= ?
              ORDER BY 8 DESC, a.id
              LIMIT ? OFFSET ?"
         );
@@ -248,12 +213,9 @@ impl ReviewRepo for SqliteConnection {
         page: i64,
         page_size: i64,
         category: &CategoryScope,
-        uncertain_only: bool,
-        confident: f64,
-        min_seconds: f64,
     ) -> QueryResult<(Vec<ReviewGroupRow>, i64)> {
         // A group picks its own members, so unlike `review_page` this ignores any activity filter.
-        let (pending, pending_binds) = pending_fragment(category, None, uncertain_only, confident);
+        let (pending, pending_binds) = pending_fragment(category, None);
         let grouped = format!(
             "SELECT src.kind AS key_kind, src.key, MIN(src.name) AS app_name, cat.id AS category_id,
                     cat.name AS category_name, cat.color AS category_color,
@@ -265,18 +227,17 @@ impl ReviewRepo for SqliteConnection {
              JOIN categories cat ON cat.id = ac.category_id
              LEFT JOIN sessions s ON s.activity_id = a.id AND s.end_time IS NOT NULL
              WHERE {pending}
-             GROUP BY src.id, cat.id
-             HAVING {SECONDS} >= ?"
+             GROUP BY src.id, cat.id"
         );
 
-        let mut binds = pending_binds.clone();
-        binds.push(Param::F64(min_seconds));
-        let total = bind_all(sql_query(format!("SELECT COUNT(*) AS count FROM ({grouped})")).into_boxed(), binds)
-            .get_result::<CountRow>(self)?
-            .count;
+        let total = bind_all(
+            sql_query(format!("SELECT COUNT(*) AS count FROM ({grouped})")).into_boxed(),
+            pending_binds.clone(),
+        )
+        .get_result::<CountRow>(self)?
+        .count;
 
         let mut binds = pending_binds;
-        binds.push(Param::F64(min_seconds));
         binds.push(Param::I64(page_size));
         binds.push(Param::I64(page * page_size));
         let rows_sql = format!("{grouped} ORDER BY 8 DESC, key_kind, key LIMIT ? OFFSET ?");

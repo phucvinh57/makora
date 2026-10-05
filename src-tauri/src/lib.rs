@@ -42,6 +42,7 @@ type SharedTracker = Arc<Mutex<Box<dyn SessionTracker>>>;
 pub fn run() {
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             host::tray::show_main_window(app);
         }));
@@ -71,6 +72,7 @@ pub fn run() {
             host::commands::categorization::categorization_reset,
             host::commands::categorization::categorization_run,
             host::commands::categorization::categorization_status,
+            host::commands::categorization::categorization_next_auto_run,
             host::commands::categorization::categorization_cancel,
             host::commands::categorization::category_rule_list,
             host::commands::categorization::category_rule_create,
@@ -92,6 +94,7 @@ pub fn run() {
             host::commands::settings::settings_remove_exclusion,
             host::commands::settings::settings_set_llm_model,
             host::commands::settings::settings_set_embedding_model,
+            host::commands::settings::settings_set_auto_categorize_hours,
         ])
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
@@ -137,6 +140,7 @@ pub fn run() {
             app.manage(Box::new(SqliteLabeling::new(conn)) as Box<dyn LabelingSvc>);
             app.manage(settings);
             app.manage(AiRunState::default());
+            app.manage(host::auto_categorize::LastAutoRun::new(data_dir.join("ai-last-run")));
             app.manage(ModelDownloadState::default());
             app.manage(Box::new(LlamaClassifier::new(models.clone())) as Box<dyn Classifier>);
             app.manage(embedder);
@@ -175,6 +179,8 @@ pub fn run() {
 
             tracking::adapters::ingest::spawn(tracker).context("starting tab-ingest server")?;
             info!(port = tracking::adapters::ingest::PORT, "listening for tab events");
+
+            host::auto_categorize::spawn(app.handle().clone()).context("spawning AI scheduler thread")?;
 
             host::tray::build(app.handle())?;
 

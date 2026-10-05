@@ -97,6 +97,42 @@ pub fn url_path(url: &str) -> String {
     key.strip_prefix(&domain).unwrap_or("").to_string()
 }
 
+/// ChatGPT opens a new conversation at `/c/WEB:<id>` and drops the prefix once the first reply
+/// lands. Without this the same conversation would be recorded under two paths.
+pub fn canonical_tab_url(url: &str) -> String {
+    if normalized_domain(url).as_deref() != Some("chatgpt.com") {
+        return url.to_string();
+    }
+    let Ok(mut parsed) = Url::parse(url) else {
+        return url.to_string();
+    };
+    let Some(segments) = parsed.path_segments() else {
+        return url.to_string();
+    };
+    let mut changed = false;
+    let stripped: Vec<&str> = segments
+        .map(|segment| {
+            match segment
+                .strip_prefix("WEB:")
+                .or_else(|| segment.strip_prefix("WEB%3A"))
+                .or_else(|| segment.strip_prefix("WEB%3a"))
+            {
+                Some(rest) => {
+                    changed = true;
+                    rest
+                }
+                None => segment,
+            }
+        })
+        .collect();
+    if !changed {
+        return url.to_string();
+    }
+    let path = format!("/{}", stripped.join("/"));
+    parsed.set_path(&path);
+    parsed.to_string()
+}
+
 pub fn source_url(key: &str, path: &str) -> String {
     format!("https://{key}{path}")
 }

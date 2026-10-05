@@ -20,6 +20,7 @@ export const queryKeys = {
   aiReviewGroups: ["aiReviewGroups"],
   aiFeedbackStats: ["aiFeedbackStats"],
   aiCategorizeStatus: ["aiCategorizeStatus"],
+  aiNextAutoRun: ["aiNextAutoRun"],
   aiModelDownloadStatus: ["aiModelDownloadStatus"],
   aiModelLoaded: ["aiModelLoaded"],
   aiInstalledModels: ["aiInstalledModels"],
@@ -68,6 +69,14 @@ export const categorizeStatusQueryOptions = queryOptions({
   refetchInterval: (query) =>
     query.state.data?.running ? RUNNING_POLL_MS : false,
 });
+
+/** `inputs` are whatever moves the due time; changing one is a new query, so it refetches. */
+export const nextAutoRunQueryOptions = (...inputs: unknown[]) =>
+  queryOptions({
+    queryKey: [...queryKeys.aiNextAutoRun, ...inputs],
+    queryFn: categorization.nextAutoRun,
+    refetchInterval: 60_000,
+  });
 
 export const downloadStatusQueryOptions = queryOptions({
   queryKey: queryKeys.aiModelDownloadStatus,

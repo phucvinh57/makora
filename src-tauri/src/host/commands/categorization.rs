@@ -1,9 +1,12 @@
+use chrono::Utc;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use std::sync::Arc;
 
-use crate::categorization::application::ai_run::{AiModels, AiRunDeps, AiRunOutcome, AiRunState, AiRunStatus};
+use crate::categorization::application::ai_run::{
+    AiModels, AiRunDeps, AiRunError, AiRunOutcome, AiRunState, AiRunStatus,
+};
 use crate::categorization::application::rules::{
     CategoryRuleView, PathSuggestion, RuleDraft, RulePreview, SourceSuggestion,
 };
@@ -11,9 +14,11 @@ use crate::categorization::domain::rules::{PatternField, RuleKind};
 use crate::categorization::ports::{Classifier, Embedder};
 use crate::categorization::{ClassificationSvc, EmbeddingSvc, RuleSvc};
 use crate::domain::LabelingSvc;
+use crate::host::auto_categorize::{next_run, LastAutoRun};
 use crate::host::error::IpcError;
 use crate::settings::SettingsStore;
 use crate::shared::ids::{ActivityId, CategoryId, RuleId, SessionId};
+use crate::shared::time;
 use crate::taxonomy::CategorySvc;
 
 #[tauri::command]
@@ -69,38 +74,54 @@ pub fn categorization_status(state: State<AiRunState>) -> AiRunStatus {
     state.status()
 }
 
+/// RFC 3339 time of the next scheduled run; `None` while automatic categorization is off.
+#[tauri::command]
+pub fn categorization_next_auto_run(
+    settings: State<Arc<dyn SettingsStore>>,
+    last_run: State<LastAutoRun>,
+) -> Option<String> {
+    next_run(&last_run, settings.get().ai.auto_categorize_hours, Utc::now()).map(time::to_db)
+}
+
 /// Labels uncategorized activities with the LLM, or with `recheck` re-labels the AI labels the
 /// user has not confirmed. Runs on a blocking thread and reports `ai-categorize-progress` events.
 #[tauri::command]
 pub async fn categorization_run(app: AppHandle, recheck: Option<bool>) -> Result<AiRunOutcome, IpcError> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<AiRunState>();
-        let categories = app.state::<Box<dyn CategorySvc>>();
-        let labeling = app.state::<Box<dyn LabelingSvc>>();
-        let classification = app.state::<Box<dyn ClassificationSvc>>();
-        let classifier = app.state::<Box<dyn Classifier>>();
-        let embedder = app.state::<Arc<dyn Embedder>>();
-        let embeddings = app.state::<Arc<dyn EmbeddingSvc>>();
-        let settings = app.state::<Arc<dyn SettingsStore>>().get();
-        let deps = AiRunDeps {
-            categories: &**categories,
-            labeling: &**labeling,
-            classification: &**classification,
-            classifier: &**classifier,
-            embedder: &**embedder,
-            embeddings: &**embeddings,
-        };
-        let models = AiModels {
-            llm: settings.ai.llm_model,
-            embedding: settings.ai.embedding_model,
-        };
-        state.run(&deps, &models, recheck.unwrap_or(false), &mut |progress| {
-            let _ = app.emit("ai-categorize-progress", progress);
-        })
-    })
-    .await
-    .map_err(|e| IpcError::internal(e.to_string()))?
-    .map_err(IpcError::from)
+    tauri::async_runtime::spawn_blocking(move || run_categorization(&app, recheck.unwrap_or(false)))
+        .await
+        .map_err(|e| IpcError::internal(e.to_string()))?
+        .map_err(IpcError::from)
+}
+
+/// Blocks until the run ends. A finished labeling run counts as the day's run for the scheduler.
+pub fn run_categorization(app: &AppHandle, recheck: bool) -> Result<AiRunOutcome, AiRunError> {
+    let state = app.state::<AiRunState>();
+    let categories = app.state::<Box<dyn CategorySvc>>();
+    let labeling = app.state::<Box<dyn LabelingSvc>>();
+    let classification = app.state::<Box<dyn ClassificationSvc>>();
+    let classifier = app.state::<Box<dyn Classifier>>();
+    let embedder = app.state::<Arc<dyn Embedder>>();
+    let embeddings = app.state::<Arc<dyn EmbeddingSvc>>();
+    let settings = app.state::<Arc<dyn SettingsStore>>().get();
+    let deps = AiRunDeps {
+        categories: &**categories,
+        labeling: &**labeling,
+        classification: &**classification,
+        classifier: &**classifier,
+        embedder: &**embedder,
+        embeddings: &**embeddings,
+    };
+    let models = AiModels {
+        llm: settings.ai.llm_model,
+        embedding: settings.ai.embedding_model,
+    };
+    let outcome = state.run(&deps, &models, recheck, &mut |progress| {
+        let _ = app.emit("ai-categorize-progress", progress);
+    })?;
+    if !recheck {
+        app.state::<LastAutoRun>().set(Utc::now());
+    }
+    Ok(outcome)
 }
 
 #[tauri::command]

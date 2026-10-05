@@ -17,8 +17,6 @@ use super::types::{
     AiReviewGroup, AiReviewGroupPage, AiReviewPage, AiReviewRow, FeedbackStats, ReviewFilter, UncategorizedActivity,
 };
 
-const CONFIDENT: f64 = 0.85;
-
 pub use super::traits::LabelingSvc;
 
 pub struct SqliteLabeling {
@@ -55,9 +53,6 @@ impl LabelingSvc for SqliteLabeling {
             page_size,
             &category,
             activities.as_deref(),
-            filter.uncertain_only,
-            CONFIDENT,
-            filter.min_seconds,
         )?;
         Ok(AiReviewPage {
             rows: rows.into_iter().map(to_review_row).collect(),
@@ -68,15 +63,7 @@ impl LabelingSvc for SqliteLabeling {
     fn get_review_groups(&self, page: i64, page_size: i64, filter: &ReviewFilter) -> Result<AiReviewGroupPage> {
         let mut conn = self.db.read()?;
         let category = resolve_category_scope(&mut conn, filter.category)?;
-        let (groups, total) = reporting::review::ReviewRepo::get_review_groups(
-            &mut *conn,
-            page,
-            page_size,
-            &category,
-            filter.uncertain_only,
-            CONFIDENT,
-            filter.min_seconds,
-        )?;
+        let (groups, total) = reporting::review::ReviewRepo::get_review_groups(&mut *conn, page, page_size, &category)?;
         Ok(AiReviewGroupPage {
             groups: groups.into_iter().map(to_review_group).collect(),
             total,

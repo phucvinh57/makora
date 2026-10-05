@@ -5,7 +5,7 @@ use tauri::State;
 use crate::categorization::domain::rules::{PatternField, RuleKind};
 use crate::categorization::ActivityIndexer;
 use crate::host::error::IpcError;
-use crate::settings::{Settings, SettingsStore};
+use crate::settings::{Settings, SettingsStore, AUTO_CATEGORIZE_HOURS_OPTIONS};
 use crate::tracking::domain::exclusion::Exclusion;
 use crate::tracking::domain::session_policy::MIN_SESSION_SECONDS_RANGE;
 
@@ -68,4 +68,14 @@ pub fn settings_set_embedding_model(
     let settings = settings.set_embedding_model(&model)?;
     indexer.refresh();
     Ok(settings)
+}
+
+#[tauri::command]
+pub fn settings_set_auto_categorize_hours(settings: State<Arc<dyn SettingsStore>>, hours: u32) -> Result<Settings, IpcError> {
+    if hours != 0 && !AUTO_CATEGORIZE_HOURS_OPTIONS.contains(&hours) {
+        return Err(IpcError::invalid_input(format!(
+            "automatic categorization must run every one of {AUTO_CATEGORIZE_HOURS_OPTIONS:?} hours, or 0 to turn it off"
+        )));
+    }
+    Ok(settings.set_auto_categorize_hours(hours)?)
 }

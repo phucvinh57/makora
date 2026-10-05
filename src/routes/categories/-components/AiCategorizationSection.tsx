@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckIcon, CircleIcon, PlusIcon } from "lucide-react";
+import { PlusIcon } from "lucide-react";
 import { useCallback, useEffect } from "react";
 import { toast } from "sonner";
 import { aiModel, categorization, settings } from "@/api";
@@ -27,6 +27,7 @@ import {
   settingsQueryOptions,
 } from "@/queries";
 import type { ModelRole } from "@/types";
+import { AutoCategorizeSetting } from "./AutoCategorizeSetting";
 
 const ADD_MODEL_VALUE = "__add_model__";
 const NO_MODELS: string[] = [];
@@ -34,7 +35,6 @@ const NO_MODELS: string[] = [];
 function ModelSelect({
   id,
   label,
-  hint,
   modelRole,
   value,
   installed,
@@ -43,7 +43,6 @@ function ModelSelect({
 }: {
   id: string;
   label: string;
-  hint: string;
   modelRole: ModelRole;
   value: string;
   installed: string[];
@@ -95,32 +94,7 @@ function ModelSelect({
           </SelectItem>
         </SelectContent>
       </Select>
-      <p className="m-0 text-xs text-muted-foreground">{hint}</p>
     </div>
-  );
-}
-
-function ChecklistItem({
-  done,
-  title,
-  children,
-}: {
-  done: boolean;
-  title: string;
-  children?: React.ReactNode;
-}) {
-  return (
-    <li className="flex gap-2">
-      {done ? (
-        <CheckIcon className="mt-0.5 size-3.5 shrink-0 text-primary" />
-      ) : (
-        <CircleIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-      )}
-      <div className="flex min-w-0 flex-col gap-1">
-        <span className="font-medium">{title}</span>
-        {children}
-      </div>
-    </li>
   );
 }
 
@@ -250,58 +224,11 @@ export function AiCategorizationSection() {
         <CardTitle>Configurations</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-3 text-sm">
-        <ul className="m-0 flex list-none flex-col gap-2 p-0 text-xs">
-          <ChecklistItem
-            done={categories.length > 0}
-            title="Create your categories"
-          >
-            {categories.length === 0 && (
-              <span className="text-muted-foreground">
-                Add the categories you want your time sorted into in the
-                Taxonomy tab.
-              </span>
-            )}
-          </ChecklistItem>
-          <ChecklistItem done={modelsReady} title="Install the models">
-            {missingModels.map(({ role, model }) => (
-              <span key={role} className="text-destructive">
-                {model} is not downloaded yet.{" "}
-                <button
-                  type="button"
-                  className="underline hover:text-destructive/80"
-                  disabled={downloading}
-                  onClick={() =>
-                    openDialog<AddModelDialogData>("add-model", {
-                      role,
-                      model,
-                      onDownloaded: applyModel,
-                    })
-                  }
-                >
-                  Download it
-                </button>
-              </span>
-            ))}
-          </ChecklistItem>
-        </ul>
         <div className="flex flex-wrap gap-4">
-          {llmModel !== undefined && (
-            <ModelSelect
-              id="ai-llm-model"
-              label="Language model"
-              hint="Labels each activity, shown the filed ones most like it."
-              modelRole="llm"
-              value={llmModel}
-              installed={installedModels}
-              disabled={running || downloading || setModelMutation.isPending}
-              onChange={(model) => applyModel("llm", model)}
-            />
-          )}
           {embeddingModel !== undefined && (
             <ModelSelect
               id="ai-embedding-model"
               label="Embedding model"
-              hint="Finds the filed activities most like a new one. Small and fast."
               modelRole="embedding"
               value={embeddingModel}
               installed={installedModels}
@@ -309,7 +236,19 @@ export function AiCategorizationSection() {
               onChange={(model) => applyModel("embedding", model)}
             />
           )}
+          {llmModel !== undefined && (
+            <ModelSelect
+              id="ai-llm-model"
+              label="Language model"
+              modelRole="llm"
+              value={llmModel}
+              installed={installedModels}
+              disabled={running || downloading || setModelMutation.isPending}
+              onChange={(model) => applyModel("llm", model)}
+            />
+          )}
         </div>
+        <AutoCategorizeSetting />
         <div className="flex flex-wrap items-center gap-3">
           <Button
             disabled={running || downloading || !canRun}

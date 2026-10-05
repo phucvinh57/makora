@@ -1,5 +1,8 @@
 use super::source_key::{exe_file_name, normalized_domain, url_key};
 
+/// Titles a page shows before it has a real one, whatever site it is.
+const GENERIC_PLACEHOLDERS: &[&str] = &["new chat"];
+
 /// Whether `title` is just the app name, the URL, or the domain repeated back — a placeholder a
 /// window shows before its real title loads, not a title worth keeping.
 fn is_placeholder(title: &str, app_name: &str, url: Option<&str>) -> bool {
@@ -27,7 +30,7 @@ fn is_placeholder(title: &str, app_name: &str, url: Option<&str>) -> bool {
         placeholders.push(app_name.to_ascii_lowercase());
         placeholders.push(exe_file_name(app_name).to_ascii_lowercase());
     }
-    placeholders.iter().any(|candidate| candidate == &folded)
+    GENERIC_PLACEHOLDERS.contains(&folded.as_str()) || placeholders.iter().any(|candidate| candidate == &folded)
 }
 
 /// A browser's placeholder title is the URL as loaded, query included, while the tracked URL has

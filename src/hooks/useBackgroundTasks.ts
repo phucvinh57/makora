@@ -6,6 +6,7 @@ import {
   categorizeStatusQueryOptions,
   downloadStatusQueryOptions,
   invalidateCategorizationQueries,
+  markCategorizeStarted,
   queryKeys,
 } from "@/queries";
 import type {
@@ -42,6 +43,16 @@ export function useBackgroundTaskSync() {
           queryKeys.aiCategorizeStatus,
           (old) => old && { ...old, ...payload },
         ),
+    );
+    return () => {
+      void unlisten.then((off) => off());
+    };
+  }, [queryClient]);
+
+  useEffect(() => {
+    const unlisten = listen<{ recheck: boolean }>(
+      "ai-categorize-started",
+      ({ payload }) => markCategorizeStarted(queryClient, payload.recheck),
     );
     return () => {
       void unlisten.then((off) => off());

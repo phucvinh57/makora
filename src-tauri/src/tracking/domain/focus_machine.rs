@@ -8,6 +8,7 @@ use crate::tracking::ports::{ExclusionPolicy, SessionRecorder, SessionTracker};
 
 use super::events::{BrowserKind, FocusChange, FocusedApp, PresenceChange, TabChange};
 use super::session_policy::is_ignored_app;
+use super::source_key::canonical_tab_url;
 
 struct Current {
     id: Option<SessionId>,
@@ -108,7 +109,8 @@ impl SessionTracker for FocusStateMachine {
         self.open_current_row(change.at)
     }
 
-    fn handle_tab(&mut self, change: TabChange) -> Result<()> {
+    fn handle_tab(&mut self, mut change: TabChange) -> Result<()> {
+        change.url = canonical_tab_url(&change.url);
         self.last_tabs.insert(
             change.browser,
             LastTab {
