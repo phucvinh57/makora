@@ -140,7 +140,7 @@ pub fn run() {
             app.manage(Box::new(SqliteLabeling::new(conn)) as Box<dyn LabelingSvc>);
             app.manage(settings);
             app.manage(AiRunState::default());
-            app.manage(host::auto_categorize::LastAutoRun::new(data_dir.join("ai-last-run")));
+            app.manage(host::auto_categorize::ScheduleAnchor::new(data_dir.join("ai-last-run")));
             app.manage(ModelDownloadState::default());
             app.manage(Box::new(LlamaClassifier::new(models.clone())) as Box<dyn Classifier>);
             app.manage(embedder);

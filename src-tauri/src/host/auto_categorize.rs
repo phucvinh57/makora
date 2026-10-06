@@ -1,12 +1,12 @@
-//! Runs AI categorization on its own every `ai.auto_categorize_hours`, so suggestions pile up
-//! for review instead of waiting for someone to open the AI tab, and notifies when a run has
-//! labeled something.
+//! Runs AI categorization on its own every `ai.auto_categorize_hours`, on the hour, so suggestions
+//! pile up for review instead of waiting for someone to open the AI tab, and notifies when a run
+//! has labeled something.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, DurationRound, Local, Utc};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_notification::NotificationExt;
@@ -24,12 +24,13 @@ use crate::taxonomy::CategorySvc;
 const STARTUP_DELAY: Duration = Duration::from_secs(120);
 const CHECK_EVERY: Duration = Duration::from_secs(60);
 
-/// When the last labeling run ended, kept in a file so a restart does not start the clock over.
-pub struct LastAutoRun {
+/// What the schedule counts from: the end of the last labeling run, or when the period was last
+/// set. Kept in a file so a restart does not start the clock over.
+pub struct ScheduleAnchor {
     path: PathBuf,
 }
 
-impl LastAutoRun {
+impl ScheduleAnchor {
     pub fn new(path: PathBuf) -> Self {
         Self { path }
     }
@@ -40,21 +41,24 @@ impl LastAutoRun {
 
     pub fn set(&self, at: DateTime<Utc>) {
         if let Err(err) = std::fs::write(&self.path, time::to_db(at)) {
-            warn!(path = %self.path.display(), %err, "could not record the last categorization run");
+            warn!(path = %self.path.display(), %err, "could not record where the categorization schedule starts");
         }
     }
 }
 
-/// When the scheduler is due to label next, or `None` while it is off. A first run, or one that
-/// is overdue, is due now: the scheduler picks it up on its next check.
-pub fn next_run(last_run: &LastAutoRun, hours: u32, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+/// When the scheduler is due to label next, or `None` while it is off: one period after the
+/// anchor, rounded down to the local hour, so a 3-hour period set at 11:30 first runs at 14:00.
+/// A run that is overdue is due now: the scheduler picks it up on its next check.
+pub fn next_run(anchor: &ScheduleAnchor, hours: u32, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
     if hours == 0 {
         return None;
     }
-    Some(match last_run.get() {
-        Some(last) => (last + chrono::Duration::hours(hours.into())).max(now),
-        None => now,
-    })
+    let due = anchor.get().unwrap_or(now) + chrono::Duration::hours(hours.into());
+    let on_the_hour = due
+        .with_timezone(&Local)
+        .duration_trunc(chrono::Duration::hours(1))
+        .map_or(due, |hour| hour.with_timezone(&Utc));
+    Some(on_the_hour.max(now))
 }
 
 #[derive(Serialize, Clone)]
@@ -63,6 +67,11 @@ struct Started {
 }
 
 pub fn spawn(app: AppHandle) -> std::io::Result<()> {
+    // With nothing to count from, the first run waits a period instead of starting right away.
+    let anchor = app.state::<ScheduleAnchor>();
+    if anchor.get().is_none() {
+        anchor.set(Utc::now());
+    }
     std::thread::Builder::new()
         .name("makora-ai-scheduler".into())
         .spawn(move || {
@@ -81,11 +90,9 @@ fn check(app: &AppHandle) {
     if hours == 0 {
         return;
     }
-    let last_run = app.state::<LastAutoRun>();
-    if last_run
-        .get()
-        .is_some_and(|last| Utc::now() - last < chrono::Duration::hours(hours.into()))
-    {
+    let anchor = app.state::<ScheduleAnchor>();
+    let now = Utc::now();
+    if next_run(&anchor, hours, now).is_some_and(|due| due > now) {
         return;
     }
     if app.state::<AiRunState>().status().running {
@@ -100,7 +107,7 @@ fn check(app: &AppHandle) {
     }
     match app.state::<Box<dyn LabelingSvc>>().get_activities_to_label(false) {
         Ok(pending) if pending.is_empty() => {
-            last_run.set(Utc::now());
+            anchor.set(Utc::now());
             return;
         }
         Ok(_) => {}
@@ -122,7 +129,7 @@ fn check(app: &AppHandle) {
         Err(AiRunError::AlreadyRunning) => {}
         Err(err) => {
             warn!(error = %err, "scheduled AI categorization failed");
-            last_run.set(Utc::now());
+            anchor.set(Utc::now());
         }
     }
 }

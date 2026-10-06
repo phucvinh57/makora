@@ -14,7 +14,7 @@ use crate::categorization::domain::rules::{PatternField, RuleKind};
 use crate::categorization::ports::{Classifier, Embedder};
 use crate::categorization::{ClassificationSvc, EmbeddingSvc, RuleSvc};
 use crate::domain::LabelingSvc;
-use crate::host::auto_categorize::{next_run, LastAutoRun};
+use crate::host::auto_categorize::{next_run, ScheduleAnchor};
 use crate::host::error::IpcError;
 use crate::settings::SettingsStore;
 use crate::shared::ids::{ActivityId, CategoryId, RuleId, SessionId};
@@ -78,9 +78,9 @@ pub fn categorization_status(state: State<AiRunState>) -> AiRunStatus {
 #[tauri::command]
 pub fn categorization_next_auto_run(
     settings: State<Arc<dyn SettingsStore>>,
-    last_run: State<LastAutoRun>,
+    anchor: State<ScheduleAnchor>,
 ) -> Option<String> {
-    next_run(&last_run, settings.get().ai.auto_categorize_hours, Utc::now()).map(time::to_db)
+    next_run(&anchor, settings.get().ai.auto_categorize_hours, Utc::now()).map(time::to_db)
 }
 
 /// Labels uncategorized activities with the LLM, or with `recheck` re-labels the AI labels the
@@ -119,7 +119,7 @@ pub fn run_categorization(app: &AppHandle, recheck: bool) -> Result<AiRunOutcome
         let _ = app.emit("ai-categorize-progress", progress);
     })?;
     if !recheck {
-        app.state::<LastAutoRun>().set(Utc::now());
+        app.state::<ScheduleAnchor>().set(Utc::now());
     }
     Ok(outcome)
 }

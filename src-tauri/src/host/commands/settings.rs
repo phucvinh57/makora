@@ -1,9 +1,11 @@
 use std::sync::Arc;
 
+use chrono::Utc;
 use tauri::State;
 
 use crate::categorization::domain::rules::{PatternField, RuleKind};
 use crate::categorization::ActivityIndexer;
+use crate::host::auto_categorize::ScheduleAnchor;
 use crate::host::error::IpcError;
 use crate::settings::{Settings, SettingsStore, AUTO_CATEGORIZE_HOURS_OPTIONS};
 use crate::tracking::domain::exclusion::Exclusion;
@@ -70,12 +72,19 @@ pub fn settings_set_embedding_model(
     Ok(settings)
 }
 
+/// Setting the period restarts the schedule: the first run comes one period from now, on the hour.
 #[tauri::command]
-pub fn settings_set_auto_categorize_hours(settings: State<Arc<dyn SettingsStore>>, hours: u32) -> Result<Settings, IpcError> {
+pub fn settings_set_auto_categorize_hours(
+    settings: State<Arc<dyn SettingsStore>>,
+    anchor: State<ScheduleAnchor>,
+    hours: u32,
+) -> Result<Settings, IpcError> {
     if hours != 0 && !AUTO_CATEGORIZE_HOURS_OPTIONS.contains(&hours) {
         return Err(IpcError::invalid_input(format!(
             "automatic categorization must run every one of {AUTO_CATEGORIZE_HOURS_OPTIONS:?} hours, or 0 to turn it off"
         )));
     }
-    Ok(settings.set_auto_categorize_hours(hours)?)
+    let saved = settings.set_auto_categorize_hours(hours)?;
+    anchor.set(Utc::now());
+    Ok(saved)
 }
