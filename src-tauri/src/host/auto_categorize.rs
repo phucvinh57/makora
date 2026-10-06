@@ -7,15 +7,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, DurationRound, Local, Utc};
+use notify_rust::{Notification, NotificationResponse};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_notification::NotificationExt;
 use tracing::{info, warn};
 
 use crate::ai::llm;
 use crate::categorization::application::ai_run::{AiRunError, AiRunState};
 use crate::domain::LabelingSvc;
 use crate::host::commands::categorization::run_categorization;
+use crate::host::tray;
 use crate::settings::SettingsStore;
 use crate::shared::time;
 use crate::taxonomy::CategorySvc;
@@ -23,6 +24,8 @@ use crate::taxonomy::CategorySvc;
 /// Left alone after launch so the app's own start-up work finishes first.
 const STARTUP_DELAY: Duration = Duration::from_secs(120);
 const CHECK_EVERY: Duration = Duration::from_secs(60);
+/// Where clicking the notification lands: the AI review tab.
+const REVIEW_ROUTE: &str = "/categories?tab=review";
 
 /// What the schedule counts from: the end of the last labeling run, or when the period was last
 /// set. Kept in a file so a restart does not start the clock over.
@@ -136,13 +139,48 @@ fn check(app: &AppHandle) {
 
 fn notify(app: &AppHandle, labeled: usize) {
     let noun = if labeled == 1 { "activity" } else { "activities" };
-    let shown = app
-        .notification()
-        .builder()
-        .title("AI categorization finished")
-        .body(format!("{labeled} {noun} got a suggested category. Open Categories to review them."))
-        .show();
-    if let Err(err) = shown {
-        warn!(%err, "could not show the notification");
+    let mut notification = Notification::new();
+    notification
+        .summary("AI categorization finished")
+        .body(&format!("{labeled} {noun} got a suggested category. Click to review them."))
+        .auto_icon();
+    // Freedesktop servers only report a click on the body when the "default" action is offered.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    notification.action("default", "Review");
+    // Windows only knows the app's ID once it is installed; a build run from `target/` has none.
+    #[cfg(windows)]
+    {
+        let unbundled = std::env::current_exe().is_ok_and(|exe| {
+            exe.parent()
+                .is_some_and(|dir| dir.ends_with("target/debug") || dir.ends_with("target/release"))
+        });
+        if !unbundled {
+            notification.app_id(&app.config().identifier);
+        }
+    }
+    #[cfg(target_os = "macos")]
+    let _ = notify_rust::set_application(if tauri::is_dev() {
+        "com.apple.Terminal"
+    } else {
+        &app.config().identifier
+    });
+
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("makora-notification".into())
+        .spawn(move || {
+            let clicked = notification.show().and_then(|handle| {
+                handle.wait_for_response(|response: &NotificationResponse| {
+                    if response.is_default_action() {
+                        tray::show_main_window_at(&app, REVIEW_ROUTE);
+                    }
+                })
+            });
+            if let Err(err) = clicked {
+                warn!(%err, "could not show the notification");
+            }
+        });
+    if let Err(err) = spawned {
+        warn!(%err, "could not spawn the notification thread");
     }
 }

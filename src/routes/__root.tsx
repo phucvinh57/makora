@@ -21,6 +21,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useBackgroundTaskSync } from "@/hooks/useBackgroundTasks";
+import { useNavigationRequests } from "@/hooks/useNavigationRequests";
 import { FLAG_CODEC, usePersistentState } from "@/hooks/usePersistentState";
 import { cn } from "@/lib/utils";
 
@@ -85,6 +86,7 @@ function RootLayout() {
     FLAG_CODEC,
   );
   useBackgroundTaskSync();
+  useNavigationRequests();
 
   return (
     <div className="flex h-screen box-border">

@@ -10,7 +10,6 @@
     "core:window:allow-set-focus",
     "core:tray:default",
     "autostart:default",
-    "opener:default",
-    "notification:default"
+    "opener:default"
   ]
 }

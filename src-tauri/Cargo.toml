@@ -36,7 +36,7 @@ ureq = "3"
 sha2 = "0.11.0"
 llama-cpp-2 = { version = "0.1.157", default-features = false, features = ["common"] }
 llama-cpp-sys-2 = "0.1.157"
-tauri-plugin-notification = "2"
+notify-rust = "4.18.1"
 
 [target.'cfg(windows)'.dependencies]
 llama-cpp-2 = { version = "0.1.157", default-features = false, features = ["common", "vulkan"] }

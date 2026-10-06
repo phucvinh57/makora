@@ -1,6 +1,6 @@
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl};
 
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let show_item = MenuItem::with_id(app, "show", "Show", true, None::<&str>)?;
@@ -43,14 +43,26 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
 }
 
 pub fn show_main_window(app: &AppHandle) {
+    open_main_window(app, None);
+}
+
+/// Shows the main window on a frontend route such as `/categories?tab=review`.
+pub fn show_main_window_at(app: &AppHandle, route: &str) {
+    open_main_window(app, Some(route));
+}
+
+fn open_main_window(app: &AppHandle, route: Option<&str>) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
+        if let Some(route) = route {
+            let _ = window.emit("navigate", route);
+        }
         return;
     }
 
-    let Some(config) = app
+    let Some(mut config) = app
         .config()
         .app
         .windows
@@ -61,6 +73,10 @@ pub fn show_main_window(app: &AppHandle) {
         tracing::error!("no \"main\" window config to rebuild the window from");
         return;
     };
+    // A fresh page has no listener for `navigate` yet, so it starts on the route instead.
+    if let Some(route) = route {
+        config.url = WebviewUrl::App(route.trim_start_matches('/').into());
+    }
 
     let window = match tauri::WebviewWindowBuilder::from_config(app, &config)
         .and_then(|builder| builder.build())

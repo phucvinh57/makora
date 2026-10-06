@@ -42,7 +42,6 @@ type SharedTracker = Arc<Mutex<Box<dyn SessionTracker>>>;
 pub fn run() {
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             host::tray::show_main_window(app);
         }));
