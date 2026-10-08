@@ -7,12 +7,14 @@ records the apps you use so you can look back at your day, spot patterns, and
 understand how you spend your time. No timers to start. No account to create.
 
 [Get Makora](https://github.com/phucvinh57/makora/releases) ·
-[Watch the demo](demo/out/makora-demo.mp4) ·
+[Watch the demo](#demo) ·
 [Contribute](CONTRIBUTING.md)
 
-![Makora showing time by category, top apps and websites, and daily activity](demo/public/screens/statistics.png)
+## Demo
 
-*The screenshot and demo use fictional activity data.*
+<video src="https://github.com/user-attachments/assets/74aae38b-3bff-48b9-adc1-353526fdb4bb" controls></video>
+
+*The demo uses fictional activity data.*
 
 ## How it works
 
