@@ -4,6 +4,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { Fragment, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -14,7 +15,7 @@ import {
   useCategoryPicker,
 } from "@/components/CategoryOptions";
 import { PaginationControls } from "@/components/PaginationControls";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -28,6 +29,7 @@ import {
 import { useCategories } from "@/hooks/useCategories";
 import { formatSeconds } from "@/duration";
 import { invalidateCategorizationQueries, queryKeys } from "@/queries";
+import { UNCATEGORIZED } from "@/routes/history/-components/constants";
 import type { ReviewFilter } from "@/types";
 import { GroupMembers } from "./GroupMembers";
 import {
@@ -143,6 +145,13 @@ export function ReviewQueue() {
           size="sm"
           className="ml-auto w-52"
         />
+        <Link
+          to="/history"
+          search={{ kind: "all", category: UNCATEGORIZED }}
+          className={buttonVariants({ variant: "outline", size: "sm" })}
+        >
+          View uncategorized activities
+        </Link>
       </div>
 
       {selectedGroups.length > 0 && (

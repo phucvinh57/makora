@@ -8,7 +8,7 @@ use crate::tracking::ports::{ExclusionPolicy, SessionRecorder, SessionTracker};
 
 use super::events::{BrowserKind, FocusChange, FocusedApp, PresenceChange, TabChange};
 use super::session_policy::is_ignored_app;
-use super::source_key::canonical_tab_url;
+use super::source_key::{canonical_tab_url, normalized_domain};
 
 struct Current {
     id: Option<SessionId>,
@@ -68,6 +68,10 @@ impl FocusStateMachine {
         let app = current.app.clone();
         let title = current.window_title.clone();
         let url = current.url.clone();
+        // A browser's time is tracked per site from the extension, never as the browser app itself.
+        if current.browser.is_some() && url.as_deref().and_then(normalized_domain).is_none() {
+            return Ok(());
+        }
         if self.exclusions.is_excluded(&app, &title, url.as_deref()) {
             return Ok(());
         }

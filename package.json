@@ -12,6 +12,11 @@
     "ext:build": "node browser-extension/build.mjs",
     "ext:watch": "node browser-extension/build.mjs --watch",
     "ext:check": "tsc -p browser-extension",
+    "demo:install": "bun install --cwd demo",
+    "demo:capture": "bun run --cwd demo capture",
+    "demo:dev": "bun run --cwd demo dev",
+    "demo:check": "bun run --cwd demo check",
+    "demo:render": "bun run --cwd demo render",
     "check": "biome check --write",
     "format": "biome format",
     "lint": "biome lint"

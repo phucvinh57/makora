@@ -14,3 +14,6 @@
 
 /browser-extension/dist
 /target
+
+/demo/node_modules
+/demo/out/*.png

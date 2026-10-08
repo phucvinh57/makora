@@ -1,3 +1,5 @@
 src-tauri/icons/*.png filter=lfs diff=lfs merge=lfs -text
 src-tauri/icons/*.ico filter=lfs diff=lfs merge=lfs -text
 browser-extension/icons/*.png filter=lfs diff=lfs merge=lfs -text
+demo/out/*.mp4 filter=lfs diff=lfs merge=lfs -text
+demo/public/screens/*.png filter=lfs diff=lfs merge=lfs -text
