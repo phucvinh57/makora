@@ -6,11 +6,7 @@ Makora is a desktop time tracker for Windows, macOS, and Linux. It quietly
 records the apps you use so you can look back at your day, spot patterns, and
 understand how you spend your time. No timers to start. No account to create.
 
-[Get Makora](https://github.com/phucvinh57/makora/releases) ·
-[Watch the demo](#demo) ·
-[Contribute](CONTRIBUTING.md)
-
-## Demo
+[Get Makora](https://github.com/phucvinh57/makora/releases) · [Contribute](CONTRIBUTING.md)
 
 <video src="https://github.com/user-attachments/assets/74aae38b-3bff-48b9-adc1-353526fdb4bb" controls></video>
 
