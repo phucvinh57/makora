@@ -60,13 +60,13 @@ the UI or sample data changes.
 
 | Time | Scene |
 | --- | --- |
-| 0–5 s | Introduce Makora: where did your day go? |
-| 5–11 s | Illustrate focus changes and automatic activity blocks |
-| 11–18 s | Show real history, then search for GitHub website sessions |
-| 18–25 s | Show categories and automatic filing rules |
-| 25–32 s | Show weekly statistics, top apps/sites, and daily trends |
-| 32–37 s | Show privacy controls and exclusions |
-| 37–44 s | Closing card with the project URL |
+| 0–5 s | Introduce local-only tracking, built-in AI, and personalization |
+| 5–12 s | Illustrate focus changes and automatic activity blocks |
+| 12–19 s | Search activity history by app and website |
+| 19–25 s | Show weekly statistics and daily trends |
+| 25–31 s | Introduce on-device AI category suggestions |
+| 31–37 s | Show how categories and past choices guide suggestions |
+| 37–44 s | Reaffirm the three pillars and close with the project URL |
 
 Edit `src/MakoraDemo.tsx` for the visuals and copy, `src/timing.ts` for timing
 and dimensions, and `scripts/fixtures.ts` for sample activity. Animations use

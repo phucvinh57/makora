@@ -1,4 +1,6 @@
 import type {
+  AiReviewGroup,
+  AiReviewRow,
   ActivityStats,
   Category,
   CategoryRule,
@@ -44,7 +46,16 @@ export const categories: Category[] = [
   },
 ];
 
-const activities = [
+const activities: {
+  app: string;
+  key: string;
+  title: string;
+  url: string | null;
+  category: number;
+  minutes: number;
+  ai?: boolean;
+  confidence?: number;
+}[] = [
   {
     app: "Visual Studio Code",
     key: "code",
@@ -92,6 +103,8 @@ const activities = [
     url: null,
     category: 3,
     minutes: 19,
+    ai: true,
+    confidence: 0.87,
   },
   {
     app: "Chrome",
@@ -124,6 +137,8 @@ const activities = [
     url: "https://en.wikipedia.org/wiki/Urban_design",
     category: 4,
     minutes: 18,
+    ai: true,
+    confidence: 0.81,
   },
 ];
 
@@ -153,7 +168,7 @@ for (let dayIndex = 0; dayIndex < 7; dayIndex++) {
       category_name: category?.name ?? null,
       category_color: category?.color ?? null,
       category_is_pinned: activityIndex === 7,
-      category_source: activityIndex === 7 ? "manual" : "rule",
+      category_source: item.ai ? "ai" : activityIndex === 7 ? "manual" : "rule",
     });
     minuteOfDay += minutes + 3;
   }
@@ -217,6 +232,55 @@ export function buildStats(rows: SessionRow[]): ActivityStats {
   stats.daily.sort((a, b) => a.day.localeCompare(b.day));
   return stats;
 }
+
+export const aiReviewRows: AiReviewRow[] = activities.flatMap(
+  (item, activityIndex) => {
+    if (!item.ai) return [];
+    const activityId = activityIndex + 1;
+    const activitySessions = sessions.filter(
+      (row) => row.activity_id === activityId,
+    );
+    const first = activitySessions[0];
+    const category = categories.find((value) => value.id === item.category);
+    if (!first || !category) return [];
+    return [
+      {
+        activity_id: activityId,
+        app_name: item.app,
+        url: item.url,
+        title: item.title,
+        category_id: category.id,
+        category_name: category.name,
+        category_color: category.color,
+        total_seconds: activitySessions.reduce(
+          (total, row) =>
+            total +
+            (new Date(row.end_time ?? row.start_time).getTime() -
+              new Date(row.start_time).getTime()) /
+              1000,
+          0,
+        ),
+        session_count: activitySessions.length,
+      },
+    ];
+  },
+);
+
+export const aiReviewGroups: AiReviewGroup[] = aiReviewRows.map((row) => {
+  const item = activities[row.activity_id - 1];
+  return {
+    key_kind: item.url ? "domain" : "exe",
+    key: item.key,
+    app_name: item.app,
+    category_id: row.category_id,
+    category_name: row.category_name,
+    category_color: row.category_color,
+    activity_count: 1,
+    total_seconds: row.total_seconds,
+    min_confidence: item.confidence ?? null,
+    activity_ids: [row.activity_id],
+  };
+});
 
 export const rules: CategoryRule[] = (
   [

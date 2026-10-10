@@ -1,7 +1,15 @@
 import { mkdir, copyFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { chromium, type Page } from "playwright-core";
-import { buildStats, categories, rules, sessions, settings } from "./fixtures";
+import {
+  aiReviewGroups,
+  aiReviewRows,
+  buildStats,
+  categories,
+  rules,
+  sessions,
+  settings,
+} from "./fixtures";
 
 const output = fileURLToPath(new URL("../public/screens/", import.meta.url));
 const fonts = fileURLToPath(new URL("../public/fonts/", import.meta.url));
@@ -96,14 +104,33 @@ try {
                 confirmed: 0,
                 pinned: 1,
                 rejected: 0,
-                pending_review: 0,
-                pending_seconds: 0,
+                pending_review: data.aiReviewRows.length,
+                pending_seconds: data.aiReviewRows.reduce(
+                  (total, row) => total + row.total_seconds,
+                  0,
+                ),
                 reviewed_seconds: 0,
               };
-            case "ai_review_list":
-              return { rows: [], total: 0 };
-            case "ai_review_list_groups":
-              return { groups: [], total: 0 };
+            case "ai_review_list": {
+              const filter = args.filter as
+                | { activities?: number[] }
+                | undefined;
+              const rows = filter?.activities
+                ? data.aiReviewRows.filter((row) =>
+                    filter.activities?.includes(row.activity_id),
+                  )
+                : data.aiReviewRows;
+              return { rows, total: rows.length };
+            }
+            case "ai_review_list_groups": {
+              const filter = args.filter as { category?: number } | undefined;
+              const groups = filter?.category
+                ? data.aiReviewGroups.filter(
+                    (group) => group.category_id === filter.category,
+                  )
+                : data.aiReviewGroups;
+              return { groups, total: groups.length };
+            }
             case "suggestion_sources":
               return data.stats.apps.map((app) => ({
                 kind: app.kind,
@@ -131,7 +158,15 @@ try {
         },
       };
     },
-    { categories, rules, sessions, settings, stats: buildStats(sessions) },
+    {
+      aiReviewGroups,
+      aiReviewRows,
+      categories,
+      rules,
+      sessions,
+      settings,
+      stats: buildStats(sessions),
+    },
   );
 
   const errors: string[] = [];
@@ -175,12 +210,9 @@ try {
   await page.getByRole("tab", { name: "Rules", exact: true }).click();
   await page.getByText("github.com", { exact: true }).waitFor();
   await capture(page, "rules");
-  await page.getByRole("tab", { name: "AI review", exact: true }).click();
+  await page.getByRole("tab", { name: /AI review/ }).click();
   await page.getByText("Language model", { exact: true }).waitFor();
   await capture(page, "ai-review");
-  await page.getByRole("link", { name: "Settings", exact: true }).click();
-  await page.getByText("bank.example", { exact: false }).first().waitFor();
-  await capture(page, "settings");
 } finally {
   await browser.close();
 }

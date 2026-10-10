@@ -285,7 +285,7 @@ function Intro() {
             textTransform: "uppercase",
           }}
         >
-          Your time, made visible
+          Private time tracking
         </div>
         <h1
           style={{
@@ -296,14 +296,14 @@ function Intro() {
             margin: "28px 0",
           }}
         >
-          Where did
+          Your time.
           <br />
-          your day go?
+          Your terms.
         </h1>
         <p style={{ color: muted, fontSize: 30, lineHeight: 1.5, margin: 0 }}>
-          Meet the desktop time tracker
+          Local-only tracking. Built-in AI
           <br />
-          that follows your focus.
+          that adapts to the way you work.
         </p>
       </Reveal>
       <Reveal
@@ -328,7 +328,7 @@ function Intro() {
           gap: 14,
         }}
       >
-        {["Automatic", "Local", "No account"].map((label) => (
+        {["Local-only", "Built-in AI", "Adapts to you"].map((label) => (
           <span
             key={label}
             style={{
@@ -379,8 +379,8 @@ function Tracking() {
   return (
     <>
       <Heading
-        step="01 / Go about your day"
-        title="No timers. Just follow your focus."
+        step="01 / Automatic tracking"
+        title="It follows your focus."
         description="Switch apps, and Makora starts a new activity block."
       />
       <div
@@ -496,7 +496,7 @@ function Tracking() {
           </div>
         ))}
       </Reveal>
-      <Footer>Website detail uses the optional browser extension.</Footer>
+      <Footer>Activity blocks and history stay on your computer.</Footer>
     </>
   );
 }
@@ -539,17 +539,32 @@ function History() {
 }
 
 function Categories() {
-  const frame = useCurrentFrame();
   return (
     <>
       <Heading
-        step="03 / Give your time meaning"
-        title="Your categories. Your rules."
-        description="Group your activities, then let rules organize matching apps and sites."
+        step="04 / Built-in AI"
+        title="AI help, right where you work."
+        description="On-device models suggest categories for your time."
       />
-      <ScreenStage screen={frame < 92 ? "categories" : "rules"} />
+      <ScreenStage screen="ai-review" />
       <Footer>
-        Manual choices take priority. Optional AI suggestions run locally.
+        Download the models first. AI categorization runs locally.
+      </Footer>
+    </>
+  );
+}
+
+function Adaptation() {
+  return (
+    <>
+      <Heading
+        step="05 / Adapts to you"
+        title="AI shaped by how you organize."
+        description="Your categories and past choices guide future suggestions."
+      />
+      <ScreenStage screen="categories" />
+      <Footer>
+        Suggestions draw on activities you have already organized.
       </Footer>
     </>
   );
@@ -559,85 +574,12 @@ function Statistics() {
   return (
     <>
       <Heading
-        step="04 / See the bigger picture"
+        step="03 / See the bigger picture"
         title="Turn a busy week into a clear picture."
         description="Explore your categories, most-used apps, websites, and daily trends."
       />
       <ScreenStage screen="statistics" />
       <Footer>Today, the past seven days, or the past thirty days.</Footer>
-    </>
-  );
-}
-
-function Privacy() {
-  return (
-    <>
-      <Heading
-        step="05 / Stay in control"
-        title="Your activity stays on your computer."
-        description="No account. Local history. Choose what gets recorded."
-      />
-      <Reveal style={{ position: "absolute", left: 118, top: 302, width: 445 }}>
-        <div
-          style={{
-            width: 78,
-            height: 78,
-            background: "#def3e9",
-            color: "#23816a",
-            borderRadius: 24,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontSize: 40,
-          }}
-        >
-          ✓
-        </div>
-        <h2
-          style={{
-            fontSize: 56,
-            lineHeight: 1.12,
-            letterSpacing: -2,
-            fontWeight: 650,
-            margin: "30px 0",
-          }}
-        >
-          A little more
-          <br />
-          peace of mind.
-        </h2>
-        {[
-          "Exclude apps, sites, or pages",
-          "Skip very short sessions",
-          "Pick a light or dark theme",
-        ].map((label, index) => (
-          <Reveal
-            key={label}
-            delay={18 + index * 10}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 12,
-              color: muted,
-              fontSize: 24,
-              marginTop: 26,
-            }}
-          >
-            <span style={{ color: "#23816a" }}>✓</span>
-            {label}
-          </Reveal>
-        ))}
-      </Reveal>
-      <Reveal
-        delay={12}
-        style={{ position: "absolute", left: 624, top: 233, width: 1170 }}
-      >
-        <AppWindow screen="settings" />
-      </Reveal>
-      <Footer>
-        Optional AI models need an initial download; categorization runs
-        locally.
-      </Footer>
     </>
   );
 }
@@ -717,7 +659,7 @@ function Outro() {
           fontSize: 20,
         }}
       >
-        Automatic tracking · Local history · No account
+        Local-only · Built-in AI · Adapts to your categories
       </div>
     </>
   );
@@ -728,8 +670,8 @@ const components = {
   tracking: Tracking,
   history: History,
   categories: Categories,
+  adaptation: Adaptation,
   statistics: Statistics,
-  privacy: Privacy,
   outro: Outro,
 };
 
