@@ -33,7 +33,7 @@ use llama_cpp_2::context::LlamaContext;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::params::LlamaModelParams;
-use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaModel};
+use llama_cpp_2::model::{LlamaChatMessage, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::LlamaToken;
 use llama_cpp_2::{send_logs_to_tracing, LogOptions};
@@ -488,9 +488,8 @@ fn run(
     let template = model
         .chat_template(None)
         .map_err(|err| anyhow!("model has no chat template: {err}"))?;
-    let bos =
-        String::from_utf8_lossy(&model.token_to_piece_bytes(model.token_bos(), 32, true, None)?)
-            .into_owned();
+    let vocab = model.vocab();
+    let bos = String::from_utf8_lossy(&vocab.token_to_piece(vocab.bos(), true, None)).into_owned();
     let by_path: HashMap<&str, CategoryId> = choices.iter().map(|c| (c.path.as_str(), c.id)).collect();
 
     let mut grammar = LlamaSampler::grammar(model, &grammar(choices), "root")
@@ -518,12 +517,11 @@ fn run(
             let prompt = model
                 .apply_chat_template(&template, &chat, true)
                 .map_err(|err| anyhow!("applying chat template: {err}"))?;
-            let add_bos = if prompt.starts_with(&bos) {
-                AddBos::Never
-            } else {
-                AddBos::Always
-            };
-            Ok(model.str_to_token(&prompt, add_bos)?)
+            let mut tokens = vocab.tokenize(prompt.as_bytes(), false, true);
+            if !prompt.starts_with(&bos) {
+                tokens.insert(0, vocab.bos());
+            }
+            Ok(tokens)
         };
         let fits = |tokens: &[LlamaToken]| tokens.len() + MAX_REPLY_TOKENS <= N_CTX as usize;
         let mut tokens = encode(true)?;
@@ -586,10 +584,10 @@ fn run(
                 break;
             };
             confidence *= probability;
-            if model.is_eog_token(token) {
+            if vocab.is_eog(token) {
                 break;
             }
-            answer.extend(model.token_to_piece_bytes(token, 32, true, None)?);
+            answer.extend(vocab.token_to_piece(token, true, None));
             batch.clear();
             batch.add(token, position as i32, &[0], true)?;
             ctx.decode(&mut batch)

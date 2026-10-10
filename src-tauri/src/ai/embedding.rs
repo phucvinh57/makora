@@ -8,7 +8,7 @@ use std::num::NonZeroU32;
 use anyhow::{anyhow, bail, Result};
 use llama_cpp_2::context::params::LlamaContextParams;
 use llama_cpp_2::llama_batch::LlamaBatch;
-use llama_cpp_2::model::{AddBos, LlamaModel};
+use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::token::LlamaToken;
 
 use crate::categorization::ports::{Embedder, Embedding};
@@ -78,10 +78,12 @@ fn run(
     let capacity = (n_ctx * SEQUENCES_PER_BATCH) as usize;
     let mut batch = LlamaBatch::new(capacity, SEQUENCES_PER_BATCH as i32);
 
+    let vocab = model.vocab();
     let tokenized: Vec<Vec<LlamaToken>> = texts
         .iter()
         .map(|text| {
-            let mut tokens = model.str_to_token(text, AddBos::Always)?;
+            let mut tokens = vocab.tokenize(text.as_bytes(), false, true);
+            tokens.insert(0, vocab.bos());
             tokens.truncate(n_ctx as usize);
             Ok(tokens)
         })
