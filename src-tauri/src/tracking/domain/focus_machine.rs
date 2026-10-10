@@ -68,8 +68,12 @@ impl FocusStateMachine {
         let app = current.app.clone();
         let title = current.window_title.clone();
         let url = current.url.clone();
-        // A browser's time is tracked per site from the extension, never as the browser app itself.
-        if current.browser.is_some() && url.as_deref().and_then(normalized_domain).is_none() {
+        // Use site identity when available and the browser window title when it is not.
+        if current.browser.is_some()
+            && url
+                .as_deref()
+                .is_some_and(|url| normalized_domain(url).is_none())
+        {
             return Ok(());
         }
         if self.exclusions.is_excluded(&app, &title, url.as_deref()) {
@@ -86,15 +90,35 @@ impl SessionTracker for FocusStateMachine {
         if is_ignored_app(&change.app.exe_path) {
             return Ok(());
         }
-        if let Some(current) = &self.current {
-            if current.app.exe_path == change.app.exe_path {
-                if !self.present {
-                    let current = self.current.as_mut().expect("checked above");
-                    current.app = change.app;
-                    current.window_title = change.window_title;
-                }
+        let same_app = self
+            .current
+            .as_ref()
+            .is_some_and(|current| current.app.exe_path == change.app.exe_path);
+        if same_app {
+            if !self.present {
+                let current = self.current.as_mut().expect("checked above");
+                current.app = change.app;
+                current.window_title = change.window_title;
                 return Ok(());
             }
+
+            let title_changed = self
+                .current
+                .as_ref()
+                .is_some_and(|current| current.window_title != change.window_title);
+            let has_tab_url = self
+                .current
+                .as_ref()
+                .is_some_and(|current| current.browser.is_some() && current.url.is_some());
+            if !title_changed || has_tab_url {
+                return Ok(());
+            }
+
+            self.end_current_row(change.at)?;
+            let current = self.current.as_mut().expect("checked above");
+            current.app = change.app;
+            current.window_title = change.window_title;
+            return self.open_current_row(change.at);
         }
         self.end_current_row(change.at)?;
         let browser = BrowserKind::from_app_name(&change.app.app_name);

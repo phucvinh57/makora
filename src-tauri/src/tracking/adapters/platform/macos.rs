@@ -1,7 +1,9 @@
 use std::ffi::{c_char, CStr, CString};
 use std::path::Path;
 use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use block2::RcBlock;
@@ -44,6 +46,7 @@ impl FocusWatcher for MacFocusWatcher {
 }
 
 fn run_watcher(tx: Sender<WatchEvent>) {
+    let active_focus = Arc::new(Mutex::new(None::<FocusEvent>));
     unsafe {
         if ax::AXIsProcessTrusted() == 0 {
             tracing::warn!(
@@ -56,12 +59,15 @@ fn run_watcher(tx: Sender<WatchEvent>) {
 
         let queue: *mut AnyObject = msg_send![class!(NSOperationQueue), new];
         let name = ns_string("NSWorkspaceDidActivateApplicationNotification");
+        let active_focus_for_observer = Arc::clone(&active_focus);
+        let tx_for_observer = tx.clone();
 
         let block = RcBlock::new(move |notification: *mut AnyObject| {
             autoreleasepool(|_pool| {
                 let event = focus_event_from_notification(notification);
                 if let Some(event) = event {
-                    let _ = tx.send(event.into());
+                    *active_focus_for_observer.lock().unwrap() = Some(event.clone());
+                    let _ = tx_for_observer.send(event.into());
                 }
             });
         });
@@ -73,10 +79,62 @@ fn run_watcher(tx: Sender<WatchEvent>) {
             queue: queue,
             usingBlock: &*block,
         ];
+
+        autoreleasepool(|_pool| {
+            let current_app: *mut AnyObject = msg_send![workspace, frontmostApplication];
+            if let Some(event) = focus_event_from_application(current_app) {
+                *active_focus.lock().unwrap() = Some(event.clone());
+                let _ = tx.send(event.into());
+            }
+        });
     }
 
     loop {
-        thread::park();
+        thread::park_timeout(Duration::from_millis(500));
+        let Some(event) = active_focus.lock().unwrap().clone() else {
+            continue;
+        };
+        if frontmost_process_id() != Some(event.app.process_id as i32) {
+            continue;
+        }
+        let Some(title) = focused_window_title(event.app.process_id as i32) else {
+            continue;
+        };
+        if title == event.window_title {
+            continue;
+        }
+
+        let updated = {
+            let mut active_focus = active_focus.lock().unwrap();
+            match active_focus.as_mut() {
+                Some(current)
+                    if current.app.process_id == event.app.process_id
+                        && current.window_title != title =>
+                {
+                    current.window_title = title;
+                    current.timestamp = Utc::now();
+                    Some(current.clone())
+                }
+                _ => None,
+            }
+        };
+        if let Some(updated) = updated {
+            let _ = tx.send(updated.into());
+        }
+    }
+}
+
+fn frontmost_process_id() -> Option<i32> {
+    unsafe {
+        autoreleasepool(|_pool| {
+            let workspace: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
+            let app: *mut AnyObject = msg_send![workspace, frontmostApplication];
+            if app.is_null() {
+                return None;
+            }
+            let pid: i32 = msg_send![app, processIdentifier];
+            (pid > 0).then_some(pid)
+        })
     }
 }
 
@@ -92,6 +150,10 @@ unsafe fn focus_event_from_notification(notification: *mut AnyObject) -> Option<
 
     let key = ns_string("NSWorkspaceApplicationKey");
     let app: *mut AnyObject = msg_send![user_info, objectForKey: key];
+    focus_event_from_application(app)
+}
+
+unsafe fn focus_event_from_application(app: *mut AnyObject) -> Option<FocusEvent> {
     if app.is_null() {
         return None;
     }

@@ -28,7 +28,7 @@ exports `dev.phucvinh57.MakoraShell.Focus1` at
 `/dev/phucvinh57/MakoraShell`:
 
 - `signal FocusChanged(b present, u pid, s app_id, s wm_class, s title)` —
-  emitted on every `notify::focus-window`.
+  emitted when the focused window changes and when that window's title changes.
 - `method GetFocusedWindow() -> (b present, u pid, s app_id, s wm_class, s title)` —
   so the app can pick up what's already focused the moment it starts,
   instead of recording nothing until you next switch apps.

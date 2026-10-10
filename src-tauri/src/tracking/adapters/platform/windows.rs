@@ -12,8 +12,9 @@ use windows_sys::Win32::System::Threading::{
 };
 use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetMessageW, GetWindowTextW, GetWindowThreadProcessId, CHILDID_SELF, EVENT_SYSTEM_FOREGROUND,
-    MSG, OBJID_WINDOW, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+    GetForegroundWindow, GetMessageW, GetWindowTextW, GetWindowThreadProcessId, CHILDID_SELF,
+    EVENT_OBJECT_NAMECHANGE, EVENT_SYSTEM_FOREGROUND, MSG, OBJID_WINDOW, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS,
 };
 
 use crate::tracking::adapters::model::{AppInfo, FocusEvent, WatchEvent};
@@ -49,7 +50,7 @@ fn run_event_loop(tx: Sender<WatchEvent>) {
     EVENT_TX.with(|cell| *cell.borrow_mut() = Some(tx));
 
     unsafe {
-        let hook = SetWinEventHook(
+        let focus_hook = SetWinEventHook(
             EVENT_SYSTEM_FOREGROUND,
             EVENT_SYSTEM_FOREGROUND,
             std::ptr::null_mut(),
@@ -58,15 +59,46 @@ fn run_event_loop(tx: Sender<WatchEvent>) {
             0,
             WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
         );
-        if hook.is_null() {
+        let title_hook = SetWinEventHook(
+            EVENT_OBJECT_NAMECHANGE,
+            EVENT_OBJECT_NAMECHANGE,
+            std::ptr::null_mut(),
+            Some(win_event_proc),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+        );
+        if focus_hook.is_null() {
+            if !title_hook.is_null() {
+                UnhookWinEvent(title_hook);
+            }
             tracing::error!("SetWinEventHook failed; app-usage tracking is disabled");
             return;
+        }
+        if title_hook.is_null() {
+            tracing::warn!("SetWinEventHook failed; window-title change tracking is disabled");
+        }
+
+        let foreground = GetForegroundWindow();
+        if !foreground.is_null() {
+            win_event_proc(
+                focus_hook,
+                EVENT_SYSTEM_FOREGROUND,
+                foreground,
+                OBJID_WINDOW,
+                CHILDID_SELF as i32,
+                0,
+                0,
+            );
         }
 
         let mut msg: MSG = std::mem::zeroed();
         while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {}
 
-        UnhookWinEvent(hook);
+        if !title_hook.is_null() {
+            UnhookWinEvent(title_hook);
+        }
+        UnhookWinEvent(focus_hook);
     }
 }
 
@@ -79,11 +111,14 @@ unsafe extern "system" fn win_event_proc(
     _event_thread: u32,
     _event_time: u32,
 ) {
-    if event != EVENT_SYSTEM_FOREGROUND
-        || hwnd.is_null()
-        || id_object != OBJID_WINDOW
-        || id_child != CHILDID_SELF as i32
-    {
+    if hwnd.is_null() || id_object != OBJID_WINDOW || id_child != CHILDID_SELF as i32 {
+        return;
+    }
+    if event == EVENT_OBJECT_NAMECHANGE {
+        if GetForegroundWindow() != hwnd {
+            return;
+        }
+    } else if event != EVENT_SYSTEM_FOREGROUND {
         return;
     }
 

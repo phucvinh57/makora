@@ -32,6 +32,8 @@ class FocusReporter {
   constructor() {
     this._exported = Gio.DBusExportedObject.wrapJSObject(INTERFACE, this);
     this._focusChangedId = 0;
+    this._focusedWindow = null;
+    this._titleChangedId = 0;
     this._nameId = 0;
   }
 
@@ -52,9 +54,11 @@ class FocusReporter {
     this._focusChangedId = global.display.connect("notify::focus-window", () =>
       this._onFocusChanged(),
     );
+    this._onFocusChanged();
   }
 
   stop() {
+    this._disconnectFocusedWindow();
     if (this._focusChangedId) {
       global.display.disconnect(this._focusChangedId);
       this._focusChangedId = 0;
@@ -71,7 +75,29 @@ class FocusReporter {
   }
 
   _onFocusChanged() {
-    const payload = this._describe(global.display.focus_window);
+    this._disconnectFocusedWindow();
+    this._focusedWindow = global.display.focus_window;
+    if (this._focusedWindow) {
+      const focusedWindow = this._focusedWindow;
+      this._titleChangedId = focusedWindow.connect("notify::title", () => {
+        if (global.display.focus_window === focusedWindow) {
+          this._emitFocusChanged(focusedWindow);
+        }
+      });
+    }
+    this._emitFocusChanged(this._focusedWindow);
+  }
+
+  _disconnectFocusedWindow() {
+    if (this._focusedWindow && this._titleChangedId) {
+      this._focusedWindow.disconnect(this._titleChangedId);
+    }
+    this._focusedWindow = null;
+    this._titleChangedId = 0;
+  }
+
+  _emitFocusChanged(win) {
+    const payload = this._describe(win);
     this._exported.emit_signal(
       "FocusChanged",
       new GLib.Variant("(busss)", payload),
