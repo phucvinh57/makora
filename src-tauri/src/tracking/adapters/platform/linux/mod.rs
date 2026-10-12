@@ -71,6 +71,6 @@ fn select_and_run(tx: Sender<WatchEvent>) {
     error!(
         desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default(),
         "no supported focus source on this desktop — app usage will not be recorded. \
-         On GNOME, install the shell extension from gnome-extension/."
+         On GNOME, install the shell extension from extensions/gnome/."
     );
 }

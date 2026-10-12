@@ -1,6 +1,6 @@
 # Makora's GNOME focus reporter
 
-This GNOME Shell extension lets [Makora](../README.md) see which window is
+This GNOME Shell extension lets [Makora](../../README.md) see which window is
 active, so it can track your time by app on GNOME. It is required when you use
 Makora in a GNOME session because GNOME does not expose window focus to regular
 desktop apps.
@@ -27,7 +27,7 @@ gnome-extensions enable makora@phucvinh57.dev
 From a Makora source checkout, install the extension into your user account:
 
 ```sh
-./gnome-extension/install.sh
+./extensions/gnome/install.sh
 ```
 
 Then enable **Makora's focus reporter** in the GNOME Extensions app, or run:

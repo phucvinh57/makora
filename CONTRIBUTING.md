@@ -68,8 +68,8 @@ than ESLint or Prettier. The frontend build checks strict TypeScript.
 | --- | --- |
 | `src/` | React/TypeScript interface, routes, queries, shared components |
 | `src-tauri/` | Tauri 2 desktop host and Rust backend |
-| `browser-extension/` | Optional active-tab reporter |
-| `gnome-extension/` | GNOME Shell focus reporter |
+| `extensions/browser/` | Optional active-tab reporter |
+| `extensions/gnome/` | GNOME Shell focus reporter |
 | `demo/` | Remotion video and fictional screenshot fixtures |
 | `docs/` | [Domain design](docs/ddd.md) and [trait guidance](docs/traits.md) |
 
@@ -121,9 +121,9 @@ bun run ext:watch    # rebuild on changes
 bun run ext:check    # extension TypeScript checks
 ```
 
-Load `browser-extension/dist/` as an unpacked extension. It is gitignored, so
+Load `extensions/browser/dist/` as an unpacked extension. It is gitignored, so
 a fresh checkout needs a build first. Reload the extension after rebuilding.
-See the [installation guide](browser-extension/README.md#installing) for
+See the [installation guide](extensions/browser/README.md#installing) for
 Chromium browsers and Safari.
 
 The extension posts `{ browser, url, title }` to
@@ -133,7 +133,7 @@ Keep this communication local.
 
 ## GNOME and Wayland development
 
-GNOME requires the [focus reporter](gnome-extension/README.md). Wayland blocks
+GNOME requires the [focus reporter](extensions/gnome/README.md). Wayland blocks
 ordinary clients from inspecting focused windows. GNOME's introspection API is
 allowlisted to the desktop portal, and Mutter's
 `ext-foreign-toplevel-list-v1` protocol does not report focus state.
@@ -141,7 +141,7 @@ allowlisted to the desktop portal, and Mutter's
 From a checkout:
 
 ```sh
-./gnome-extension/install.sh
+./extensions/gnome/install.sh
 # Log out and back in after the first installation, then:
 gnome-extensions enable makora@phucvinh57.dev
 gnome-extensions info makora@phucvinh57.dev
@@ -152,7 +152,7 @@ Makora notices an extension installed later without requiring an app restart.
 On wlroots compositors that expose `wlr-foreign-toplevel-management-v1`, such
 as sway, Hyprland, and river, no GNOME extension is needed.
 
-The [GNOME extension guide](gnome-extension/README.md) documents its D-Bus
+The [GNOME extension guide](extensions/gnome/README.md) documents its D-Bus
 contract, supported Shell versions, and debugging commands. Keep protocol names
 and versions in sync with the Rust platform implementation when changing it.
 

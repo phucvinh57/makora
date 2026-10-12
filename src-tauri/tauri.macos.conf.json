@@ -1,5 +1,5 @@
 {
-  "$schema": "https://schema.tauri.app/config/2",
+  "identifier": "dev.phucvinh57.makora",
   "bundle": {
     "macOS": {
       "minimumSystemVersion": "10.15"

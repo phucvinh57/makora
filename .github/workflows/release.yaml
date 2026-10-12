@@ -327,13 +327,13 @@ jobs:
           VERSION="${RELEASE_TAG#v}" node <<'NODE'
           const fs = require("fs");
           const version = process.env.VERSION;
-          const manifestPath = "browser-extension/dist/manifest.json";
+          const manifestPath = "extensions/browser/dist/manifest.json";
           const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
           manifest.version = version;
           fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
           NODE
           mkdir -p "$RUNNER_TEMP/chrome-extension"
-          cd browser-extension/dist
+          cd extensions/browser/dist
           zip -r "$RUNNER_TEMP/chrome-extension/makora-chrome-extension.zip" .
 
       - name: Validate Chrome Web Store configuration

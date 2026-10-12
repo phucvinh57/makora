@@ -1,6 +1,6 @@
 # makora tab reporter
 
-A small cross-browser WebExtension companion to the [makora](../README.md)
+A small cross-browser WebExtension companion to the [makora](../../README.md)
 desktop app. Makora tracks how long you spend in each application by
 watching OS-level window focus, which means a browser is normally just one
 opaque `chrome` or `firefox` block. This extension reports the active tab's
@@ -54,7 +54,7 @@ first.
 1. Install Xcode (from the App Store) and its command line tools.
 2. From the repo root, run:
    ```sh
-   xcrun safari-web-extension-converter browser-extension/dist/
+   xcrun safari-web-extension-converter extensions/browser/dist/
    ```
    This generates an Xcode project that wraps the extension in a macOS app.
 3. Open the generated project in Xcode and build & run it once (⌘R) — this

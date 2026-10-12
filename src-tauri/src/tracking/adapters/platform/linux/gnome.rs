@@ -63,7 +63,7 @@ fn watch(emit: &mut dyn FnMut(WindowObservation)) -> Result<()> {
     } else {
         warn!(
             "the Makora GNOME extension is not running — tracking starts as soon as it is \
-             enabled. Install it from gnome-extension/ and run: \
+             enabled. Install it from extensions/gnome/ and run: \
              gnome-extensions enable makora@phucvinh57.dev"
         );
     }
@@ -139,7 +139,7 @@ fn check_protocol_version(proxy: &Proxy<'_>) {
             installed = version,
             expected = PROTOCOL_VERSION,
             "the installed GNOME extension speaks a different protocol version — reinstall it \
-             from gnome-extension/ if focus tracking misbehaves"
+             from extensions/gnome/ if focus tracking misbehaves"
         ),
         Err(err) => warn!(error = %err, "could not read the GNOME extension version"),
     }

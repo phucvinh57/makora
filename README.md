@@ -17,9 +17,9 @@ understand how you spend your time. No timers to start. No account to create.
 | --- | --- |
 | Windows | Tracks the foreground app and window title. |
 | macOS | Tracks the active app. Allow Makora in **System Settings → Privacy & Security → Accessibility** to include window titles. |
-| Linux | GNOME Shell 45–50 with the [Makora GNOME extension](gnome-extension/README.md), or a Wayland compositor that implements `wlr-foreign-toplevel-management-v1`, such as sway, Hyprland, or river. Other Linux desktop sessions without either focus source cannot track app usage. |
+| Linux | GNOME Shell 45–50 with the [Makora GNOME extension](extensions/gnome/README.md), or a Wayland compositor that implements `wlr-foreign-toplevel-management-v1`, such as sway, Hyprland, or river. Other Linux desktop sessions without either focus source cannot track app usage. |
 
-To track your detail browsing history, please install the [browser extension](browser-extension/README.md).
+To track your detail browsing history, please install the [browser extension](extensions/browser/README.md).
 
 
 ## Why do I built Makora?
@@ -39,10 +39,10 @@ After opening Makora:
   Accessibility** to include window titles. Without this permission, app time
   is still tracked, but titles are empty.
 - **Linux with GNOME:** Enable the
-  [Makora GNOME extension](gnome-extension/README.md#installing). It is required
-  for tracking on GNOME. The Debian package includes it; other installations
-  need the extension installed separately.
+  [Makora GNOME extension](extensions/gnome/README.md#installing). It is required
+  for tracking on GNOME. The DEB and RPM packages include it; other
+  installations need the extension installed separately.
 - **Web tracking:** Follow the
-  [browser extension setup](browser-extension/README.md#installing).
+  [browser extension setup](extensions/browser/README.md#installing).
 
 Found a problem or have an idea? Fell free to [open an issue](https://github.com/phucvinh57/makora/issues).

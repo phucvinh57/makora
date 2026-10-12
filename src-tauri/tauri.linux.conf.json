@@ -1,12 +1,18 @@
 {
   "identifier": "dev.phucvinh57.makora",
   "bundle": {
-    "targets": ["deb"],
+    "targets": ["deb", "rpm"],
     "linux": {
       "deb": {
         "files": {
-          "/usr/share/gnome-shell/extensions/makora@phucvinh57.dev/metadata.json": "../gnome-extension/metadata.json",
-          "/usr/share/gnome-shell/extensions/makora@phucvinh57.dev/extension.js": "../gnome-extension/extension.js"
+          "/usr/share/gnome-shell/extensions/makora@phucvinh57.dev/metadata.json": "../extensions/gnome/metadata.json",
+          "/usr/share/gnome-shell/extensions/makora@phucvinh57.dev/extension.js": "../extensions/gnome/extension.js"
+        }
+      },
+      "rpm": {
+        "files": {
+          "/usr/share/gnome-shell/extensions/makora@phucvinh57.dev/metadata.json": "../extensions/gnome/metadata.json",
+          "/usr/share/gnome-shell/extensions/makora@phucvinh57.dev/extension.js": "../extensions/gnome/extension.js"
         }
       }
     }

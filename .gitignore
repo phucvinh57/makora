@@ -12,7 +12,7 @@
 .vscode
 .tanstack/tmp
 
-/browser-extension/dist
+/extensions/browser/dist
 /target
 
 /demo/node_modules

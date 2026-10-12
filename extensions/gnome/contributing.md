@@ -9,7 +9,7 @@ no build step.
 From the repository root, install the extension into your user account:
 
 ```sh
-./gnome-extension/install.sh
+./extensions/gnome/install.sh
 ```
 
 If this is the first install, log out and back in so GNOME Shell discovers the
@@ -23,15 +23,15 @@ After editing `extension.js`, run the install script again and disable then
 enable the extension to reload it:
 
 ```sh
-./gnome-extension/install.sh
+./extensions/gnome/install.sh
 gnome-extensions disable makora@phucvinh57.dev
 gnome-extensions enable makora@phucvinh57.dev
 ```
 
-The Debian package installs `metadata.json` and `extension.js` under
+The DEB and RPM packages install `metadata.json` and `extension.js` under
 `/usr/share/gnome-shell/extensions/makora@phucvinh57.dev/`. If the extension
 adds files, update the file list in
-[`src-tauri/tauri.linux.conf.json`](../src-tauri/tauri.linux.conf.json) too.
+[`src-tauri/tauri.linux.conf.json`](../../src-tauri/tauri.linux.conf.json) too.
 
 ## D-Bus protocol
 
@@ -51,7 +51,7 @@ current activity block open. `pid` is zero when GNOME cannot provide a process
 ID; Makora then uses `app_id` to identify the application.
 
 The matching interface names and signatures are in
-[`src-tauri/src/tracking/adapters/platform/linux/gnome.rs`](../src-tauri/src/tracking/adapters/platform/linux/gnome.rs).
+[`src-tauri/src/tracking/adapters/platform/linux/gnome.rs`](../../src-tauri/src/tracking/adapters/platform/linux/gnome.rs).
 Keep the extension and Rust definitions in sync. If a signature changes, bump
 `PROTOCOL_VERSION` in both places so Makora can detect mismatched versions.
 

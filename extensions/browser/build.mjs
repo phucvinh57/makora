@@ -1,4 +1,4 @@
-// Bundles the extension into browser-extension/dist/, which is the directory
+// Bundles the extension into extensions/browser/dist/, which is the directory
 // browsers actually load — src/ and tsconfig.json are build inputs and are
 // deliberately not shipped. Run with --watch for a rebuild-on-save loop.
 //
