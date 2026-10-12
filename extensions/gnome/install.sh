@@ -6,6 +6,11 @@ UUID="makora@phucvinh57.dev"
 SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET="${XDG_DATA_HOME:-$HOME/.local/share}/gnome-shell/extensions/$UUID"
 
+if ! bash "$SOURCE/session-is-gnome-wayland.sh"; then
+    echo "Skipping GNOME extension install; this is not a GNOME Wayland session."
+    exit 0
+fi
+
 if [[ ! -f "$SOURCE/metadata.json" ]]; then
     echo "error: $SOURCE does not look like the extension source" >&2
     exit 1

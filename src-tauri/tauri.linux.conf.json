@@ -5,15 +5,23 @@
     "linux": {
       "deb": {
         "files": {
-          "/usr/share/gnome-shell/extensions/makora@phucvinh57.dev/metadata.json": "../extensions/gnome/metadata.json",
-          "/usr/share/gnome-shell/extensions/makora@phucvinh57.dev/extension.js": "../extensions/gnome/extension.js"
-        }
+          "/usr/share/makora/gnome-extension/metadata.json": "../extensions/gnome/metadata.json",
+          "/usr/share/makora/gnome-extension/extension.js": "../extensions/gnome/extension.js",
+          "/usr/share/makora/gnome-extension/session-is-gnome-wayland.sh": "../extensions/gnome/session-is-gnome-wayland.sh",
+          "/usr/share/makora/gnome-extension/install-system.sh": "../extensions/gnome/install-system.sh"
+        },
+        "postInstallScript": "../extensions/gnome/package-post-install.sh",
+        "postRemoveScript": "../extensions/gnome/package-post-remove-deb.sh"
       },
       "rpm": {
         "files": {
-          "/usr/share/gnome-shell/extensions/makora@phucvinh57.dev/metadata.json": "../extensions/gnome/metadata.json",
-          "/usr/share/gnome-shell/extensions/makora@phucvinh57.dev/extension.js": "../extensions/gnome/extension.js"
-        }
+          "/usr/share/makora/gnome-extension/metadata.json": "../extensions/gnome/metadata.json",
+          "/usr/share/makora/gnome-extension/extension.js": "../extensions/gnome/extension.js",
+          "/usr/share/makora/gnome-extension/session-is-gnome-wayland.sh": "../extensions/gnome/session-is-gnome-wayland.sh",
+          "/usr/share/makora/gnome-extension/install-system.sh": "../extensions/gnome/install-system.sh"
+        },
+        "postInstallScript": "../extensions/gnome/package-post-install.sh",
+        "postRemoveScript": "../extensions/gnome/package-post-remove-rpm.sh"
       }
     }
   }

@@ -133,9 +133,9 @@ Keep this communication local.
 
 ## GNOME and Wayland development
 
-GNOME requires the [focus reporter](extensions/gnome/README.md). Wayland blocks
-ordinary clients from inspecting focused windows. GNOME's introspection API is
-allowlisted to the desktop portal, and Mutter's
+GNOME on Wayland requires the [focus reporter](extensions/gnome/README.md).
+Wayland blocks ordinary clients from inspecting focused windows. GNOME's
+introspection API is allowlisted to the desktop portal, and Mutter's
 `ext-foreign-toplevel-list-v1` protocol does not report focus state.
 
 From a checkout:
@@ -147,10 +147,11 @@ gnome-extensions enable makora@phucvinh57.dev
 gnome-extensions info makora@phucvinh57.dev
 ```
 
-The Debian package ships the extension, so only enabling it is needed there.
-Makora notices an extension installed later without requiring an app restart.
-On wlroots compositors that expose `wlr-foreign-toplevel-management-v1`, such
-as sway, Hyprland, and river, no GNOME extension is needed.
+The DEB and RPM packages install the extension only when a GNOME Wayland
+session is detected. The install script skips other sessions. Makora notices
+an extension installed later without requiring an app restart. On wlroots
+compositors that expose `wlr-foreign-toplevel-management-v1`, such as sway,
+Hyprland, and river, no GNOME extension is needed.
 
 The [GNOME extension guide](extensions/gnome/README.md) documents its D-Bus
 contract, supported Shell versions, and debugging commands. Keep protocol names

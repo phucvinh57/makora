@@ -38,10 +38,10 @@ After opening Makora:
 - **macOS:** Allow Makora in **System Settings → Privacy & Security →
   Accessibility** to include window titles. Without this permission, app time
   is still tracked, but titles are empty.
-- **Linux with GNOME:** Enable the
-  [Makora GNOME extension](extensions/gnome/README.md#installing). It is required
-  for tracking on GNOME. The DEB and RPM packages include it; other
-  installations need the extension installed separately.
+- **Linux with GNOME on Wayland:** Enable the
+  [Makora GNOME extension](extensions/gnome/README.md#installing). DEB and RPM
+  packages install it only when a GNOME Wayland session is detected. Other
+  desktop environments skip it.
 - **Web tracking:** Follow the
   [browser extension setup](extensions/browser/README.md#installing).
 

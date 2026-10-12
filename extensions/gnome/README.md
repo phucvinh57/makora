@@ -1,9 +1,9 @@
 # Makora's GNOME focus reporter
 
 This GNOME Shell extension lets [Makora](../../README.md) see which window is
-active, so it can track your time by app on GNOME. It is required when you use
-Makora in a GNOME session because GNOME does not expose window focus to regular
-desktop apps.
+active, so it can track your time by app in a GNOME Wayland session. It is
+required there because GNOME does not expose window focus to regular desktop
+apps.
 
 The extension shares focus information only with Makora on your computer.
 Nothing is sent over the internet, and your activity data stays on your
@@ -13,10 +13,18 @@ computer.
 
 Makora supports GNOME Shell 45 through 50.
 
-### If you installed Makora from a Debian package
+### If you installed Makora from a DEB or RPM package
 
-The package includes the extension. Enable **Makora's focus reporter** in the
-GNOME Extensions app, or run this command in a terminal:
+The package installs the extension only when it detects a GNOME Wayland
+session. Enable **Makora's focus reporter** in the GNOME Extensions app, or run
+this command in a terminal. If the package was installed outside your desktop
+session, first run the installer from a GNOME Wayland terminal:
+
+```sh
+sudo bash /usr/share/makora/gnome-extension/install-system.sh
+```
+
+Then enable it:
 
 ```sh
 gnome-extensions enable makora@phucvinh57.dev
@@ -24,7 +32,8 @@ gnome-extensions enable makora@phucvinh57.dev
 
 ### If you installed Makora another way
 
-From a Makora source checkout, install the extension into your user account:
+From a Makora source checkout, run the install script in GNOME on Wayland. It
+skips installation for other sessions:
 
 ```sh
 ./extensions/gnome/install.sh
