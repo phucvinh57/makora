@@ -284,6 +284,16 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: ${{ steps.get_version.outputs.tag }}
           name: ${{ steps.get_version.outputs.tag }}
+          body: |
+            ## macOS installation
+
+            The macOS build is ad hoc signed and is not notarized by Apple. After moving Makora to Applications, try opening it once. If macOS blocks it, open **System Settings → Privacy & Security**, scroll to Security, and choose **Open Anyway** for Makora.
+
+            If macOS still says Makora is damaged, and you downloaded it from this release, run this in Terminal:
+
+            ```sh
+            xattr -dr com.apple.quarantine /Applications/Makora.app
+            ```
           draft: true
           prerelease: ${{ contains(steps.get_version.outputs.version, '-') }}
           fail_on_unmatched_files: true

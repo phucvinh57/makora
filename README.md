@@ -33,6 +33,20 @@ downloads for your operating system. If a build is not available yet, the
 [contributing guide](CONTRIBUTING.md#building-and-running) explains how to run
 Makora from source.
 
+### macOS first launch
+
+The macOS release is ad hoc signed and is not notarized by Apple. After moving
+Makora to Applications, try opening it once. If macOS blocks it, open **System
+Settings → Privacy & Security**, scroll to Security, and choose **Open Anyway**
+for Makora.
+
+If macOS still says Makora is damaged, and you downloaded it from the official
+Makora release, remove the download quarantine flag in Terminal:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Makora.app
+```
+
 After opening Makora:
 
 - **macOS:** Allow Makora in **System Settings → Privacy & Security →
