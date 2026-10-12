@@ -16,7 +16,7 @@ on:
         default: true
         type: boolean
       build_macos:
-        description: Build macOS installers for Apple silicon and Intel
+        description: Build the macOS installer for Apple silicon
         required: false
         default: false
         type: boolean
@@ -37,7 +37,7 @@ on:
         default: true
         type: boolean
       build_macos:
-        description: Build macOS installers for Apple silicon and Intel
+        description: Build the macOS installer for Apple silicon
         required: false
         default: false
         type: boolean
@@ -89,22 +89,13 @@ jobs:
           }
 
           if (enabled.macos) {
-            matrix.push(
-              {
-                platform: "macos-15",
-                arch: "aarch64",
-                target: "aarch64-apple-darwin",
-                artifact_name: "makora-macos-arm64",
-                files: "src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg",
-              },
-              {
-                platform: "macos-15-intel",
-                arch: "x64",
-                target: "x86_64-apple-darwin",
-                artifact_name: "makora-macos-x64",
-                files: "src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg",
-              },
-            );
+            matrix.push({
+              platform: "macos-15",
+              arch: "aarch64",
+              target: "aarch64-apple-darwin",
+              artifact_name: "makora-macos-arm64",
+              files: "src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg",
+            });
           }
 
           if (enabled.windows) {
@@ -218,6 +209,8 @@ jobs:
 
       - name: Build Tauri app
         shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: ${{ startsWith(matrix.target, 'aarch64-apple-darwin') && '10.15' || '' }}
         run: |
           if [ -n "${{ matrix.target }}" ]; then
             bun tauri build --target "${{ matrix.target }}"
