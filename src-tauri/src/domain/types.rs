@@ -35,7 +35,7 @@ pub struct UncategorizedActivity {
 pub struct AiVerdict {
     pub activity_id: ActivityId,
     pub category_id: Option<CategoryId>,
-    pub confidence: Confidence,
+    pub confidence: Option<Confidence>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

@@ -21,6 +21,8 @@ use tracing::{error, info};
 use crate::ai::embedding::LlamaEmbedder;
 use crate::ai::llm::{LlamaClassifier, ModelCache};
 use crate::ai::model_download::ModelDownloadState;
+use crate::ai::router::LlmRouter;
+use crate::ai::secrets::{KeyringSecrets, SecretStore};
 use crate::categorization::application::ai_run::AiRunState;
 use crate::categorization::ports::{Classifier, Embedder};
 use crate::categorization::{
@@ -87,11 +89,15 @@ pub fn run() {
             host::commands::models::ai_model_cancel_download,
             host::commands::models::ai_model_is_installed,
             host::commands::models::ai_model_list_installed,
+            host::commands::providers::ai_provider_save,
+            host::commands::providers::ai_provider_remove,
+            host::commands::providers::ai_provider_has_key,
+            host::commands::providers::ai_provider_list_models,
             host::commands::settings::settings_get,
             host::commands::settings::settings_set_min_session_seconds,
             host::commands::settings::settings_add_exclusion,
             host::commands::settings::settings_remove_exclusion,
-            host::commands::settings::settings_set_llm_model,
+            host::commands::settings::settings_set_llm,
             host::commands::settings::settings_set_embedding_model,
             host::commands::settings::settings_set_auto_categorize_hours,
         ])
@@ -137,11 +143,14 @@ pub fn run() {
             app.manage(Box::new(SqliteClassification::new(conn.clone())) as Box<dyn ClassificationSvc>);
             app.manage(Box::new(SqliteRules::new(conn.clone())) as Box<dyn RuleSvc>);
             app.manage(Box::new(SqliteLabeling::new(conn)) as Box<dyn LabelingSvc>);
+            let secrets: Arc<dyn SecretStore> = Arc::new(KeyringSecrets);
+            let classifier = LlmRouter::new(LlamaClassifier::new(models.clone()), settings.clone(), secrets.clone());
             app.manage(settings);
+            app.manage(secrets);
             app.manage(AiRunState::default());
             app.manage(host::auto_categorize::ScheduleAnchor::new(data_dir.join("ai-last-run")));
             app.manage(ModelDownloadState::default());
-            app.manage(Box::new(LlamaClassifier::new(models.clone())) as Box<dyn Classifier>);
+            app.manage(Box::new(classifier) as Box<dyn Classifier>);
             app.manage(embedder);
             app.manage(embeddings);
             app.manage(indexer);

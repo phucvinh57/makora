@@ -81,13 +81,13 @@ impl ActivityClassification {
 
     /// The model proposes `category`, replacing whatever it said before — a rejected suggestion
     /// included. A pinned activity is not the model's to change, so it is ignored.
-    pub fn suggest(&mut self, category: CategoryId, confidence: Confidence) {
+    pub fn suggest(&mut self, category: CategoryId, confidence: Option<Confidence>) {
         if self.is_pinned() {
             return;
         }
         self.suggestion = Some(AiSuggestion {
             category,
-            confidence: Some(confidence),
+            confidence,
             rejected: false,
         });
     }

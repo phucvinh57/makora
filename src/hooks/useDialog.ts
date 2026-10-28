@@ -7,6 +7,8 @@ export type DialogName =
   | "add-model"
   | "delete-category"
   | "edit-category"
+  | "provider"
+  | "remove-provider"
   | "reset-categorization"
   | "rule";
 

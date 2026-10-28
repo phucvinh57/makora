@@ -21,6 +21,14 @@ pub struct ActivityText {
     pub title: String,
 }
 
+/// The language model a run labels with: `provider` is `None` for the local one, or the id of a
+/// remote provider the classifier knows how to reach.
+#[derive(Debug, Clone)]
+pub struct LlmSpec {
+    pub provider: Option<String>,
+    pub model: String,
+}
+
 pub trait Embedder: Send + Sync {
     /// The embedding of each of `texts`, in order.
     fn embed(&self, model: &str, texts: &[String]) -> Result<Vec<Embedding>>;
@@ -28,15 +36,16 @@ pub trait Embedder: Send + Sync {
 
 pub trait Classifier: Send + Sync {
     /// Classifies each activity into one of the categories of `taxonomy`, reporting
-    /// `(index, category, confidence)` through `on_answer` after every one — the category is
-    /// `None` when none fits. Returning `false` from `on_answer` stops the run, keeping what was
-    /// reported so far.
+    /// `(index, category, confidence)` through `on_answer` as each one is answered, not
+    /// necessarily in order — the category is `None` when none fits, the confidence when the model
+    /// gave none. Returning `false` from `on_answer` stops the run, keeping what was reported so
+    /// far.
     fn classify(
         &self,
-        model: &str,
+        llm: &LlmSpec,
         taxonomy: &[Category],
         activities: &[ActivityText],
         related: &dyn Fn(usize) -> Vec<RelatedActivity>,
-        on_answer: &mut dyn FnMut(usize, Option<CategoryId>, Confidence) -> bool,
+        on_answer: &mut dyn FnMut(usize, Option<CategoryId>, Option<Confidence>) -> bool,
     ) -> Result<()>;
 }

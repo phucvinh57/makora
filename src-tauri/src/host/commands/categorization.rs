@@ -11,7 +11,7 @@ use crate::categorization::application::rules::{
     CategoryRuleView, PathSuggestion, RuleDraft, RulePreview, SourceSuggestion,
 };
 use crate::categorization::domain::rules::{PatternField, RuleKind};
-use crate::categorization::ports::{Classifier, Embedder};
+use crate::categorization::ports::{Classifier, Embedder, LlmSpec};
 use crate::categorization::{ClassificationSvc, EmbeddingSvc, RuleSvc};
 use crate::domain::LabelingSvc;
 use crate::host::auto_categorize::{next_run, ScheduleAnchor};
@@ -112,7 +112,10 @@ pub fn run_categorization(app: &AppHandle, recheck: bool) -> Result<AiRunOutcome
         embeddings: &**embeddings,
     };
     let models = AiModels {
-        llm: settings.ai.llm_model,
+        llm: LlmSpec {
+            provider: settings.ai.llm_provider,
+            model: settings.ai.llm_model,
+        },
         embedding: settings.ai.embedding_model,
     };
     let outcome = state.run(&deps, &models, recheck, &mut |progress| {

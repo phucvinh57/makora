@@ -11,7 +11,7 @@ computer.
 
 ## Install and enable
 
-Makora supports GNOME Shell 45 through 50.
+Makora supports GNOME Shell 45 through 51.
 
 ### If you installed Makora from a DEB or RPM package
 

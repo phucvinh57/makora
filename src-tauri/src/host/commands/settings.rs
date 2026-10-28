@@ -50,12 +50,19 @@ pub fn settings_remove_exclusion(
     Ok(settings.remove_exclusion(&Exclusion { kind, field, value })?)
 }
 
+/// Sets the LLM to `model` on the remote `provider`, or on the local runtime when it is left out.
 #[tauri::command]
-pub fn settings_set_llm_model(settings: State<Arc<dyn SettingsStore>>, model: String) -> Result<Settings, IpcError> {
+pub fn settings_set_llm(
+    settings: State<Arc<dyn SettingsStore>>,
+    provider: Option<String>,
+    model: String,
+) -> Result<Settings, IpcError> {
     if model.trim().is_empty() {
         return Err(IpcError::invalid_input("a model needs a name"));
     }
-    Ok(settings.set_llm_model(&model)?)
+    settings
+        .set_llm(provider.as_deref(), &model)
+        .map_err(|err| IpcError::invalid_input(err.to_string()))
 }
 
 #[tauri::command]

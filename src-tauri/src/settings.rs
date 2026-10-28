@@ -42,23 +42,53 @@ pub const DEFAULT_AUTO_CATEGORIZE_HOURS: u32 = 24;
 /// The periods automatic categorization can be set to: 3, 6 and 12 hours, 1 and 3 days, a week.
 pub const AUTO_CATEGORIZE_HOURS_OPTIONS: [u32; 6] = [3, 6, 12, 24, 72, 168];
 
-/// The models AI categorization runs on (an Ollama name or a `.gguf` path each), and how often it
-/// runs on its own.
+/// The models AI categorization runs on, and how often it runs on its own. The embedding model is
+/// always local (an Ollama name or a `.gguf` path); the LLM is local too unless `llm_provider`
+/// names one of `providers`, in which case `llm_model` is that provider's model id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AiSettings {
+    pub llm_provider: Option<String>,
     pub llm_model: String,
     pub embedding_model: String,
     /// Hours between background runs; `0` turns them off.
     pub auto_categorize_hours: u32,
+    pub providers: Vec<ProviderConfig>,
+}
+
+/// How a remote provider is spoken to: the OpenAI chat-completions API, which most providers and
+/// local servers also offer, or Anthropic's messages API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProviderKind {
+    OpenAi,
+    Anthropic,
+}
+
+/// A remote LLM provider. Its API key, if it needs one, is kept in the OS keychain under `id`,
+/// never here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderConfig {
+    pub id: String,
+    pub name: String,
+    pub kind: ProviderKind,
+    pub base_url: String,
+}
+
+impl AiSettings {
+    pub fn provider(&self, id: &str) -> Option<&ProviderConfig> {
+        self.providers.iter().find(|provider| provider.id == id)
+    }
 }
 
 impl Default for AiSettings {
     fn default() -> Self {
         Self {
+            llm_provider: None,
             llm_model: llm::DEFAULT_MODEL.to_string(),
             embedding_model: embedding::DEFAULT_MODEL.to_string(),
             auto_categorize_hours: DEFAULT_AUTO_CATEGORIZE_HOURS,
+            providers: Vec::new(),
         }
     }
 }
@@ -68,9 +98,14 @@ pub trait SettingsStore: Send + Sync {
     fn set_min_session_seconds(&self, seconds: i64) -> Result<Settings>;
     fn add_exclusion(&self, exclusion: Exclusion) -> Result<Settings>;
     fn remove_exclusion(&self, exclusion: &Exclusion) -> Result<Settings>;
-    fn set_llm_model(&self, model: &str) -> Result<Settings>;
+    /// Sets the LLM to `model` on `provider`, or on the local runtime when it is `None`.
+    fn set_llm(&self, provider: Option<&str>, model: &str) -> Result<Settings>;
     fn set_embedding_model(&self, model: &str) -> Result<Settings>;
     fn set_auto_categorize_hours(&self, hours: u32) -> Result<Settings>;
+    /// Adds `provider`, or replaces the one with its id.
+    fn save_provider(&self, provider: ProviderConfig) -> Result<Settings>;
+    /// Removes the provider with `id`. If the LLM was on it, it goes back to the local default.
+    fn remove_provider(&self, id: &str) -> Result<Settings>;
 }
 
 pub struct TomlSettings {
@@ -110,6 +145,15 @@ impl TomlSettings {
         }
 
         settings.tracking.excluded = normalized_exclusions(std::mem::take(&mut settings.tracking.excluded));
+
+        settings.ai.providers = normalized_providers(std::mem::take(&mut settings.ai.providers));
+        if let Some(id) = settings.ai.llm_provider.as_deref() {
+            if settings.ai.provider(id).is_none() {
+                warn!(provider = id, "ai.llm_provider is not one of ai.providers; using the local model");
+                settings.ai.llm_provider = None;
+                settings.ai.llm_model = llm::DEFAULT_MODEL.to_string();
+            }
+        }
 
         let defaults = AiSettings::default();
         if settings.ai.llm_model.trim().is_empty() {
@@ -160,6 +204,41 @@ fn normalized_exclusions(entries: Vec<Exclusion>) -> Vec<Exclusion> {
     kept
 }
 
+/// Drops the providers that cannot be used or repeat an earlier id.
+fn normalized_providers(entries: Vec<ProviderConfig>) -> Vec<ProviderConfig> {
+    let mut kept: Vec<ProviderConfig> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        match validated_provider(entry) {
+            Ok(provider) if kept.iter().all(|other| other.id != provider.id) => kept.push(provider),
+            Ok(provider) => warn!(id = %provider.id, "ai.providers repeats an id; ignoring"),
+            Err(err) => warn!(error = %err, "ai.providers entry is not valid; ignoring"),
+        }
+    }
+    kept
+}
+
+fn validated_provider(provider: ProviderConfig) -> Result<ProviderConfig> {
+    let id = provider.id.trim();
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')) {
+        bail!("a provider id must be letters, digits, '-' or '_' (got \"{id}\")");
+    }
+    let name = provider.name.trim();
+    if name.is_empty() {
+        bail!("a provider needs a name");
+    }
+    let base_url = provider.base_url.trim().trim_end_matches('/');
+    match url::Url::parse(base_url) {
+        Ok(url) if matches!(url.scheme(), "http" | "https") => {}
+        _ => bail!("\"{base_url}\" is not an http(s) URL"),
+    }
+    Ok(ProviderConfig {
+        id: id.to_string(),
+        name: name.to_string(),
+        kind: provider.kind,
+        base_url: base_url.to_string(),
+    })
+}
+
 fn model_name(model: &str) -> Result<String> {
     let model = model.trim();
     if model.is_empty() {
@@ -196,9 +275,17 @@ impl SettingsStore for TomlSettings {
         self.update(|settings| settings.tracking.excluded.retain(|entry| entry != exclusion))
     }
 
-    fn set_llm_model(&self, model: &str) -> Result<Settings> {
+    fn set_llm(&self, provider: Option<&str>, model: &str) -> Result<Settings> {
         let model = model_name(model)?;
-        self.update(|settings| settings.ai.llm_model = model)
+        if let Some(id) = provider {
+            if self.get().ai.provider(id).is_none() {
+                bail!("there is no provider \"{id}\"");
+            }
+        }
+        self.update(|settings| {
+            settings.ai.llm_provider = provider.map(str::to_string);
+            settings.ai.llm_model = model;
+        })
     }
 
     fn set_embedding_model(&self, model: &str) -> Result<Settings> {
@@ -211,6 +298,24 @@ impl SettingsStore for TomlSettings {
             bail!("automatic categorization must run every one of {AUTO_CATEGORIZE_HOURS_OPTIONS:?} hours, or 0 to turn it off");
         }
         self.update(|settings| settings.ai.auto_categorize_hours = hours)
+    }
+
+    fn save_provider(&self, provider: ProviderConfig) -> Result<Settings> {
+        let provider = validated_provider(provider)?;
+        self.update(|settings| match settings.ai.providers.iter_mut().find(|other| other.id == provider.id) {
+            Some(existing) => *existing = provider,
+            None => settings.ai.providers.push(provider),
+        })
+    }
+
+    fn remove_provider(&self, id: &str) -> Result<Settings> {
+        self.update(|settings| {
+            settings.ai.providers.retain(|provider| provider.id != id);
+            if settings.ai.llm_provider.as_deref() == Some(id) {
+                settings.ai.llm_provider = None;
+                settings.ai.llm_model = llm::DEFAULT_MODEL.to_string();
+            }
+        })
     }
 }
 

@@ -37,17 +37,18 @@ use llama_cpp_2::model::{LlamaChatMessage, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 use llama_cpp_2::token::LlamaToken;
 use llama_cpp_2::{send_logs_to_tracing, LogOptions};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::categorization::domain::retrieval::RelatedActivity;
-use crate::categorization::ports::{ActivityText, Classifier};
+use crate::categorization::ports::{ActivityText, Classifier, LlmSpec};
 use crate::domain::types::Category;
 use crate::shared::confidence::Confidence;
 use crate::shared::ids::CategoryId;
-use crate::shared::text::{clip, single_line};
+use crate::shared::text::single_line;
 
 use super::choices::{choices, Choice};
+use super::prompt::{related_line, system_prompt, user_prompt, NONE_ANSWER};
 
 /// Offload used when the model's GPU memory footprint could not be measured (see
 /// [`fitted_model_params`]). CPU-only always loads, just slower than a GPU-fit config would be.
@@ -62,10 +63,6 @@ pub const DEFAULT_MODEL: &str = "qwen2.5:7b-instruct";
 const N_CTX: u32 = 4096;
 const N_BATCH: u32 = 512;
 const MAX_REPLY_TOKENS: usize = 48;
-const MAX_TITLE_CHARS: usize = 200;
-const MAX_URL_CHARS: usize = 200;
-const MAX_RELATED_CHARS: usize = 80;
-const NONE_ANSWER: &str = "None";
 
 pub struct LlamaClassifier {
     cache: ModelCache,
@@ -80,13 +77,13 @@ impl LlamaClassifier {
 impl Classifier for LlamaClassifier {
     fn classify(
         &self,
-        model: &str,
+        llm: &LlmSpec,
         taxonomy: &[Category],
         activities: &[ActivityText],
         related: &dyn Fn(usize) -> Vec<RelatedActivity>,
-        on_answer: &mut dyn FnMut(usize, Option<CategoryId>, Confidence) -> bool,
+        on_answer: &mut dyn FnMut(usize, Option<CategoryId>, Option<Confidence>) -> bool,
     ) -> Result<()> {
-        classify(&self.cache, model, taxonomy, activities, related, on_answer)
+        classify(&self.cache, &llm.model, taxonomy, activities, related, on_answer)
     }
 }
 
@@ -128,7 +125,6 @@ pub(super) fn backend() -> Result<&'static LlamaBackend> {
     let backend = LlamaBackend::init().context("initializing llama.cpp")?;
     Ok(BACKEND.get_or_init(|| backend))
 }
-
 
 const IDLE_TTL: Duration = Duration::from_secs(10 * 60);
 const REAPER_POLL: Duration = Duration::from_secs(15);
@@ -286,16 +282,39 @@ fn ollama_roots() -> Vec<PathBuf> {
     roots
 }
 
+#[derive(Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelRole {
+    Llm,
+    Embedding,
+}
+
+#[derive(Serialize)]
+pub struct InstalledModel {
+    pub name: String,
+    pub role: ModelRole,
+}
+
 /// Lists models available locally right now: those downloaded into Makora's own directory plus
-/// anything Ollama has already pulled. Each entry is a name [`resolve_model`] accepts
-/// (`llama3.2:3b`, `user/repo:tag`, ...).
-pub fn installed_models() -> Vec<String> {
+/// anything Ollama has already pulled. Each name is one [`resolve_model`] accepts
+/// (`llama3.2:3b`, `user/repo:tag`, ...); models whose file cannot be read are left out.
+pub fn installed_models() -> Vec<InstalledModel> {
     let mut names = std::collections::BTreeSet::new();
     for root in ollama_roots() {
         let base = root.join("manifests/registry.ollama.ai");
         collect_manifest_names(&base, &base, &mut names);
     }
-    names.into_iter().collect()
+    names
+        .into_iter()
+        .filter_map(|name| {
+            let is_embedding = resolve_model(&name)
+                .and_then(|path| super::gguf::is_embedding_model(&path))
+                .inspect_err(|err| warn!(model = %name, "skipping unreadable installed model: {err:#}"))
+                .ok()?;
+            let role = if is_embedding { ModelRole::Embedding } else { ModelRole::Llm };
+            Some(InstalledModel { name, role })
+        })
+        .collect()
 }
 
 fn collect_manifest_names(base: &Path, dir: &Path, names: &mut std::collections::BTreeSet<String>) {
@@ -346,7 +365,6 @@ fn ollama_blob(root: &Path, manifest: &Path) -> Result<PathBuf> {
     Ok(blob)
 }
 
-
 fn grammar(choices: &[Choice]) -> String {
     let alternatives = std::iter::once(NONE_ANSWER)
         .chain(choices.iter().map(|c| c.path.as_str()))
@@ -357,63 +375,6 @@ fn grammar(choices: &[Choice]) -> String {
         .collect::<Vec<_>>()
         .join(" | ");
     format!("root ::= {alternatives}")
-}
-
-/// `- App | domain/path | Title => Category`. `None` when the category has since been deleted.
-fn related_line(related: &RelatedActivity, paths: &HashMap<CategoryId, &str>) -> Option<String> {
-    let path = paths.get(&related.category)?;
-    let mut line = format!("- {}", clip(&related.app_name, MAX_RELATED_CHARS));
-    if let Some(url) = &related.url {
-        line.push_str(&format!(" | {}", clip(url, MAX_RELATED_CHARS)));
-    }
-    line.push_str(&format!(
-        " | {} => {path}",
-        clip(&related.title, MAX_RELATED_CHARS)
-    ));
-    Some(line)
-}
-
-fn system_prompt(choices: &[Choice]) -> String {
-    let mut prompt = String::from(
-        "You label computer activity for a time tracker. Given the app, page URL and window \
-         title, weigh the URL and the title together and reply with exactly one category \
-         from the list below, using the most specific one that fits. How the user filed similar \
-         activities, when shown, takes precedence over the descriptions. Reply \"None\" \
-         if no category fits.\n\nCategories:\n",
-    );
-    for choice in choices {
-        prompt.push_str("- ");
-        prompt.push_str(&choice.path);
-        if let Some(description) = choice.description.as_deref().map(single_line) {
-            if !description.is_empty() {
-                prompt.push_str(": ");
-                prompt.push_str(&description);
-            }
-        }
-        prompt.push('\n');
-    }
-    prompt
-}
-
-fn user_prompt(activity: &ActivityText, related: &[String]) -> String {
-    let mut prompt = String::new();
-    if !related.is_empty() {
-        prompt.push_str("Activities the user filed that are most like this one:\n");
-        for line in related {
-            prompt.push_str(line);
-            prompt.push('\n');
-        }
-        prompt.push_str("\nLabel this activity:\n");
-    }
-    prompt.push_str(&format!("App: {}\n", single_line(&activity.app_name)));
-    if let Some(url) = &activity.url {
-        prompt.push_str(&format!("URL: {}\n", clip(url, MAX_URL_CHARS)));
-    }
-    prompt.push_str(&format!(
-        "Title: {}",
-        clip(&activity.title, MAX_TITLE_CHARS)
-    ));
-    prompt
 }
 
 /// Classifies each activity into one of the `categories`, reporting the chosen category
@@ -429,7 +390,7 @@ pub fn classify(
     categories: &[Category],
     activities: &[ActivityText],
     related: &dyn Fn(usize) -> Vec<RelatedActivity>,
-    on_result: impl FnMut(usize, Option<CategoryId>, Confidence) -> bool,
+    on_result: impl FnMut(usize, Option<CategoryId>, Option<Confidence>) -> bool,
 ) -> Result<()> {
     let choices = choices(categories);
     if choices.is_empty() {
@@ -465,7 +426,7 @@ fn run(
     choices: &[Choice],
     activities: &[ActivityText],
     related: &dyn Fn(usize) -> Vec<RelatedActivity>,
-    mut on_result: impl FnMut(usize, Option<CategoryId>, Confidence) -> bool,
+    mut on_result: impl FnMut(usize, Option<CategoryId>, Option<Confidence>) -> bool,
 ) -> Result<()> {
     let setup = Instant::now();
     let threads = std::thread::available_parallelism()
@@ -598,7 +559,7 @@ fn run(
         let answer = answer.trim();
         debug!(answer, title = %activity.title, "classified");
 
-        if !on_result(index, by_path.get(answer).copied(), Confidence::new(confidence)) {
+        if !on_result(index, by_path.get(answer).copied(), Some(Confidence::new(confidence))) {
             break;
         }
     }

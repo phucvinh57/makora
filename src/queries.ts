@@ -1,6 +1,7 @@
 import { queryOptions, type QueryClient } from "@tanstack/react-query";
 import {
   aiModel,
+  aiProvider,
   aiReview,
   categorization,
   category,
@@ -25,6 +26,8 @@ export const queryKeys = {
   aiModelLoaded: ["aiModelLoaded"],
   aiInstalledModels: ["aiInstalledModels"],
   aiModelInstalled: ["aiModelInstalled"],
+  aiProviderHasKey: ["aiProviderHasKey"],
+  aiProviderModels: ["aiProviderModels"],
   autostartEnabled: ["autostartEnabled"],
   settings: ["settings"],
 } as const;
@@ -62,6 +65,21 @@ export const installedModelsQueryOptions = queryOptions({
   queryKey: queryKeys.aiInstalledModels,
   queryFn: aiModel.listInstalled,
 });
+
+export const providerHasKeyQueryOptions = (id: string) =>
+  queryOptions({
+    queryKey: [...queryKeys.aiProviderHasKey, id],
+    queryFn: () => aiProvider.hasKey(id),
+  });
+
+/** Also the connection test: it fails when the address or the key does not work. */
+export const providerModelsQueryOptions = (id: string) =>
+  queryOptions({
+    queryKey: [...queryKeys.aiProviderModels, id],
+    queryFn: () => aiProvider.listModels(id),
+    staleTime: 5 * 60_000,
+    retry: false,
+  });
 
 export const categorizeStatusQueryOptions = queryOptions({
   queryKey: queryKeys.aiCategorizeStatus,

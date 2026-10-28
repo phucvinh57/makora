@@ -1,9 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { PlusIcon } from "lucide-react";
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { aiModel, categorization, settings } from "@/api";
 import type { AddModelDialogData } from "@/components/dialogs/AddModelDialog";
+import { type Suggestion, SuggestInput } from "@/components/SuggestInput";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -23,14 +25,114 @@ import {
   installedModelsQueryOptions,
   invalidateCategorizationQueries,
   markCategorizeStarted,
+  providerModelsQueryOptions,
   queryKeys,
   settingsQueryOptions,
 } from "@/queries";
-import type { ModelRole } from "@/types";
+import type { InstalledModel, ModelRole, ProviderConfig } from "@/types";
 import { AutoCategorizeSetting } from "./AutoCategorizeSetting";
 
 const ADD_MODEL_VALUE = "__add_model__";
-const NO_MODELS: string[] = [];
+const LOCAL_PROVIDER = "__local__";
+/** The local LLM switched back to when no other local model was in use this session. */
+const DEFAULT_LOCAL_LLM = "qwen2.5:7b-instruct";
+const NO_MODELS: InstalledModel[] = [];
+const NO_PROVIDERS: ProviderConfig[] = [];
+
+function ProviderSelect({
+  value,
+  providers,
+  disabled,
+  onChange,
+}: {
+  value: string | null;
+  providers: ProviderConfig[];
+  disabled: boolean;
+  onChange: (provider: string | null) => void;
+}) {
+  const items = {
+    [LOCAL_PROVIDER]: "Local (on this machine)",
+    ...Object.fromEntries(providers.map((p) => [p.id, p.name])),
+  };
+  return (
+    <div className="flex flex-col gap-1">
+      <label htmlFor="ai-llm-provider" className="text-xs font-medium">
+        Language model runs on
+      </label>
+      <Select
+        value={value ?? LOCAL_PROVIDER}
+        onValueChange={(next) => {
+          if (!next) return;
+          onChange(next === LOCAL_PROVIDER ? null : next);
+        }}
+        items={items}
+        disabled={disabled}
+      >
+        <SelectTrigger id="ai-llm-provider" size="sm" className="w-56">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {Object.entries(items).map(([id, label]) => (
+            <SelectItem key={id} value={id}>
+              {label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+/** A remote model id: suggested from what the provider lists, typed freely when it lists none. */
+function RemoteModelInput({
+  provider,
+  value,
+  disabled,
+  onApply,
+}: {
+  provider: ProviderConfig;
+  value: string;
+  disabled: boolean;
+  onApply: (model: string) => void;
+}) {
+  const [typed, setTyped] = useState(value);
+  const modelsQuery = useQuery(providerModelsQueryOptions(provider.id));
+  const suggestions: Suggestion[] = (modelsQuery.data ?? []).map((model) => ({
+    value: model,
+  }));
+  const trimmed = typed.trim();
+  const canApply = !disabled && trimmed !== "" && trimmed !== value;
+  return (
+    <form
+      className="flex flex-col gap-1"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (canApply) onApply(trimmed);
+      }}
+    >
+      <span className="text-xs font-medium">Language model</span>
+      <div className="flex items-center gap-2">
+        <div className="w-72">
+          <SuggestInput
+            value={typed}
+            onValueChange={setTyped}
+            suggestions={suggestions}
+            placeholder={modelsQuery.isPending ? "Loading models…" : "Model id"}
+            ariaLabel="Language model"
+          />
+        </div>
+        <Button type="submit" size="sm" variant="outline" disabled={!canApply}>
+          Use
+        </Button>
+      </div>
+      {modelsQuery.isError && (
+        <p className="m-0 text-xs text-destructive">
+          Could not list {provider.name}'s models: {String(modelsQuery.error)}
+        </p>
+      )}
+    </form>
+  );
+}
 
 function ModelSelect({
   id,
@@ -114,34 +216,60 @@ export function AiCategorizationSection() {
   const downloadStatus = useQuery(downloadStatusQueryOptions).data;
 
   const installedModels = installedModelsQuery.data ?? NO_MODELS;
+  const installedLlms = installedModels
+    .filter((m) => m.role === "llm")
+    .map((m) => m.name);
+  const installedEmbeddings = installedModels
+    .filter((m) => m.role === "embedding")
+    .map((m) => m.name);
+  const providers = settingsQuery.data?.ai.providers ?? NO_PROVIDERS;
+  const savedProviderId = settingsQuery.data?.ai.llm_provider ?? null;
   const llmModel = settingsQuery.data?.ai.llm_model;
   const embeddingModel = settingsQuery.data?.ai.embedding_model;
-  const modelsReady =
+  // A remote provider picked here only takes effect once a model is chosen for it.
+  const [pendingProviderId, setPendingProviderId] = useState<string | null>(
+    null,
+  );
+  const shownProvider = providers.find(
+    (p) => p.id === (pendingProviderId ?? savedProviderId),
+  );
+  const savedProvider = providers.find((p) => p.id === savedProviderId);
+  const lastLocalModel = useRef<string | null>(null);
+  useEffect(() => {
+    if (savedProviderId === null && llmModel !== undefined) {
+      lastLocalModel.current = llmModel;
+    }
+  }, [savedProviderId, llmModel]);
+  const llmReady =
     llmModel !== undefined &&
+    (savedProviderId !== null
+      ? savedProvider !== undefined
+      : installedLlms.includes(llmModel));
+  const modelsReady =
+    llmReady &&
     embeddingModel !== undefined &&
-    installedModels.includes(llmModel) &&
-    installedModels.includes(embeddingModel);
-  const missingModels: { role: ModelRole; model: string }[] = [];
-  if (installedModelsQuery.isSuccess && llmModel !== undefined) {
-    if (!installedModels.includes(llmModel)) {
-      missingModels.push({ role: "llm", model: llmModel });
-    }
-  }
-  if (installedModelsQuery.isSuccess && embeddingModel !== undefined) {
-    if (!installedModels.includes(embeddingModel)) {
-      missingModels.push({ role: "embedding", model: embeddingModel });
-    }
-  }
+    installedEmbeddings.includes(embeddingModel);
 
   // A download keeps going in the backend across a page reload. Reopen the dialog when one is
   // found, so its progress bar and Stop button are reachable again.
   const backendDownloading = downloadStatus?.running ?? false;
 
   const setModelMutation = useMutation({
-    mutationFn: ({ role, model }: { role: ModelRole; model: string }) =>
+    mutationFn: ({
+      role,
+      model,
+      provider = null,
+    }: {
+      role: ModelRole;
+      model: string;
+      provider?: string | null;
+    }) =>
       role === "llm"
-        ? settings.setLlmModel(model)
+        ? settings.setLlm(provider, model)
         : settings.setEmbeddingModel(model),
+    onSuccess: (_, { role }) => {
+      if (role === "llm") setPendingProviderId(null);
+    },
     onError: (err) => toast.error(String(err)),
     onSettled: () =>
       queryClient.invalidateQueries({ queryKey: queryKeys.settings }),
@@ -209,14 +337,21 @@ export function AiCategorizationSection() {
     active
       ? progress
         ? `Categorizing ${progress.done}/${progress.total}…`
-        : "Loading models…"
+        : savedProvider
+          ? "Starting…"
+          : "Loading models…"
       : idle;
 
-  const canRun = modelsReady && categories.length > 0;
+  const choosingProvider =
+    shownProvider !== undefined && shownProvider.id !== savedProviderId;
+  const canRun = modelsReady && categories.length > 0 && !choosingProvider;
   const blocker =
-    modelsReady && categories.length === 0
-      ? "Create a category to begin."
-      : null;
+    choosingProvider && shownProvider
+      ? `Choose a model to switch to ${shownProvider.name}.`
+      : modelsReady && categories.length === 0
+        ? "Create a category to begin."
+        : null;
+  const modelsDisabled = running || downloading || setModelMutation.isPending;
 
   return (
     <Card size="sm">
@@ -231,23 +366,78 @@ export function AiCategorizationSection() {
               label="Embedding model"
               modelRole="embedding"
               value={embeddingModel}
-              installed={installedModels}
-              disabled={running || downloading || setModelMutation.isPending}
+              installed={installedEmbeddings}
+              disabled={modelsDisabled}
               onChange={(model) => applyModel("embedding", model)}
             />
           )}
-          {llmModel !== undefined && (
-            <ModelSelect
-              id="ai-llm-model"
-              label="Language model"
-              modelRole="llm"
-              value={llmModel}
-              installed={installedModels}
-              disabled={running || downloading || setModelMutation.isPending}
-              onChange={(model) => applyModel("llm", model)}
-            />
-          )}
         </div>
+        <div className="flex flex-wrap items-end gap-4">
+          <ProviderSelect
+            value={shownProvider?.id ?? null}
+            providers={providers}
+            disabled={modelsDisabled}
+            onChange={(provider) => {
+              if (provider === null) {
+                setPendingProviderId(null);
+                if (savedProviderId !== null) {
+                  applyModel(
+                    "llm",
+                    lastLocalModel.current ?? DEFAULT_LOCAL_LLM,
+                  );
+                }
+                return;
+              }
+              setPendingProviderId(
+                provider === savedProviderId ? null : provider,
+              );
+            }}
+          />
+          {shownProvider
+            ? llmModel !== undefined && (
+                <RemoteModelInput
+                  key={shownProvider.id}
+                  provider={shownProvider}
+                  value={shownProvider === savedProvider ? llmModel : ""}
+                  disabled={modelsDisabled}
+                  onApply={(model) =>
+                    setModelMutation.mutate({
+                      role: "llm",
+                      model,
+                      provider: shownProvider.id,
+                    })
+                  }
+                />
+              )
+            : llmModel !== undefined && (
+                <ModelSelect
+                  id="ai-llm-model"
+                  label="Language model"
+                  modelRole="llm"
+                  value={llmModel}
+                  installed={installedLlms}
+                  disabled={modelsDisabled}
+                  onChange={(model) => applyModel("llm", model)}
+                />
+              )}
+        </div>
+        {shownProvider ? (
+          <p className="m-0 text-xs text-muted-foreground">
+            The titles and addresses of the activities being labeled, and your
+            category names, are sent to {shownProvider.name} (
+            {shownProvider.base_url}).
+          </p>
+        ) : (
+          providers.length === 0 && (
+            <p className="m-0 text-xs text-muted-foreground">
+              To label with OpenAI, Anthropic or another hosted model,{" "}
+              <Link to="/settings" className="underline hover:text-foreground">
+                add a provider in Settings
+              </Link>
+              .
+            </p>
+          )
+        )}
         <AutoCategorizeSetting />
         <div className="flex flex-wrap items-center gap-3">
           <Button

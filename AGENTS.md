@@ -1,6 +1,6 @@
 ## What this is
 
-Makora is a local desktop time tracker: Tauri 2 + Rust backend, React/TypeScript frontend, SQLite storage. It records one row per activity block — an app gains focus, a row opens; a different app takes focus, it closes. Nothing leaves the machine. An optional browser extension (`extensions/browser/`) reports the active tab so browser time splits per site instead of one opaque `chrome` block.
+Makora is a local desktop time tracker: Tauri 2 + Rust backend, React/TypeScript frontend, SQLite storage. It records one row per activity block — an app gains focus, a row opens; a different app takes focus, it closes. Nothing leaves the machine unless the user opts into a remote LLM provider (OpenAI, Anthropic or OpenAI-compatible, configured under Settings) for AI categorization; embeddings always stay local. An optional browser extension (`extensions/browser/`) reports the active tab so browser time splits per site instead of one opaque `chrome` block.
 
 ## Commands
 

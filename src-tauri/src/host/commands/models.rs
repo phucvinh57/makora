@@ -31,7 +31,7 @@ pub fn ai_model_is_installed(model: String) -> bool {
 }
 
 #[tauri::command]
-pub fn ai_model_list_installed() -> Vec<String> {
+pub fn ai_model_list_installed() -> Vec<llm::InstalledModel> {
     llm::installed_models()
 }
 

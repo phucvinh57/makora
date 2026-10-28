@@ -16,9 +16,11 @@ import type {
   CategoryRule,
   Exclusion,
   FeedbackStats,
+  InstalledModel,
   ModelDownloadStatus,
   PathSuggestion,
   PatternField,
+  ProviderDraft,
   ReviewFilter,
   RuleDraft,
   RuleKind,
@@ -246,7 +248,7 @@ export const aiModel = {
     return call("ai_model_is_installed", { model });
   },
 
-  listInstalled(): Promise<string[]> {
+  listInstalled(): Promise<InstalledModel[]> {
     return call("ai_model_list_installed");
   },
 
@@ -261,6 +263,26 @@ export const aiModel = {
 
   downloadStatus(): Promise<ModelDownloadStatus> {
     return call("ai_model_download_status");
+  },
+};
+
+export const aiProvider = {
+  /** `apiKey` left out keeps the stored key; an empty string removes it. */
+  save(provider: ProviderDraft, apiKey?: string): Promise<Settings> {
+    return call("ai_provider_save", { provider, apiKey: apiKey ?? null });
+  },
+
+  remove(id: string): Promise<Settings> {
+    return call("ai_provider_remove", { id });
+  },
+
+  hasKey(id: string): Promise<boolean> {
+    return call("ai_provider_has_key", { id });
+  },
+
+  /** Also shows whether the provider's address and key work. */
+  listModels(id: string): Promise<string[]> {
+    return call("ai_provider_list_models", { id });
   },
 };
 
@@ -289,8 +311,9 @@ export const settings = {
     });
   },
 
-  setLlmModel(model: string): Promise<Settings> {
-    return call("settings_set_llm_model", { model });
+  /** `provider` is a remote provider's id, or `null` for the local runtime. */
+  setLlm(provider: string | null, model: string): Promise<Settings> {
+    return call("settings_set_llm", { provider, model });
   },
 
   setEmbeddingModel(model: string): Promise<Settings> {

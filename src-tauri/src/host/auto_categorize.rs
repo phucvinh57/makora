@@ -102,7 +102,11 @@ fn check(app: &AppHandle) {
         return;
     }
 
-    if llm::resolve_model(&settings.ai.llm_model).is_err() || llm::resolve_model(&settings.ai.embedding_model).is_err() {
+    let llm_ready = match settings.ai.llm_provider.as_deref() {
+        Some(id) => settings.ai.provider(id).is_some(),
+        None => llm::resolve_model(&settings.ai.llm_model).is_ok(),
+    };
+    if !llm_ready || llm::resolve_model(&settings.ai.embedding_model).is_err() {
         return;
     }
     if !matches!(app.state::<Box<dyn CategorySvc>>().get_list(), Ok(list) if !list.is_empty()) {

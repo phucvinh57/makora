@@ -102,6 +102,11 @@ export interface AiCategorizeStatus {
 /** The LLM labels activities; the embedding model finds the filed ones most like each. */
 export type ModelRole = "llm" | "embedding";
 
+export interface InstalledModel {
+  name: string;
+  role: ModelRole;
+}
+
 export interface ModelDownloadStatus {
   running: boolean;
   model: string;
@@ -155,11 +160,34 @@ export interface Settings {
     excluded: Exclusion[];
   };
   ai: {
+    /** The remote provider the LLM runs on; `null` runs it locally. */
+    llm_provider: string | null;
+    /** A local model name, or the remote provider's model id. */
     llm_model: string;
     embedding_model: string;
     /** Hours between automatic runs: 3, 6, 12, 24, 72 or 168; 0 means off. */
     auto_categorize_hours: number;
+    providers: ProviderConfig[];
   };
+}
+
+/** `openai` covers every provider that speaks OpenAI's chat-completions API. */
+export type ProviderKind = "openai" | "anthropic";
+
+/** A remote LLM provider. Its API key lives in the OS keychain, never here. */
+export interface ProviderConfig {
+  id: string;
+  name: string;
+  kind: ProviderKind;
+  base_url: string;
+}
+
+export interface ProviderDraft {
+  /** Left out for a new provider. */
+  id?: string;
+  name: string;
+  kind: ProviderKind;
+  base_url: string;
 }
 
 export type RuleKind = "app" | "site" | "page" | "pattern";

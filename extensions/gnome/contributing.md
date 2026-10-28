@@ -76,4 +76,4 @@ GNOME Shell extension errors appear in the user journal:
 journalctl --user -f -o cat /usr/bin/gnome-shell
 ```
 
-Supported GNOME Shell versions are listed in [`metadata.json`](metadata.json).
+Supported GNOME Shell versions are listed in [`metadata.json`](metadata.json). The current extension supports GNOME Shell 45 through 51; GNOME Shell 51 does not require an extension JavaScript API change.

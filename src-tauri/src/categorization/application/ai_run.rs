@@ -16,7 +16,7 @@ use tracing::{info, warn};
 use crate::categorization::application::embeddings::{embed_missing, EmbeddingSvc};
 use crate::categorization::application::ClassificationSvc;
 use crate::categorization::domain::retrieval::{top_related, RELATED_COUNT};
-use crate::categorization::ports::{ActivityText, Classifier, Embedder};
+use crate::categorization::ports::{ActivityText, Classifier, Embedder, LlmSpec};
 use crate::domain::types::AiVerdict;
 use crate::domain::LabelingSvc;
 use crate::shared::confidence::Confidence;
@@ -67,7 +67,7 @@ pub struct AiRunOutcome {
 }
 
 pub struct AiModels {
-    pub llm: String,
+    pub llm: LlmSpec,
     pub embedding: String,
 }
 
@@ -128,7 +128,7 @@ impl AiRunState {
         let pending = deps.labeling.get_activities_to_label(recheck)?;
 
         let total = pending.len();
-        info!(total, model = %models.llm, categories = taxonomy.len(), "categorizing activities");
+        info!(total, provider = models.llm.provider.as_deref().unwrap_or("local"), model = %models.llm.model, categories = taxonomy.len(), "categorizing activities");
         self.total.store(total, Ordering::Release);
         if total == 0 {
             return Ok(AiRunOutcome {
@@ -171,7 +171,7 @@ impl AiRunState {
         );
 
         let (mut labeled, mut changed, mut done, mut stopped) = (0, 0, 0, false);
-        let mut save = |position: usize, answer: Option<CategoryId>, confidence: Confidence| {
+        let mut save = |position: usize, answer: Option<CategoryId>, confidence: Option<Confidence>| {
             let verdict = AiVerdict {
                 activity_id: pending[position].id,
                 category_id: answer,
@@ -187,10 +187,10 @@ impl AiRunState {
             if answer.is_some() {
                 labeled += 1;
             }
-            done = position + 1;
+            done += 1;
             self.done.store(done, Ordering::Release);
             on_progress(AiRunProgress { done, total });
-            stopped = self.cancel.load(Ordering::Acquire) && position + 1 < total;
+            stopped = self.cancel.load(Ordering::Acquire) && done < total;
             !stopped
         };
         deps.classifier

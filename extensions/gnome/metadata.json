@@ -2,7 +2,7 @@
   "uuid": "makora@phucvinh57.dev",
   "name": "Makora's focus reporter",
   "description": "Reports which window has focus to the local Makora app so it can track how long you spend in each application. Wayland gives ordinary apps no way to see this, so it has to come from inside GNOME Shell. Nothing leaves your machine.",
-  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "shell-version": ["45", "46", "47", "48", "49", "50", "51"],
   "session-modes": ["user"],
   "url": "https://github.com/phucvinh57/makora"
 }
