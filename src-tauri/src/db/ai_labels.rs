@@ -16,17 +16,16 @@ impl AiLabelsRepo for SqliteConnection {
             .load(self)
     }
 
-    fn upsert_many(&mut self, labels: &[(i64, i64, Option<f64>)]) -> QueryResult<()> {
+    fn upsert_many(&mut self, labels: &[(i64, i64)]) -> QueryResult<()> {
         if labels.is_empty() {
             return Ok(());
         }
         let values: Vec<_> = labels
             .iter()
-            .map(|&(activity_id, category_id, confidence)| {
+            .map(|&(activity_id, category_id)| {
                 (
                     ai_labels::activity_id.eq(activity_id),
                     ai_labels::category_id.eq(category_id),
-                    ai_labels::confidence.eq(confidence),
                     ai_labels::rejected.eq(false),
                 )
             })
@@ -37,7 +36,6 @@ impl AiLabelsRepo for SqliteConnection {
             .do_update()
             .set((
                 ai_labels::category_id.eq(excluded(ai_labels::category_id)),
-                ai_labels::confidence.eq(excluded(ai_labels::confidence)),
                 ai_labels::rejected.eq(false),
             ))
             .execute(self)?;
@@ -59,7 +57,7 @@ impl AiLabelsRepo for SqliteConnection {
                 .filter(ai_labels::activity_id.eq_any(activity_ids))
                 .filter(ai_labels::rejected.eq(false)),
         )
-        .set((ai_labels::rejected.eq(true), ai_labels::confidence.eq(None::<f64>)))
+        .set(ai_labels::rejected.eq(true))
         .execute(self)?;
         Ok(())
     }

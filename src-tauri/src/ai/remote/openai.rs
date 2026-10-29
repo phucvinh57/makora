@@ -1,8 +1,8 @@
 //! The OpenAI chat-completions API, which OpenAI and most other providers and local servers speak.
 //!
-//! The reply is held to the category list by a strict JSON schema, and the log-probabilities of its
-//! tokens give a confidence. Not every provider or model takes all of that, so a field a provider
-//! refuses is dropped for the rest of the run and the request is sent again without it.
+//! The reply is held to the category list by a strict JSON schema. Not every provider or model
+//! takes that, so a field a provider refuses is dropped for the rest of the run and the request is
+//! sent again without it.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use tracing::info;
 
 use super::http::{ApiError, Http};
-use super::{trimmed, ChatApi, Pick};
+use super::{trimmed, ChatApi};
 
 const PLAIN_REPLY: &str = "\n\nReply with only the category, exactly as written in the list, and nothing else.";
 
@@ -20,7 +20,6 @@ pub struct OpenAi {
     base_url: String,
     key: Option<String>,
     schema: AtomicBool,
-    logprobs: AtomicBool,
     temperature: AtomicBool,
 }
 
@@ -31,7 +30,6 @@ impl OpenAi {
             base_url: trimmed(base_url),
             key: key.filter(|key| !key.trim().is_empty()),
             schema: AtomicBool::new(true),
-            logprobs: AtomicBool::new(true),
             temperature: AtomicBool::new(true),
         }
     }
@@ -60,9 +58,6 @@ impl OpenAi {
         if self.temperature.load(Ordering::Acquire) {
             body["temperature"] = json!(0);
         }
-        if self.logprobs.load(Ordering::Acquire) {
-            body["logprobs"] = json!(true);
-        }
         if schema {
             body["response_format"] = json!({
                 "type": "json_schema",
@@ -85,7 +80,6 @@ impl OpenAi {
     fn drop_refused(&self, err: &ApiError) -> bool {
         let features = [
             (&self.schema, &["response_format", "json_schema"][..], "JSON schema"),
-            (&self.logprobs, &["logprobs"][..], "log-probabilities"),
             (&self.temperature, &["temperature"][..], "temperature"),
         ];
         for (flag, fields, label) in features {
@@ -100,7 +94,7 @@ impl OpenAi {
 }
 
 impl ChatApi for OpenAi {
-    fn pick(&self, model: &str, system: &str, user: &str, choices: &[String]) -> Result<Pick> {
+    fn pick(&self, model: &str, system: &str, user: &str, choices: &[String]) -> Result<String> {
         let url = format!("{}/chat/completions", self.base_url);
         loop {
             let schema = self.schema.load(Ordering::Acquire);
@@ -120,15 +114,11 @@ impl ChatApi for OpenAi {
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow!("the provider's reply has no message"))?;
             // A provider may accept the schema and still not follow it.
-            let answer = schema
+            return Ok(schema
                 .then(|| serde_json::from_str::<Value>(content).ok())
                 .flatten()
                 .and_then(|value| value.get("category").and_then(Value::as_str).map(str::to_string))
-                .unwrap_or_else(|| content.to_string());
-            return Ok(Pick {
-                answer,
-                confidence: confidence(choice),
-            });
+                .unwrap_or_else(|| content.to_string()));
         }
     }
 
@@ -136,20 +126,6 @@ impl ChatApi for OpenAi {
         let reply = self.http.get_json(&format!("{}/models", self.base_url), &self.headers())?;
         model_ids(&reply)
     }
-}
-
-/// The probability of the whole reply, from its tokens' log-probabilities. Under a strict schema
-/// the JSON around the answer is all but certain, so this is the probability of the answer.
-fn confidence(choice: &Value) -> Option<f64> {
-    let tokens = choice.pointer("/logprobs/content")?.as_array()?;
-    if tokens.is_empty() {
-        return None;
-    }
-    let sum: f64 = tokens
-        .iter()
-        .map(|token| token.get("logprob").and_then(Value::as_f64))
-        .sum::<Option<f64>>()?;
-    Some(sum.exp())
 }
 
 /// The chat models the provider lists; embedding models are left out.

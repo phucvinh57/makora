@@ -30,7 +30,6 @@ pub fn load_many(conn: &mut SqliteConnection, activity_ids: &[ActivityId]) -> Qu
                 label.activity_id,
                 AiSuggestion {
                     category: label.category_id.into(),
-                    confidence: label.confidence.map(crate::shared::confidence::Confidence::new),
                     rejected: label.rejected,
                 },
             )
@@ -58,7 +57,7 @@ pub fn save_changes(
     after: &[ActivityClassification],
 ) -> QueryResult<()> {
     let mut pins: HashMap<Option<CategoryId>, Vec<i64>> = HashMap::new();
-    let mut upserts: Vec<(i64, i64, Option<f64>)> = Vec::new();
+    let mut upserts: Vec<(i64, i64)> = Vec::new();
     let mut rejects: Vec<i64> = Vec::new();
     let mut clears: Vec<i64> = Vec::new();
 
@@ -71,11 +70,7 @@ pub fn save_changes(
             continue;
         }
         match new.suggestion() {
-            Some(suggestion) if !suggestion.rejected => upserts.push((
-                id,
-                suggestion.category.into(),
-                suggestion.confidence.map(|confidence| confidence.get()),
-            )),
+            Some(suggestion) if !suggestion.rejected => upserts.push((id, suggestion.category.into())),
             Some(_) => rejects.push(id),
             None => clears.push(id),
         }

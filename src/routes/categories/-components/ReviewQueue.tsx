@@ -34,7 +34,6 @@ import type { ReviewFilter } from "@/types";
 import { GroupMembers } from "./GroupMembers";
 import {
   CategorySelect,
-  ConfidenceBadge,
   DecisionButtons,
   type Decide,
   groupId,
@@ -205,7 +204,6 @@ export function ReviewQueue() {
               <TableHead>App or site</TableHead>
               <TableHead className="w-24 text-right">Activities</TableHead>
               <TableHead className="w-20 text-right">Time</TableHead>
-              <TableHead className="w-16 text-right">Sure</TableHead>
               <TableHead className="w-56">Suggested category</TableHead>
               <TableHead className="w-20" />
             </TableRow>
@@ -263,9 +261,6 @@ export function ReviewQueue() {
                     <TableCell className="text-right text-muted-foreground tabular-nums">
                       {formatSeconds(group.total_seconds)}
                     </TableCell>
-                    <TableCell className="text-right">
-                      <ConfidenceBadge value={group.min_confidence} />
-                    </TableCell>
                     {/* Portaled select popups bubble React events, so stop them here. */}
                     <TableCell onClick={(e) => e.stopPropagation()}>
                       <CategorySelect
@@ -287,7 +282,7 @@ export function ReviewQueue() {
                   </TableRow>
                   {open && (
                     <TableRow className="bg-muted/30 hover:bg-muted/30">
-                      <TableCell colSpan={7} className="p-0">
+                      <TableCell colSpan={6} className="p-0">
                         <GroupMembers
                           group={group}
                           picker={picker}
@@ -302,7 +297,7 @@ export function ReviewQueue() {
             {!groupsQuery.isFetching && groups.length === 0 && (
               <TableRow>
                 <TableCell
-                  colSpan={7}
+                  colSpan={6}
                   className="py-8 text-center text-muted-foreground"
                 >
                   {category === ALL

@@ -1,7 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::shared::confidence::Confidence;
 use crate::shared::ids::{ActivityId, CategoryId, SessionId};
 use crate::tracking::domain::source_key::KeyKind;
 
@@ -35,7 +34,6 @@ pub struct UncategorizedActivity {
 pub struct AiVerdict {
     pub activity_id: ActivityId,
     pub category_id: Option<CategoryId>,
-    pub confidence: Option<Confidence>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -86,7 +84,6 @@ pub struct AiReviewGroup {
     pub category_color: String,
     pub activity_count: i64,
     pub total_seconds: f64,
-    pub min_confidence: Option<Confidence>,
     pub activity_ids: Vec<ActivityId>,
 }
 

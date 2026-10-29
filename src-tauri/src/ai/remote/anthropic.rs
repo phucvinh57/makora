@@ -1,6 +1,5 @@
 //! Anthropic's messages API. The model is made to call a tool whose one argument is limited to the
 //! category list, and the taxonomy prompt is marked for caching since every request repeats it.
-//! The API gives no token probabilities, so there is no confidence.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -10,7 +9,7 @@ use tracing::info;
 
 use super::http::{ApiError, Http};
 use super::openai::model_ids;
-use super::{trimmed, ChatApi, Pick};
+use super::{trimmed, ChatApi};
 
 const VERSION: &str = "2023-06-01";
 const TOOL: &str = "pick_category";
@@ -46,7 +45,7 @@ impl Anthropic {
 }
 
 impl ChatApi for Anthropic {
-    fn pick(&self, model: &str, system: &str, user: &str, choices: &[String]) -> Result<Pick> {
+    fn pick(&self, model: &str, system: &str, user: &str, choices: &[String]) -> Result<String> {
         let url = format!("{}/v1/messages", self.base_url);
         loop {
             let mut body = json!({
@@ -98,10 +97,7 @@ impl ChatApi for Anthropic {
             let answer = from_tool
                 .or_else(from_text)
                 .ok_or_else(|| anyhow!("the provider's reply names no category"))?;
-            return Ok(Pick {
-                answer: answer.to_string(),
-                confidence: None,
-            });
+            return Ok(answer.to_string());
         }
     }
 

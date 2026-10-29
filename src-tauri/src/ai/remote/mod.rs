@@ -20,7 +20,6 @@ use crate::categorization::domain::retrieval::RelatedActivity;
 use crate::categorization::ports::ActivityText;
 use crate::domain::types::Category;
 use crate::settings::{ProviderConfig, ProviderKind};
-use crate::shared::confidence::Confidence;
 use crate::shared::ids::CategoryId;
 
 use super::choices::choices;
@@ -31,15 +30,9 @@ const CONCURRENCY: usize = 4;
 /// Failed activities in a row after which the run gives up, e.g. on an exhausted quota.
 const MAX_FAILURES_IN_A_ROW: usize = 5;
 
-/// What the model answered for one activity, and how sure it was when the provider says.
-pub struct Pick {
-    pub answer: String,
-    pub confidence: Option<f64>,
-}
-
 pub trait ChatApi: Send + Sync {
-    /// Asks `model` to pick one of `choices` for the activity in `user`.
-    fn pick(&self, model: &str, system: &str, user: &str, choices: &[String]) -> Result<Pick>;
+    /// Asks `model` to pick one of `choices` for the activity in `user`, returning its answer.
+    fn pick(&self, model: &str, system: &str, user: &str, choices: &[String]) -> Result<String>;
     /// The ids of the models the provider offers.
     fn list_models(&self) -> Result<Vec<String>>;
 }
@@ -60,7 +53,7 @@ pub fn classify(
     taxonomy: &[Category],
     activities: &[ActivityText],
     related: &dyn Fn(usize) -> Vec<RelatedActivity>,
-    on_answer: &mut dyn FnMut(usize, Option<CategoryId>, Option<Confidence>) -> bool,
+    on_answer: &mut dyn FnMut(usize, Option<CategoryId>) -> bool,
 ) -> Result<()> {
     let choices = choices(taxonomy);
     if choices.is_empty() {
@@ -86,9 +79,9 @@ pub fn classify(
             user_prompt(activity, &lines)
         })
         .collect();
-    let mut report = |index: usize, pick: Pick| {
-        let category = matching_choice(&pick.answer, &options).and_then(|path| by_path.get(path).copied());
-        on_answer(index, category, pick.confidence.map(Confidence::new))
+    let mut report = |index: usize, answer: String| {
+        let category = matching_choice(&answer, &options).and_then(|path| by_path.get(path).copied());
+        on_answer(index, category)
     };
 
     let first = api
@@ -100,7 +93,7 @@ pub fn classify(
 
     let next = AtomicUsize::new(1);
     let stop = AtomicBool::new(false);
-    let (tx, rx) = mpsc::channel::<(usize, Result<Pick>)>();
+    let (tx, rx) = mpsc::channel::<(usize, Result<String>)>();
     std::thread::scope(|scope| {
         for _ in 0..CONCURRENCY.min(prompts.len() - 1) {
             let tx = tx.clone();
@@ -125,9 +118,9 @@ pub fn classify(
         let mut outcome = Ok(());
         for (index, result) in rx.iter() {
             match result {
-                Ok(pick) => {
+                Ok(answer) => {
                     in_a_row = 0;
-                    if !report(index, pick) {
+                    if !report(index, answer) {
                         break;
                     }
                 }

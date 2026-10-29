@@ -26,9 +26,9 @@ pub trait ActivitiesRepo {
 pub trait AiLabelsRepo {
     /// The labels among `activity_ids`, rejected ones included, in one query.
     fn get_many(&mut self, activity_ids: &[i64]) -> QueryResult<Vec<AiLabelRow>>;
-    /// Sets the label of every `(activity_id, category_id, confidence)`, replacing whatever was
-    /// there, a rejection included.
-    fn upsert_many(&mut self, labels: &[(i64, i64, Option<f64>)]) -> QueryResult<()>;
+    /// Sets the label of every `(activity_id, category_id)`, replacing whatever was there, a
+    /// rejection included.
+    fn upsert_many(&mut self, labels: &[(i64, i64)]) -> QueryResult<()>;
     /// Removes the labels that are not rejected. Returns how many were removed.
     fn clear_active_many(&mut self, activity_ids: &[i64]) -> QueryResult<usize>;
     /// Marks the labels rejected instead of deleting them, so "not this" is remembered.

@@ -19,7 +19,6 @@ use crate::categorization::domain::retrieval::{top_related, RELATED_COUNT};
 use crate::categorization::ports::{ActivityText, Classifier, Embedder, LlmSpec};
 use crate::domain::types::AiVerdict;
 use crate::domain::LabelingSvc;
-use crate::shared::confidence::Confidence;
 use crate::shared::ids::{ActivityId, CategoryId};
 use crate::taxonomy::CategorySvc;
 use crate::tracking::domain::source_key::url_location;
@@ -171,11 +170,10 @@ impl AiRunState {
         );
 
         let (mut labeled, mut changed, mut done, mut stopped) = (0, 0, 0, false);
-        let mut save = |position: usize, answer: Option<CategoryId>, confidence: Option<Confidence>| {
+        let mut save = |position: usize, answer: Option<CategoryId>| {
             let verdict = AiVerdict {
                 activity_id: pending[position].id,
                 category_id: answer,
-                confidence,
             };
             match deps.classification.assign_ai(&[verdict]) {
                 Ok(n) => changed += n,

@@ -63,7 +63,6 @@ export interface AiReviewGroup {
   category_color: string;
   activity_count: number;
   total_seconds: number;
-  min_confidence: number | null;
   activity_ids: number[];
 }
 
