@@ -8,7 +8,6 @@ use diesel::Connection;
 
 use crate::db::Db;
 use crate::reporting::{self, CategoryScope};
-use crate::shared::confidence::Confidence;
 use crate::shared::ids::{raw, ActivityId, CategoryId};
 use crate::taxonomy::store::load_tree;
 use crate::tracking::domain::source_key::KeyKind;
@@ -119,7 +118,6 @@ fn to_review_group(row: reporting::review::ReviewGroupRow) -> AiReviewGroup {
         category_color: row.category_color,
         activity_count: row.activity_count,
         total_seconds: row.total_seconds,
-        min_confidence: row.min_confidence.map(Confidence::new),
         activity_ids: row
             .activity_ids
             .split(',')

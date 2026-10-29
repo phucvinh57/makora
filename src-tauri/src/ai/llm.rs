@@ -10,9 +10,7 @@
 //! Throughput choices:
 //! - Output is constrained by a GBNF grammar to exactly one category path, so a reply is a
 //!   handful of tokens and can never be malformed.
-//! - Sampling is greedy: classification should be deterministic. The probability the grammar-
-//!   constrained model gave its answer is kept as a confidence, so the review queue can put the
-//!   doubtful labels first.
+//! - Sampling is greedy: classification should be deterministic.
 //! - The system prompt (taxonomy) is identical for every activity, so its KV cache is kept and
 //!   only the per-activity suffix is decoded.
 //! - Models are memory-mapped and cached between runs, the LLM next to the small embedding model
@@ -43,7 +41,6 @@ use tracing::{debug, info, warn};
 use crate::categorization::domain::retrieval::RelatedActivity;
 use crate::categorization::ports::{ActivityText, Classifier, LlmSpec};
 use crate::domain::types::Category;
-use crate::shared::confidence::Confidence;
 use crate::shared::ids::CategoryId;
 use crate::shared::text::single_line;
 
@@ -81,7 +78,7 @@ impl Classifier for LlamaClassifier {
         taxonomy: &[Category],
         activities: &[ActivityText],
         related: &dyn Fn(usize) -> Vec<RelatedActivity>,
-        on_answer: &mut dyn FnMut(usize, Option<CategoryId>, Option<Confidence>) -> bool,
+        on_answer: &mut dyn FnMut(usize, Option<CategoryId>) -> bool,
     ) -> Result<()> {
         classify(&self.cache, &llm.model, taxonomy, activities, related, on_answer)
     }
@@ -378,8 +375,8 @@ fn grammar(choices: &[Choice]) -> String {
 }
 
 /// Classifies each activity into one of the `categories`, reporting the chosen category
-/// id (or `None` when the model answers "None") and how confident the model was, from 0 to 1.
-/// `on_result` is called with `(index, category, confidence)` after every activity; returning
+/// id (or `None` when the model answers "None").
+/// `on_result` is called with `(index, category)` after every activity; returning
 /// `false` from it cancels the run, and the results so far are kept.
 ///
 /// `related(index)` is asked for just before activity `index` is decoded, and what it returns is
@@ -390,7 +387,7 @@ pub fn classify(
     categories: &[Category],
     activities: &[ActivityText],
     related: &dyn Fn(usize) -> Vec<RelatedActivity>,
-    on_result: impl FnMut(usize, Option<CategoryId>, Option<Confidence>) -> bool,
+    on_result: impl FnMut(usize, Option<CategoryId>) -> bool,
 ) -> Result<()> {
     let choices = choices(categories);
     if choices.is_empty() {
@@ -404,20 +401,20 @@ pub fn classify(
     result
 }
 
-/// The most likely token the grammar allows, and the probability the model gave it among the
-/// allowed ones. The chosen token is fed back to the grammar. `None` when the grammar allows
-/// nothing.
-fn pick_token(ctx: &LlamaContext<'_>, grammar: &mut LlamaSampler) -> Option<(LlamaToken, f64)> {
+/// The most likely token the grammar allows, fed back to the grammar. `None` when the grammar
+/// allows nothing.
+fn pick_token(ctx: &LlamaContext<'_>, grammar: &mut LlamaSampler) -> Option<LlamaToken> {
     let mut candidates = ctx.token_data_array();
     candidates.apply_sampler(grammar);
-    // Tokens the grammar rules out have a logit of negative infinity and drop out of both sums.
-    let allowed = || candidates.data.iter().filter(|c| c.logit().is_finite());
-    let (token, top) = allowed()
+    // Tokens the grammar rules out have a logit of negative infinity.
+    let token = candidates
+        .data
+        .iter()
+        .filter(|c| c.logit().is_finite())
         .max_by(|a, b| a.logit().total_cmp(&b.logit()))
-        .map(|c| (c.id(), c.logit()))?;
-    let total: f64 = allowed().map(|c| f64::from(c.logit() - top).exp()).sum();
+        .map(|c| c.id())?;
     grammar.accept(token);
-    Some((token, 1.0 / total))
+    Some(token)
 }
 
 fn run(
@@ -426,7 +423,7 @@ fn run(
     choices: &[Choice],
     activities: &[ActivityText],
     related: &dyn Fn(usize) -> Vec<RelatedActivity>,
-    mut on_result: impl FnMut(usize, Option<CategoryId>, Option<Confidence>) -> bool,
+    mut on_result: impl FnMut(usize, Option<CategoryId>) -> bool,
 ) -> Result<()> {
     let setup = Instant::now();
     let threads = std::thread::available_parallelism()
@@ -538,13 +535,10 @@ fn run(
 
         grammar.reset();
         let mut answer = Vec::new();
-        let mut confidence = 1.0_f64;
         for position in (tokens.len()..).take(MAX_REPLY_TOKENS) {
-            let Some((token, probability)) = pick_token(&ctx, &mut grammar) else {
-                confidence = 0.0;
+            let Some(token) = pick_token(&ctx, &mut grammar) else {
                 break;
             };
-            confidence *= probability;
             if vocab.is_eog(token) {
                 break;
             }
@@ -559,7 +553,7 @@ fn run(
         let answer = answer.trim();
         debug!(answer, title = %activity.title, "classified");
 
-        if !on_result(index, by_path.get(answer).copied(), Some(Confidence::new(confidence))) {
+        if !on_result(index, by_path.get(answer).copied()) {
             break;
         }
     }

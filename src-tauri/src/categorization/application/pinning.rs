@@ -104,14 +104,13 @@ impl ClassificationSvc for SqliteClassification {
                         continue;
                     };
                     match verdict.category_id {
-                        Some(category) => classification.suggest(category, verdict.confidence),
+                        Some(category) => classification.suggest(category),
                         None => classification.withdraw_suggestion(),
                     }
                 }
             })?;
 
-            // A re-check that lands on the same category only refreshes how sure the model was,
-            // so it is not counted as a change.
+            // A re-check that lands on the same category is not counted as a change.
             Ok(before
                 .iter()
                 .zip(&after)

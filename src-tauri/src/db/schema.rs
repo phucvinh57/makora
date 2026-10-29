@@ -45,7 +45,6 @@ diesel::table! {
     ai_labels (activity_id) {
         activity_id -> BigInt,
         category_id -> BigInt,
-        confidence -> Nullable<Double>,
         rejected -> Bool,
     }
 }

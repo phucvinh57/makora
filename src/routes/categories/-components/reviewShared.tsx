@@ -1,6 +1,5 @@
 import { Check, X } from "lucide-react";
 import type { CategoryPicker } from "@/components/CategoryOptions";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CreatableCategoryCombobox } from "@/components/CreatableCategoryCombobox";
 import type { AiReviewGroup } from "@/types";
@@ -76,16 +75,5 @@ export function DecisionButtons({
         <X />
       </Button>
     </div>
-  );
-}
-
-export function ConfidenceBadge({ value }: { value: number | null }) {
-  if (value === null) {
-    return <span className="text-xs text-muted-foreground">—</span>;
-  }
-  return (
-    <Badge variant={value < 0.6 ? "destructive" : "outline"}>
-      {Math.round(value * 100)}%
-    </Badge>
   );
 }

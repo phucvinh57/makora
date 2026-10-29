@@ -102,8 +102,6 @@ pub struct ReviewGroupRow {
     pub activity_count: i64,
     #[diesel(sql_type = Double)]
     pub total_seconds: f64,
-    #[diesel(sql_type = Nullable<Double>)]
-    pub min_confidence: Option<f64>,
     #[diesel(sql_type = Text)]
     pub activity_ids: String,
 }
@@ -220,7 +218,7 @@ impl ReviewRepo for SqliteConnection {
             "SELECT src.kind AS key_kind, src.key, MIN(src.name) AS app_name, cat.id AS category_id,
                     cat.name AS category_name, cat.color AS category_color,
                     COUNT(DISTINCT a.id) AS activity_count, {SECONDS} AS total_seconds,
-                    MIN(ac.confidence) AS min_confidence, GROUP_CONCAT(DISTINCT a.id) AS activity_ids
+                    GROUP_CONCAT(DISTINCT a.id) AS activity_ids
              FROM activities a
              JOIN sources src ON src.id = a.source_id
              JOIN activity_category ac ON ac.activity_id = a.id

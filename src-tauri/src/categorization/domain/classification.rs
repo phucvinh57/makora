@@ -13,14 +13,11 @@
 //!   model said, which is how a confirmation is told from a plain pin);
 //! - merging one activity into another carries a pin along unless the two disagree.
 
-use crate::shared::confidence::Confidence;
 use crate::shared::ids::{ActivityId, CategoryId};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AiSuggestion {
     pub category: CategoryId,
-    /// `None` for a label stored without one, and for a rejected label (a rejection forgets it).
-    pub confidence: Option<Confidence>,
     pub rejected: bool,
 }
 
@@ -72,22 +69,18 @@ impl ActivityClassification {
     pub fn unpin(&mut self) {
         self.pin = None;
         if let Some(suggestion) = &mut self.suggestion {
-            if !suggestion.rejected {
-                suggestion.rejected = true;
-                suggestion.confidence = None;
-            }
+            suggestion.rejected = true;
         }
     }
 
     /// The model proposes `category`, replacing whatever it said before — a rejected suggestion
     /// included. A pinned activity is not the model's to change, so it is ignored.
-    pub fn suggest(&mut self, category: CategoryId, confidence: Option<Confidence>) {
+    pub fn suggest(&mut self, category: CategoryId) {
         if self.is_pinned() {
             return;
         }
         self.suggestion = Some(AiSuggestion {
             category,
-            confidence,
             rejected: false,
         });
     }

@@ -88,7 +88,6 @@ pub struct NewSessionRow<'a> {
 pub struct AiLabelRow {
     pub activity_id: i64,
     pub category_id: i64,
-    pub confidence: Option<f64>,
     pub rejected: bool,
 }
 

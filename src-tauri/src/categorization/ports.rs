@@ -6,7 +6,6 @@
 use anyhow::Result;
 
 use crate::domain::types::Category;
-use crate::shared::confidence::Confidence;
 use crate::shared::ids::CategoryId;
 
 use super::domain::retrieval::RelatedActivity;
@@ -36,16 +35,15 @@ pub trait Embedder: Send + Sync {
 
 pub trait Classifier: Send + Sync {
     /// Classifies each activity into one of the categories of `taxonomy`, reporting
-    /// `(index, category, confidence)` through `on_answer` as each one is answered, not
-    /// necessarily in order — the category is `None` when none fits, the confidence when the model
-    /// gave none. Returning `false` from `on_answer` stops the run, keeping what was reported so
-    /// far.
+    /// `(index, category)` through `on_answer` as each one is answered, not necessarily in order —
+    /// the category is `None` when none fits. Returning `false` from `on_answer` stops the run,
+    /// keeping what was reported so far.
     fn classify(
         &self,
         llm: &LlmSpec,
         taxonomy: &[Category],
         activities: &[ActivityText],
         related: &dyn Fn(usize) -> Vec<RelatedActivity>,
-        on_answer: &mut dyn FnMut(usize, Option<CategoryId>, Option<Confidence>) -> bool,
+        on_answer: &mut dyn FnMut(usize, Option<CategoryId>) -> bool,
     ) -> Result<()>;
 }
