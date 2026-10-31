@@ -17,7 +17,7 @@ use crate::domain::LabelingSvc;
 use crate::host::auto_categorize::{next_run, ScheduleAnchor};
 use crate::host::error::IpcError;
 use crate::settings::SettingsStore;
-use crate::shared::ids::{ActivityId, CategoryId, RuleId, SessionId};
+use crate::shared::ids::{ActivityId, CategoryId, ProviderId, RuleId, SessionId};
 use crate::shared::time;
 use crate::taxonomy::CategorySvc;
 
@@ -115,7 +115,7 @@ pub fn run_categorization(app: &AppHandle, recheck: bool) -> Result<AiRunOutcome
     };
     let models = AiModels {
         llm: LlmSpec {
-            provider: settings.ai.llm_provider,
+            provider: settings.ai.llm_provider.map(ProviderId::from),
             model: settings.ai.llm_model,
         },
         embedding: settings.ai.embedding_model,

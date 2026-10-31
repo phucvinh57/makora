@@ -19,7 +19,7 @@ use crate::categorization::domain::retrieval::{top_related, RELATED_COUNT};
 use crate::categorization::ports::{ActivityText, Classifier, Embedder, LlmSpec};
 use crate::domain::types::AiVerdict;
 use crate::domain::LabelingSvc;
-use crate::shared::ids::{ActivityId, CategoryId};
+use crate::shared::ids::{ActivityId, CategoryId, ProviderId};
 use crate::shared::sync::RunGuard;
 use crate::taxonomy::CategorySvc;
 use crate::tracking::domain::source_key::url_location;
@@ -117,7 +117,7 @@ impl AiRunState {
         let pending = deps.labeling.get_activities_to_label(recheck)?;
 
         let total = pending.len();
-        info!(total, provider = models.llm.provider.as_deref().unwrap_or("local"), model = %models.llm.model, categories = taxonomy.len(), "categorizing activities");
+        info!(total, provider = models.llm.provider.as_ref().map_or("local", ProviderId::as_str), model = %models.llm.model, categories = taxonomy.len(), "categorizing activities");
         self.total.store(total, Ordering::Release);
         if total == 0 {
             return Ok(AiRunOutcome {

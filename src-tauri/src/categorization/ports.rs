@@ -6,7 +6,7 @@
 use anyhow::Result;
 
 use crate::domain::types::Category;
-use crate::shared::ids::CategoryId;
+use crate::shared::ids::{CategoryId, ProviderId};
 
 use super::domain::retrieval::RelatedActivity;
 
@@ -24,7 +24,7 @@ pub struct ActivityText {
 /// remote provider the classifier knows how to reach.
 #[derive(Debug, Clone)]
 pub struct LlmSpec {
-    pub provider: Option<String>,
+    pub provider: Option<ProviderId>,
     pub model: String,
 }
 
