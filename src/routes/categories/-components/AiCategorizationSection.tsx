@@ -1,5 +1,4 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
 import { PlusIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -421,23 +420,6 @@ export function AiCategorizationSection() {
                 />
               )}
         </div>
-        {shownProvider ? (
-          <p className="m-0 text-xs text-muted-foreground">
-            The titles and addresses of the activities being labeled, and your
-            category names, are sent to {shownProvider.name} (
-            {shownProvider.base_url}).
-          </p>
-        ) : (
-          providers.length === 0 && (
-            <p className="m-0 text-xs text-muted-foreground">
-              To label with OpenAI, Anthropic or another hosted model,{" "}
-              <Link to="/settings" className="underline hover:text-foreground">
-                add a provider in Settings
-              </Link>
-              .
-            </p>
-          )
-        )}
         <AutoCategorizeSetting />
         <div className="flex flex-wrap items-center gap-3">
           <Button
