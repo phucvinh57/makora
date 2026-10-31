@@ -19,10 +19,20 @@ pub struct ProviderDraft {
 }
 
 /// Adds or updates a provider. `api_key` left out keeps the stored key, an empty one removes it.
-#[tauri::command(async)]
-pub fn ai_provider_save(
-    settings: State<Arc<dyn SettingsStore>>,
-    secrets: State<Arc<dyn SecretStore>>,
+#[tauri::command]
+pub async fn ai_provider_save(
+    settings: State<'_, Arc<dyn SettingsStore>>,
+    secrets: State<'_, Arc<dyn SecretStore>>,
+    provider: ProviderDraft,
+    api_key: Option<String>,
+) -> Result<Settings, IpcError> {
+    let (settings, secrets) = (Arc::clone(&settings), Arc::clone(&secrets));
+    blocking(move || save_provider(&*settings, &*secrets, provider, api_key)).await
+}
+
+fn save_provider(
+    settings: &dyn SettingsStore,
+    secrets: &dyn SecretStore,
     provider: ProviderDraft,
     api_key: Option<String>,
 ) -> Result<Settings, IpcError> {
@@ -48,22 +58,27 @@ pub fn ai_provider_save(
     Ok(saved)
 }
 
-#[tauri::command(async)]
-pub fn ai_provider_remove(
-    settings: State<Arc<dyn SettingsStore>>,
-    secrets: State<Arc<dyn SecretStore>>,
+#[tauri::command]
+pub async fn ai_provider_remove(
+    settings: State<'_, Arc<dyn SettingsStore>>,
+    secrets: State<'_, Arc<dyn SecretStore>>,
     id: String,
 ) -> Result<Settings, IpcError> {
-    let saved = settings.remove_provider(&id)?;
-    if let Err(err) = secrets.delete(&id) {
-        warn!(provider = %id, error = format!("{err:#}"), "could not remove the provider's API key");
-    }
-    Ok(saved)
+    let (settings, secrets) = (Arc::clone(&settings), Arc::clone(&secrets));
+    blocking(move || {
+        let saved = settings.remove_provider(&id)?;
+        if let Err(err) = secrets.delete(&id) {
+            warn!(provider = %id, error = format!("{err:#}"), "could not remove the provider's API key");
+        }
+        Ok(saved)
+    })
+    .await
 }
 
-#[tauri::command(async)]
-pub fn ai_provider_has_key(secrets: State<Arc<dyn SecretStore>>, id: String) -> bool {
-    secrets.get(&id).ok().flatten().is_some()
+#[tauri::command]
+pub async fn ai_provider_has_key(secrets: State<'_, Arc<dyn SecretStore>>, id: String) -> Result<bool, IpcError> {
+    let secrets = Arc::clone(&secrets);
+    blocking(move || Ok(secrets.get(&id).ok().flatten().is_some())).await
 }
 
 /// The models the provider offers, which also shows its address and key work.
@@ -80,13 +95,23 @@ pub async fn ai_provider_list_models(
         .cloned()
         .ok_or_else(|| IpcError::new("not_found", format!("there is no provider \"{id}\"")))?;
     let secrets = Arc::clone(&secrets);
-    tauri::async_runtime::spawn_blocking(move || {
+    blocking(move || {
         let key = secrets.get(&id).ok().flatten();
-        remote::api_for(&provider, key).list_models()
+        remote::api_for(&provider, key)
+            .list_models()
+            .map_err(|err| IpcError::new("provider_error", format!("{err:#}")))
     })
     .await
-    .map_err(|e| IpcError::internal(e.to_string()))?
-    .map_err(|err| IpcError::new("provider_error", format!("{err:#}")))
+}
+
+/// Runs `work` on the blocking pool: the keychain and provider calls can take seconds, and must
+/// hold neither the main thread nor an async worker.
+async fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, IpcError> + Send + 'static,
+) -> Result<T, IpcError> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|err| IpcError::internal(err.to_string()))?
 }
 
 /// A slug of `name` no other provider has: `OpenAI` becomes `openai`, then `openai-2`, ...

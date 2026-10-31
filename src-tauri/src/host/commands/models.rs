@@ -14,23 +14,23 @@ struct ModelDownloadProgress {
     total: u64,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn ai_model_is_loaded(models: State<ModelCache>) -> bool {
     models.is_loaded()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn ai_model_unload(models: State<ModelCache>) {
     models.unload();
 }
 
 /// Whether `model` can be loaded right now (downloaded here, pulled by Ollama, or a file).
-#[tauri::command]
+#[tauri::command(async)]
 pub fn ai_model_is_installed(model: String) -> bool {
     llm::resolve_model(model.trim()).is_ok()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn ai_model_list_installed() -> Vec<llm::InstalledModel> {
     llm::installed_models()
 }

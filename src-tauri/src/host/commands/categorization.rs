@@ -137,7 +137,7 @@ pub fn category_rule_list(rules: State<Box<dyn RuleSvc>>) -> Result<Vec<Category
     Ok(rules.list()?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn category_rule_create(
     rules: State<Box<dyn RuleSvc>>,
     kind: RuleKind,
@@ -153,7 +153,7 @@ pub fn category_rule_create(
     })?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn category_rule_update(
     rules: State<Box<dyn RuleSvc>>,
     id: RuleId,
@@ -173,7 +173,7 @@ pub fn category_rule_update(
     )?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn category_rule_delete(rules: State<Box<dyn RuleSvc>>, id: RuleId) -> Result<(), IpcError> {
     Ok(rules.delete(id)?)
 }
