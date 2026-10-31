@@ -43,7 +43,6 @@ pub trait CategoriesRepo {
     /// Every category, flat. Siblings come out in the order they should be shown under their
     /// parent; the caller assembles the tree from `parent_id`.
     fn get_list(&mut self) -> QueryResult<Vec<CategoryRow>>;
-    fn get(&mut self, id: i64) -> QueryResult<Option<CategoryRow>>;
     fn filter_existing(&mut self, ids: &[i64]) -> QueryResult<Vec<i64>>;
     fn get_parent_pairs(&mut self) -> QueryResult<Vec<(i64, Option<i64>)>>;
     fn insert(&mut self, new: &NewCategoryRow<'_>) -> QueryResult<CategoryRow>;

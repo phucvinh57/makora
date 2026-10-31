@@ -14,8 +14,6 @@ pub trait CategorySvc: Send + Sync {
     /// Every category, flat — the caller (the UI) assembles the tree from `parent_id`.
     /// Siblings come out in the order they should be shown under their parent.
     fn get_list(&self) -> Result<Vec<Category>, TaxonomyError>;
-    #[allow(dead_code)]
-    fn get(&self, id: CategoryId) -> Result<Option<Category>, TaxonomyError>;
     fn create(&self, new: &NewCategory) -> Result<Category, TaxonomyError>;
     fn update(&self, id: CategoryId, new: &NewCategory) -> Result<Category, TaxonomyError>;
     /// Deletes a category *and everything nested under it* — a subcategory has no meaning
@@ -40,11 +38,6 @@ impl CategorySvc for SqliteCategories {
             .into_iter()
             .map(to_category)
             .collect())
-    }
-
-    fn get(&self, id: CategoryId) -> Result<Option<Category>, TaxonomyError> {
-        let mut conn = self.db.read()?;
-        Ok(db::categories::CategoriesRepo::get(&mut *conn, id.into())?.map(to_category))
     }
 
     fn create(&self, new: &NewCategory) -> Result<Category, TaxonomyError> {
