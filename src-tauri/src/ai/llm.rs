@@ -13,17 +13,15 @@
 //! - Sampling is greedy: classification should be deterministic.
 //! - The system prompt (taxonomy) is identical for every activity, so its KV cache is kept and
 //!   only the per-activity suffix is decoded.
-//! - Models are memory-mapped and cached between runs, the LLM next to the small embedding model
-//!   that runs before it, then released on request or after ten idle minutes, so an idle app
-//!   holds no weights.
+//! - Models are memory-mapped and cached between runs ([`super::cache`]).
 
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 
 use anyhow::{anyhow, bail, Context, Result};
 use llama_cpp_2::context::params::LlamaContextParams;
@@ -42,8 +40,10 @@ use crate::categorization::domain::retrieval::RelatedActivity;
 use crate::categorization::ports::{ActivityText, Classifier, LlmSpec};
 use crate::domain::types::Category;
 use crate::shared::ids::CategoryId;
+use crate::shared::sync::lock;
 use crate::shared::text::single_line;
 
+use super::cache::Cache;
 use super::choices::{choices, Choice};
 use super::prompt::{related_line, system_prompt, user_prompt, NONE_ANSWER};
 
@@ -115,6 +115,11 @@ fn fitted_model_params(path: &Path) -> Pin<Box<LlamaModelParams>> {
 
 pub(super) fn backend() -> Result<&'static LlamaBackend> {
     static BACKEND: OnceLock<LlamaBackend> = OnceLock::new();
+    static INIT: Mutex<()> = Mutex::new(());
+    if let Some(backend) = BACKEND.get() {
+        return Ok(backend);
+    }
+    let _init = lock(&INIT);
     if let Some(backend) = BACKEND.get() {
         return Ok(backend);
     }
@@ -123,109 +128,18 @@ pub(super) fn backend() -> Result<&'static LlamaBackend> {
     Ok(BACKEND.get_or_init(|| backend))
 }
 
-const IDLE_TTL: Duration = Duration::from_secs(10 * 60);
-const REAPER_POLL: Duration = Duration::from_secs(15);
-
-/// The LLM and the embedding model a run uses one after the other.
-const MAX_LOADED: usize = 2;
-
-struct Loaded {
-    name: String,
-    model: Arc<LlamaModel>,
-    last_used: Instant,
-}
-
-#[derive(Default)]
-struct Slot {
-    loaded: Vec<Loaded>,
-    reaper_running: bool,
-}
-
-#[derive(Clone, Default)]
-pub struct ModelCache {
-    slot: Arc<Mutex<Slot>>,
-}
+pub type ModelCache = Cache<LlamaModel>;
 
 impl ModelCache {
-    fn lock(&self) -> MutexGuard<'_, Slot> {
-        self.slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    pub fn is_loaded(&self) -> bool {
-        !self.lock().loaded.is_empty()
-    }
-
-    /// Drops the cached models. A run in progress keeps its own handles and finishes normally.
-    pub fn unload(&self) {
-        let mut slot = self.lock();
-        if !slot.loaded.is_empty() {
-            slot.loaded.clear();
-            info!("models unloaded");
-        }
-    }
-
-    pub(super) fn touch(&self, name: &str) {
-        if let Some(loaded) = self.lock().loaded.iter_mut().find(|l| l.name == name) {
-            loaded.last_used = Instant::now();
-        }
-    }
-
     pub(super) fn acquire(&self, name: &str) -> Result<Arc<LlamaModel>> {
-        let mut slot = self.lock();
-        if let Some(loaded) = slot.loaded.iter_mut().find(|l| l.name == name) {
-            loaded.last_used = Instant::now();
-            return Ok(loaded.model.clone());
-        }
-        let path = resolve_model(name)?;
-        while slot.loaded.len() >= MAX_LOADED {
-            let Some(oldest) = slot
-                .loaded
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, loaded)| loaded.last_used)
-                .map(|(position, _)| position)
-            else {
-                break;
-            };
-            let evicted = slot.loaded.swap_remove(oldest);
-            info!(model = %evicted.name, "model evicted");
-        }
-        info!(model = %path.display(), "loading model");
-        let backend = backend()?;
-        let params = fitted_model_params(&path);
-        let model = LlamaModel::load_from_file(backend, &path, &params)
-            .map_err(|err| anyhow!("loading {}: {err}", path.display()))?;
-        let model = Arc::new(model);
-        slot.loaded.push(Loaded {
-            name: name.to_string(),
-            model: model.clone(),
-            last_used: Instant::now(),
-        });
-        if !slot.reaper_running {
-            slot.reaper_running = true;
-            let cache = self.clone();
-            std::thread::spawn(move || cache.reap_when_idle());
-        }
-        Ok(model)
-    }
-
-    fn reap_when_idle(&self) {
-        loop {
-            std::thread::sleep(REAPER_POLL);
-            let mut slot = self.lock();
-            slot.loaded.retain(|loaded| {
-                // A strong count above one means a run is using it right now.
-                let keep = Arc::strong_count(&loaded.model) > 1 || loaded.last_used.elapsed() < IDLE_TTL;
-                if !keep {
-                    info!(model = %loaded.name, "model unloaded after being idle");
-                }
-                keep
-            });
-            if slot.loaded.is_empty() {
-                slot.reaper_running = false;
-                return;
-            }
-        }
+        self.acquire_with(name, || {
+            let path = resolve_model(name)?;
+            info!(model = %path.display(), "loading model");
+            let backend = backend()?;
+            let params = fitted_model_params(&path);
+            LlamaModel::load_from_file(backend, &path, &params)
+                .map_err(|err| anyhow!("loading {}: {err}", path.display()))
+        })
     }
 }
 

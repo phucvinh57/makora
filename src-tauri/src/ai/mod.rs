@@ -4,6 +4,7 @@
 //! lets the activities most like a new one be found, an LLM that labels it given those — run
 //! locally or by a remote provider — and the downloads of the local models.
 
+mod cache;
 mod choices;
 pub mod embedding;
 mod gguf;
