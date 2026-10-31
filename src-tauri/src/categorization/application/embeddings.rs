@@ -57,7 +57,7 @@ impl EmbeddingSvc for SqliteEmbeddings {
                 id: row.id.into(),
                 text: activity_text(
                     &row.source_name,
-                    location(&row.source_kind, &row.source_key, &row.path).as_deref(),
+                    location(row.source_kind, &row.source_key, &row.path).as_deref(),
                     &row.title,
                 ),
             })
@@ -91,7 +91,7 @@ impl EmbeddingSvc for SqliteEmbeddings {
                     activity_id: row.activity_id.into(),
                     activity: RelatedActivity {
                         app_name: row.source_name,
-                        url: location(&row.source_kind, &row.source_key, &row.path),
+                        url: location(row.source_kind, &row.source_key, &row.path),
                         title: row.title,
                         category: row.category_id.into(),
                     },
@@ -191,8 +191,8 @@ fn embed_batch(embedder: &dyn Embedder, model: &str, batch: &[ActivityToEmbed]) 
 }
 
 /// `domain/path` of the page an activity is on, `None` for an app.
-fn location(kind: &str, key: &str, path: &str) -> Option<String> {
-    (KeyKind::from_db(kind) == KeyKind::Domain)
+fn location(kind: KeyKind, key: &str, path: &str) -> Option<String> {
+    (kind == KeyKind::Domain)
         .then(|| url_location(&source_url(key, path)))
         .flatten()
 }

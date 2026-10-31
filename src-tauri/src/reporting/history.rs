@@ -8,6 +8,8 @@ use diesel::sqlite::SqliteConnection;
 use diesel::{sql_query, QueryResult, QueryableByName, RunQueryDsl};
 
 use crate::db::sql::{bind_all, count, Param};
+use crate::domain::types::CategorySource;
+use crate::tracking::domain::source_key::KeyKind;
 
 use super::window::{clipped_end, clipped_start, overlaps, sum_seconds, WITH_WINDOW};
 use super::{CategoryScope, Window};
@@ -94,7 +96,7 @@ pub struct SessionListRow {
     #[diesel(sql_type = Text)]
     pub app_name: String,
     #[diesel(sql_type = Text)]
-    pub source_kind: String,
+    pub source_kind: KeyKind,
     #[diesel(sql_type = Text)]
     pub source_key: String,
     #[diesel(sql_type = Text)]
@@ -114,7 +116,7 @@ pub struct SessionListRow {
     #[diesel(sql_type = Bool)]
     pub category_is_pinned: bool,
     #[diesel(sql_type = Nullable<Text>)]
-    pub category_source: Option<String>,
+    pub category_source: Option<CategorySource>,
 }
 
 #[derive(QueryableByName)]
@@ -142,7 +144,7 @@ pub struct CategoryStatRow {
 #[derive(QueryableByName)]
 pub struct AppStatRow {
     #[diesel(sql_type = Text)]
-    pub kind: String,
+    pub kind: KeyKind,
     #[diesel(sql_type = Text)]
     pub label: String,
     #[diesel(sql_type = Nullable<Text>)]
@@ -322,6 +324,29 @@ mod tests {
     #[test]
     fn a_search_term_matches_literally() {
         assert_eq!(like_pattern(r"50%_a\b"), r"%50\%\_a\\b%");
+    }
+
+    #[test]
+    fn the_session_list_filters_by_category_source() {
+        let mut conn = conn_with(&[("2026-03-01T10:00:00Z", None)]);
+        conn.batch_execute(
+            "INSERT INTO categories (id, name, color) VALUES (1, 'Work', '#000000');
+             INSERT INTO category_rules (id, category_id, kind, value) VALUES (1, 1, 'app', 'code');
+             INSERT INTO rule_matches (activity_id, rule_id) VALUES (1, 1);",
+        )
+        .unwrap();
+        let query = |source| SessionQuery {
+            search: None,
+            category: CategoryScope::Any,
+            source,
+            start: None,
+            end: None,
+        };
+        let rows = conn.get_sessions(10, 0, &query(SourceScope::Rule)).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source_kind, KeyKind::Exe);
+        assert_eq!(rows[0].category_source, Some(CategorySource::Rule));
+        assert_eq!(conn.get_session_count(&query(SourceScope::Ai)).unwrap(), 0);
     }
 
     #[test]

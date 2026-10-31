@@ -11,7 +11,6 @@ use crate::db::Db;
 use crate::reporting::{self, CategoryScope, Window};
 use crate::shared::ids::{raw, ActivityId, CategoryId};
 use crate::taxonomy::store::load_tree;
-use crate::tracking::domain::source_key::KeyKind;
 
 use super::types::{
     AiReviewGroup, AiReviewGroupPage, AiReviewPage, AiReviewRow, FeedbackStats, Paging, ReviewFilter,
@@ -124,7 +123,7 @@ fn to_review_row(row: reporting::review::ReviewRow) -> AiReviewRow {
 
 fn to_review_group(row: reporting::review::ReviewGroupRow) -> AiReviewGroup {
     AiReviewGroup {
-        key_kind: KeyKind::from_db(&row.key_kind),
+        key_kind: row.key_kind,
         key: row.key,
         app_name: row.app_name,
         category_id: row.category_id.into(),
