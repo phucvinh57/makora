@@ -11,7 +11,7 @@ use diesel::sql_types::{BigInt, Double, Nullable, Text};
 use diesel::sqlite::SqliteConnection;
 use diesel::{sql_query, QueryResult, QueryableByName, RunQueryDsl};
 
-use crate::db::sql::{bind_all, in_clause, Param};
+use crate::db::sql::{bind_all, count, in_clause, Param};
 
 use super::window::{overlaps, sum_seconds, WITH_WINDOW};
 use super::{CategoryScope, Window};
@@ -53,12 +53,6 @@ fn pending_fragment(category: &CategoryScope, activity_ids: Option<&[i64]>) -> (
     };
 
     (format!("ac.source = 'ai' {scope} {only}"), binds)
-}
-
-#[derive(QueryableByName)]
-struct CountRow {
-    #[diesel(sql_type = BigInt)]
-    count: i64,
 }
 
 #[derive(QueryableByName)]
@@ -177,7 +171,7 @@ impl ReviewRepo for SqliteConnection {
              JOIN activity_category ac ON ac.activity_id = a.id
              WHERE {pending}"
         );
-        Ok(bind_all(sql_query(sql).into_boxed(), binds).get_result::<CountRow>(self)?.count)
+        count(self, sql, binds)
     }
 
     fn get_review_page(
@@ -224,7 +218,7 @@ impl ReviewRepo for SqliteConnection {
                WHERE {pending}
                GROUP BY src.id, ac.category_id)"
         );
-        Ok(bind_all(sql_query(sql).into_boxed(), binds).get_result::<CountRow>(self)?.count)
+        count(self, sql, binds)
     }
 
     fn get_review_groups(

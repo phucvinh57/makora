@@ -7,7 +7,7 @@ use diesel::sql_types::{BigInt, Bool, Double, Nullable, Text};
 use diesel::sqlite::SqliteConnection;
 use diesel::{sql_query, QueryResult, QueryableByName, RunQueryDsl};
 
-use crate::db::sql::{bind_all, Param};
+use crate::db::sql::{bind_all, count, Param};
 
 use super::window::{clipped_end, clipped_start, overlaps, sum_seconds, WITH_WINDOW};
 use super::{CategoryScope, Window};
@@ -83,12 +83,6 @@ fn where_clause(query: &SessionQuery) -> (String, Vec<Param>) {
 fn like_pattern(term: &str) -> String {
     let escaped = term.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
     format!("%{escaped}%")
-}
-
-#[derive(QueryableByName)]
-struct CountRow {
-    #[diesel(sql_type = BigInt)]
-    count: i64,
 }
 
 #[derive(QueryableByName)]
@@ -181,8 +175,7 @@ impl HistoryRepo for SqliteConnection {
     fn get_session_count(&mut self, query: &SessionQuery) -> QueryResult<i64> {
         let (where_sql, binds) = where_clause(query);
         let sql = format!("SELECT COUNT(*) AS count {JOIN} WHERE {where_sql}");
-        let row = bind_all(sql_query(sql).into_boxed(), binds).get_result::<CountRow>(self)?;
-        Ok(row.count)
+        count(self, sql, binds)
     }
 
     fn get_sessions(&mut self, limit: i64, offset: i64, query: &SessionQuery) -> QueryResult<Vec<SessionListRow>> {
