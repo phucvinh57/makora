@@ -1,4 +1,5 @@
 pub mod categorization;
+pub mod logs;
 pub mod models;
 pub mod providers;
 pub mod reporting;

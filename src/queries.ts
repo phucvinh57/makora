@@ -6,10 +6,11 @@ import {
   categorization,
   category,
   categoryRule,
+  logs,
   settings,
   suggestion,
 } from "./api";
-import type { AiRunStatus, ModelDownloadStatus } from "./types";
+import type { AiRunStatus, LogQuery, ModelDownloadStatus } from "./types";
 
 export const queryKeys = {
   categories: ["categories"],
@@ -32,6 +33,9 @@ export const queryKeys = {
   aiProviderModels: ["aiProviderModels"],
   autostartEnabled: ["autostartEnabled"],
   settings: ["settings"],
+  logs: ["logs"],
+  logsNetworkSummary: ["logsNetworkSummary"],
+  logDir: ["logDir"],
 } as const;
 
 /** Polling only runs while the backend reports a task; starting one flags it up front. */
@@ -155,3 +159,26 @@ export async function markDownloadStarted(
     { running: true, model, downloaded: 0, total: 0 },
   );
 }
+
+/** The log grows while its page is open, so the page polls it. */
+const LOG_POLL_MS = 5_000;
+
+export const logsQueryOptions = (query: LogQuery) =>
+  queryOptions({
+    queryKey: [...queryKeys.logs, query],
+    queryFn: () => logs.query(query),
+    refetchInterval: LOG_POLL_MS,
+  });
+
+export const networkSummaryQueryOptions = (days: number) =>
+  queryOptions({
+    queryKey: [...queryKeys.logsNetworkSummary, days],
+    queryFn: () => logs.networkSummary(days),
+    refetchInterval: LOG_POLL_MS,
+  });
+
+export const logDirQueryOptions = queryOptions({
+  queryKey: queryKeys.logDir,
+  queryFn: logs.dir,
+  staleTime: Number.POSITIVE_INFINITY,
+});

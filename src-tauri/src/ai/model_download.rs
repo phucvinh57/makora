@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -18,9 +18,12 @@ use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 use ureq::Agent;
 
+use crate::logs::NETWORK_TARGET;
 use crate::shared::sync::{lock, RunGuard};
 
 const REGISTRY: &str = "https://registry.ollama.ai";
+const REGISTRY_HOST: &str = "registry.ollama.ai";
+const PURPOSE: &str = "model download";
 const MODEL_LAYER: &str = "application/vnd.ollama.image.model";
 const READ_BUF: usize = 256 * 1024;
 const RANGE_BYTES: u64 = 64 * 1024 * 1024;
@@ -163,17 +166,46 @@ pub fn download(
 ) -> Result<()> {
     let (repo, tag) = parse_name(name)?;
     let agent = agent();
-    let manifest_url = format!("{REGISTRY}/v2/{repo}/manifests/{tag}");
-    let manifest_bytes = agent
+    let manifest_route = format!("/v2/{repo}/manifests/{tag}");
+    let manifest_url = format!("{REGISTRY}{manifest_route}");
+    let started = Instant::now();
+    let response = agent
         .get(&manifest_url)
         .header("Accept", "application/vnd.docker.distribution.manifest.v2+json")
-        .call()
-        .map_err(|err| {
-            anyhow!("fetching {manifest_url}: {err} (is \"{name}\" on ollama.com/library?)")
-        })?
-        .body_mut()
-        .read_to_vec()
-        .context("reading manifest")?;
+        .call();
+    let mut response = match response {
+        Ok(response) => response,
+        Err(err) => {
+            warn!(
+                target: NETWORK_TARGET,
+                method = "GET",
+                host = REGISTRY_HOST,
+                path = manifest_route,
+                bytes_sent = 0,
+                duration_ms = elapsed_ms(started),
+                model = name,
+                purpose = PURPOSE,
+                error = %err,
+                "HTTP request failed"
+            );
+            return Err(anyhow!("fetching {manifest_url}: {err} (is \"{name}\" on ollama.com/library?)"));
+        }
+    };
+    let manifest_bytes = response.body_mut().read_to_vec();
+    info!(
+        target: NETWORK_TARGET,
+        method = "GET",
+        host = REGISTRY_HOST,
+        path = manifest_route,
+        status = response.status().as_u16(),
+        bytes_sent = 0,
+        bytes_received = manifest_bytes.as_ref().map_or(0, Vec::len),
+        duration_ms = elapsed_ms(started),
+        model = name,
+        purpose = PURPOSE,
+        "HTTP request"
+    );
+    let manifest_bytes = manifest_bytes.context("reading manifest")?;
     let manifest: Manifest = serde_json::from_slice(&manifest_bytes).context("parsing manifest")?;
     let layer = manifest
         .layers
@@ -192,8 +224,12 @@ pub fn download(
     let blob = blobs.join(format!("sha256-{expected}"));
     if !blob.is_file() {
         let partial = blobs.join(format!("sha256-{expected}.partial"));
-        let url = format!("{REGISTRY}/v2/{repo}/blobs/{}", layer.digest);
-        if !fetch_blob(&agent, &url, &partial, layer.size, &expected, cancel, progress)? {
+        let path = format!("/v2/{repo}/blobs/{}", layer.digest);
+        let url = format!("{REGISTRY}{path}");
+        let mut traffic = BlobTraffic::new(name, &path, layer.size);
+        let fetched = fetch_blob(&agent, &url, &partial, &expected, cancel, progress, &mut traffic);
+        traffic.end(&fetched);
+        if !fetched? {
             return Ok(());
         }
         fs::rename(&partial, &blob)?;
@@ -207,6 +243,78 @@ pub fn download(
     fs::rename(&tmp, &path).with_context(|| format!("replacing {}", path.display()))?;
     info!(model = name, "model downloaded");
     Ok(())
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// The requests one blob download made and the bytes they brought in, for the network log.
+struct BlobTraffic<'a> {
+    model: &'a str,
+    path: &'a str,
+    total_bytes: u64,
+    started: Instant,
+    requests: u64,
+    received: u64,
+}
+
+impl<'a> BlobTraffic<'a> {
+    fn new(model: &'a str, path: &'a str, total_bytes: u64) -> Self {
+        Self {
+            model,
+            path,
+            total_bytes,
+            started: Instant::now(),
+            requests: 0,
+            received: 0,
+        }
+    }
+
+    fn start(&self, resume_from: u64) {
+        info!(
+            target: NETWORK_TARGET,
+            host = REGISTRY_HOST,
+            path = self.path,
+            model = self.model,
+            total_bytes = self.total_bytes,
+            resume_from,
+            purpose = PURPOSE,
+            "model download started"
+        );
+    }
+
+    fn end(&self, outcome: &Result<bool>) {
+        let duration_ms = elapsed_ms(self.started);
+        match outcome {
+            Ok(finished) => info!(
+                target: NETWORK_TARGET,
+                host = REGISTRY_HOST,
+                path = self.path,
+                model = self.model,
+                requests = self.requests,
+                bytes_received = self.received,
+                total_bytes = self.total_bytes,
+                duration_ms,
+                purpose = PURPOSE,
+                "{}",
+                if *finished { "model download finished" } else { "model download stopped" }
+            ),
+            Err(err) => warn!(
+                target: NETWORK_TARGET,
+                host = REGISTRY_HOST,
+                path = self.path,
+                model = self.model,
+                requests = self.requests,
+                bytes_received = self.received,
+                total_bytes = self.total_bytes,
+                duration_ms,
+                purpose = PURPOSE,
+                error = format!("{err:#}"),
+                "model download failed"
+            ),
+        }
+    }
 }
 
 /// What to do with the `have` bytes of a `.partial` file for a blob of `total` bytes.
@@ -240,11 +348,12 @@ fn fetch_blob(
     agent: &Agent,
     url: &str,
     partial: &Path,
-    total: u64,
     expected: &str,
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(u64, u64),
+    traffic: &mut BlobTraffic,
 ) -> Result<bool> {
+    let total = traffic.total_bytes;
     let have = fs::metadata(partial).map(|m| m.len()).unwrap_or(0);
     let mut done = match resume(have, total) {
         Resume::Discard => {
@@ -270,12 +379,14 @@ fn fetch_blob(
     }
     let mut file = OpenOptions::new().create(true).append(true).open(partial)?;
     progress(done, total);
+    traffic.start(done);
 
     let mut buf = vec![0u8; READ_BUF];
     while let Some((start, end)) = next_range(done, total, RANGE_BYTES) {
         if cancel.load(Ordering::Acquire) {
             return Ok(false);
         }
+        traffic.requests += 1;
         let mut response = agent
             .get(url)
             .header("Range", format!("bytes={start}-{end}"))
@@ -307,6 +418,7 @@ fn fetch_blob(
             hasher.update(&buf[..n]);
             got += n as u64;
             done += n as u64;
+            traffic.received += n as u64;
             progress(done, total);
         }
         if got == 0 {
