@@ -13,7 +13,6 @@ import { UNCATEGORIZED } from "@/categories";
 import { PaginationControls } from "@/components/PaginationControls";
 import { useCategories } from "@/hooks/useCategories";
 import { useDebouncedCallback } from "@/hooks/useDebouncedCallback";
-import { useScopedState } from "@/hooks/useScopedState";
 import { parseOneOf } from "@/lib/utils";
 import { invalidateCategorizationQueries, queryKeys } from "@/queries";
 import type { HistorySourceFilter, SessionRow } from "@/types";
@@ -27,6 +26,7 @@ import {
 import { type HistoryFilters, parseSourceFilter } from "./-components/filters";
 import { HistoryHeader } from "./-components/HistoryHeader";
 import { SessionsTable } from "./-components/SessionsTable";
+import { useHistorySelection } from "./-components/useHistorySelection";
 import {
   ALL_TIME,
   isRangeActive,
@@ -86,7 +86,6 @@ export const Route = createFileRoute("/history")({
   validateSearch,
 });
 
-const EMPTY_IDS: ReadonlySet<number> = new Set();
 const NO_ROWS: SessionRow[] = [];
 
 function HistoryPage() {
@@ -147,16 +146,6 @@ function HistoryPage() {
     commitQuery(text);
   }
 
-  // Selections belong to the page and filters they were made on.
-  const scope = JSON.stringify([page, query, filters]);
-  const [selectedIds, updateSelectedIds] = useScopedState(scope, EMPTY_IDS);
-  const [bulkCategory, updateBulkCategory] = useScopedState(scope, "");
-
-  const clearSelection = useCallback(() => {
-    updateSelectedIds(() => EMPTY_IDS);
-    updateBulkCategory(() => "");
-  }, [updateSelectedIds, updateBulkCategory]);
-
   const sessionsQuery = useQuery({
     queryKey: [...queryKeys.sessions, { page, query, filters }],
     // The range is resolved per fetch, so "Today" is still today after midnight.
@@ -183,6 +172,10 @@ function HistoryPage() {
   const loading = sessionsQuery.isFetching;
   const error = sessionsQuery.error ?? categoriesError;
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const selection = useHistorySelection(
+    JSON.stringify([page, query, filters]),
+    rows,
+  );
 
   // A link or a reload can land past the last page; settle on the last one that exists.
   const settled = sessionsQuery.data && !sessionsQuery.isPlaceholderData;
@@ -241,36 +234,12 @@ function HistoryPage() {
     mutationFn: ({ ids, categoryId }: { ids: number[]; categoryId: number }) =>
       session.setCategory(ids, categoryId),
     onSuccess: (_, { ids }) => {
-      clearSelection();
+      selection.clear();
       toast.success(`Categorized ${ids.length} activities`);
       return invalidateCategorizationQueries(queryClient);
     },
     onError: (err) => toast.error(String(err)),
   });
-
-  const toggleRow = useCallback(
-    (id: number, checked: boolean) =>
-      updateSelectedIds((prev) => {
-        const next = new Set(prev);
-        if (checked) next.add(id);
-        else next.delete(id);
-        return next;
-      }),
-    [updateSelectedIds],
-  );
-
-  const toggleAllVisible = useCallback(
-    (checked: boolean) =>
-      updateSelectedIds(() =>
-        checked ? new Set(rows.map((r) => r.id)) : EMPTY_IDS,
-      ),
-    [updateSelectedIds, rows],
-  );
-
-  // A row that left the page (refetch, or placeholder rows replaced) is no longer selected.
-  const selectedRowIds = rows
-    .filter((r) => selectedIds.has(r.id))
-    .map((r) => r.id);
 
   const handleRowCategoryChange = useCallback(
     (row: SessionRow, value: string) => changeRowCategory({ row, value }),
@@ -301,20 +270,20 @@ function HistoryPage() {
         </div>
       )}
 
-      {selectedRowIds.length > 0 && (
+      {selection.selectedRowIds.length > 0 && (
         <BulkActionsBar
-          selectedCount={selectedRowIds.length}
+          selectedCount={selection.selectedRowIds.length}
           picker={picker}
-          bulkCategory={bulkCategory}
-          onBulkCategoryChange={(value) => updateBulkCategory(() => value)}
+          bulkCategory={selection.bulkCategory}
+          onBulkCategoryChange={selection.setBulkCategory}
           onApply={() =>
             bulkApplyMutation.mutate({
-              ids: selectedRowIds,
-              categoryId: Number(bulkCategory),
+              ids: selection.selectedRowIds,
+              categoryId: Number(selection.bulkCategory),
             })
           }
           applyPending={bulkApplyMutation.isPending}
-          onClear={clearSelection}
+          onClear={selection.clear}
         />
       )}
 
@@ -323,10 +292,10 @@ function HistoryPage() {
         picker={picker}
         loading={loading}
         filtered={filtered}
-        selectedIds={selectedIds}
+        selectedIds={selection.selectedIds}
         selectionDisabled={sessionsQuery.isPlaceholderData}
-        onToggleRow={toggleRow}
-        onToggleAllVisible={toggleAllVisible}
+        onToggleRow={selection.toggleRow}
+        onToggleAllVisible={selection.toggleAllVisible}
         onRowCategoryChange={handleRowCategoryChange}
         onAcceptAiLabel={acceptAiLabel}
       />
