@@ -9,11 +9,7 @@ import {
   markCategorizeStarted,
   queryKeys,
 } from "@/queries";
-import type {
-  AiCategorizeProgress,
-  AiCategorizeStatus,
-  ModelDownloadStatus,
-} from "@/types";
+import type { AiRunProgress, AiRunStatus, ModelDownloadStatus } from "@/types";
 
 export interface BackgroundTask {
   id: string;
@@ -36,10 +32,10 @@ export function useBackgroundTaskSync() {
   const wasDownloading = useRef(false);
 
   useEffect(() => {
-    const unlisten = listen<AiCategorizeProgress>(
+    const unlisten = listen<AiRunProgress>(
       "ai-categorize-progress",
       ({ payload }) =>
-        queryClient.setQueryData<AiCategorizeStatus>(
+        queryClient.setQueryData<AiRunStatus>(
           queryKeys.aiCategorizeStatus,
           (old) => old && { ...old, ...payload },
         ),

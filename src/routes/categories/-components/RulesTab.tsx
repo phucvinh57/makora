@@ -14,7 +14,7 @@ import {
   invalidateCategorizationQueries,
 } from "@/queries";
 import { PATTERN_FIELD_LABELS, RULE_KIND_LABELS } from "@/rules";
-import type { CategoryRule } from "@/types";
+import type { CategoryRuleView } from "@/types";
 
 function HowItWorks() {
   return (
@@ -52,7 +52,7 @@ export function RulesTab() {
   const colorById = new Map(categories.map((c) => [c.id, c.color]));
 
   const deleteMutation = useMutation({
-    mutationFn: (rule: CategoryRule) => categoryRule.delete(rule.id),
+    mutationFn: (rule: CategoryRuleView) => categoryRule.delete(rule.id),
     onSuccess: () => {
       toast.success("Rule deleted");
       return invalidateCategorizationQueries(queryClient);
