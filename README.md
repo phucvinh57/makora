@@ -57,6 +57,9 @@ After opening Makora:
   packages install it only when a GNOME Wayland session is detected. Other
   desktop environments skip it.
 - **Web tracking:** Follow the
-  [browser extension setup](extensions/browser/README.md#installing).
+  [browser extension setup](extensions/browser/README.md#installing). Snap and
+  Flatpak browsers cannot reach Makora, and extension versions before 0.2.0 stop
+  reporting until updated; see its
+  [limitations](extensions/browser/README.md#limitations).
 
 Found a problem or have an idea? Fell free to [open an issue](https://github.com/phucvinh57/makora/issues).
