@@ -50,6 +50,7 @@ export function SessionsTable({
   loading,
   filtered,
   selectedIds,
+  selectionDisabled,
   onToggleRow,
   onToggleAllVisible,
   onRowCategoryChange,
@@ -60,6 +61,7 @@ export function SessionsTable({
   loading: boolean;
   filtered: boolean;
   selectedIds: ReadonlySet<number>;
+  selectionDisabled: boolean;
   onToggleRow: (id: number, checked: boolean) => void;
   onToggleAllVisible: (checked: boolean) => void;
   onRowCategoryChange: (row: SessionRow, value: string) => void;
@@ -93,6 +95,7 @@ export function SessionsTable({
                 <Checkbox
                   checked={allVisibleSelected}
                   indeterminate={someVisibleSelected}
+                  disabled={selectionDisabled}
                   onCheckedChange={(checked) =>
                     onToggleAllVisible(checked === true)
                   }
