@@ -33,8 +33,6 @@ import { AutoCategorizeSetting } from "./AutoCategorizeSetting";
 
 const ADD_MODEL_VALUE = "__add_model__";
 const LOCAL_PROVIDER = "__local__";
-/** The local LLM switched back to when no other local model was in use this session. */
-const DEFAULT_LOCAL_LLM = "qwen2.5:7b-instruct";
 const NO_MODELS: InstalledModel[] = [];
 const NO_PROVIDERS: ProviderConfig[] = [];
 
@@ -233,21 +231,25 @@ export function AiCategorizationSection() {
     (p) => p.id === (pendingProviderId ?? savedProviderId),
   );
   const savedProvider = providers.find((p) => p.id === savedProviderId);
-  const lastLocalModel = useRef<string | null>(null);
-  useEffect(() => {
-    if (savedProviderId === null && llmModel !== undefined) {
-      lastLocalModel.current = llmModel;
-    }
-  }, [savedProviderId, llmModel]);
   const llmReady =
     llmModel !== undefined &&
     (savedProviderId !== null
       ? savedProvider !== undefined
       : installedLlms.includes(llmModel));
-  const modelsReady =
-    llmReady &&
+  const embeddingReady =
     embeddingModel !== undefined &&
     installedEmbeddings.includes(embeddingModel);
+  const modelsReady = llmReady && embeddingReady;
+  const modelsBlocker =
+    settingsQuery.isPending || installedModelsQuery.isPending
+      ? null
+      : savedProviderId !== null && savedProvider === undefined
+        ? "The selected provider no longer exists. Choose another."
+        : !llmReady
+          ? `Language model ${llmModel} is not installed. Add it from the menu above.`
+          : !embeddingReady
+            ? `Embedding model ${embeddingModel} is not installed. Add it from the menu above.`
+            : null;
 
   // A download keeps going in the backend across a page reload. Reopen the dialog when one is
   // found, so its progress bar and Stop button are reachable again.
@@ -279,11 +281,30 @@ export function AiCategorizationSection() {
     [setModelMutation.mutate],
   );
 
+  const wasDownloading = useRef(backendDownloading);
   useEffect(() => {
-    if (backendDownloading) {
+    if (backendDownloading && !wasDownloading.current) {
       openDialog<AddModelDialogData>("add-model", { onDownloaded: applyModel });
     }
+    wasDownloading.current = backendDownloading;
   }, [backendDownloading, applyModel]);
+
+  function switchToLocal() {
+    setPendingProviderId(null);
+    if (savedProviderId === null) return;
+    const model =
+      llmModel !== undefined && installedLlms.includes(llmModel)
+        ? llmModel
+        : installedLlms[0];
+    if (model !== undefined) {
+      applyModel("llm", model);
+      return;
+    }
+    openDialog<AddModelDialogData>("add-model", {
+      role: "llm",
+      onDownloaded: applyModel,
+    });
+  }
 
   const categorizeMutation = useMutation({
     mutationFn: (recheck: boolean) => categorization.run(recheck),
@@ -347,9 +368,11 @@ export function AiCategorizationSection() {
   const blocker =
     choosingProvider && shownProvider
       ? `Choose a model to switch to ${shownProvider.name}.`
-      : modelsReady && categories.length === 0
-        ? "Create a category to begin."
-        : null;
+      : !modelsReady
+        ? modelsBlocker
+        : categories.length === 0
+          ? "Create a category to begin."
+          : null;
   const modelsDisabled = running || downloading || setModelMutation.isPending;
 
   return (
@@ -378,13 +401,7 @@ export function AiCategorizationSection() {
             disabled={modelsDisabled}
             onChange={(provider) => {
               if (provider === null) {
-                setPendingProviderId(null);
-                if (savedProviderId !== null) {
-                  applyModel(
-                    "llm",
-                    lastLocalModel.current ?? DEFAULT_LOCAL_LLM,
-                  );
-                }
+                switchToLocal();
                 return;
               }
               setPendingProviderId(
