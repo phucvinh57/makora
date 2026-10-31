@@ -9,6 +9,7 @@
     "build": "bun run generate-routes && tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "bundle": "node scripts/bundle.mjs",
     "ext:build": "node extensions/browser/build.mjs",
     "ext:watch": "node extensions/browser/build.mjs --watch",
     "ext:check": "tsc -p extensions/browser",
