@@ -16,7 +16,6 @@ import type {
   CategoryRuleView,
   Exclusion,
   FeedbackStats,
-  HistorySourceFilter,
   InstalledModel,
   ModelDownloadStatus,
   PathSuggestion,
@@ -26,6 +25,7 @@ import type {
   RuleDraft,
   RuleKind,
   RulePreview,
+  SessionListQuery,
   SessionsPage,
   Settings,
   SourceSuggestion,
@@ -90,17 +90,6 @@ async function call<T>(command: string, args?: InvokeArgs): Promise<T> {
   }
 }
 
-export interface SessionsQuery {
-  /** Zero-based. */
-  page: number;
-  pageSize: number;
-  search?: string;
-  category?: string;
-  source?: HistorySourceFilter;
-  start?: string;
-  end?: string;
-}
-
 export interface CategoryDraft {
   name: string;
   color: string;
@@ -116,7 +105,7 @@ export interface CategoryDraft {
  */
 
 export const session = {
-  list(query: SessionsQuery): Promise<SessionsPage> {
+  list(query: SessionListQuery): Promise<SessionsPage> {
     return call("session_list", { query });
   },
 
@@ -296,6 +285,11 @@ export const aiProvider = {
 export const settings = {
   get(): Promise<Settings> {
     return call("settings_get");
+  },
+
+  /** Why the settings file could not be read at startup; returned once. */
+  takeLoadIssue(): Promise<string | null> {
+    return call("settings_take_load_issue");
   },
 
   setMinSessionSeconds(seconds: number): Promise<Settings> {
