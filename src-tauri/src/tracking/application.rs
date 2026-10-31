@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -13,11 +13,11 @@ use crate::settings::SettingsStore;
 use crate::shared::time;
 
 use super::domain::events::FocusedApp;
-use super::domain::exclusion::ExclusionSet;
+use super::domain::exclusion::{Exclusion, ExclusionSet};
 use super::domain::session_policy::{is_noise, settle_dangling, should_merge, DanglingRow};
 use super::domain::source_key::{url_path, SourceKey};
 use super::domain::title::canonical_title;
-use super::ports::{ExclusionPolicy, SessionRecorder};
+use super::ports::{ExclusionPolicy, OpenedRow, SessionRecorder};
 use super::store::{ensure_activity, ensure_source, prune_orphans};
 
 pub struct SqliteSessionRecorder {
@@ -33,13 +33,13 @@ impl SqliteSessionRecorder {
 }
 
 impl SessionRecorder for SqliteSessionRecorder {
-    fn start(&self, app: &FocusedApp, window_title: &str, url: Option<&str>, at_time: DateTime<Utc>) -> Result<SessionId> {
+    fn start(&self, app: &FocusedApp, window_title: &str, url: Option<&str>, at_time: DateTime<Utc>) -> Result<OpenedRow> {
         let source = SourceKey::of(&app.exe_path, url);
         let path = url.map(url_path).unwrap_or_default();
         let canonical = canonical_title(window_title, &app.app_name, url);
         let at = time::to_db(at_time);
         let mut conn = self.db.write();
-        let (session_id, created) = conn.transaction(|conn| -> QueryResult<(i64, bool)> {
+        let (opened, created) = conn.transaction(|conn| -> QueryResult<(OpenedRow, bool)> {
             let source_id = ensure_source(conn, &source, &source.display_name(&app.app_name))?;
             let (activity, created) = ensure_activity(conn, source_id, &path, &canonical)?;
 
@@ -48,7 +48,13 @@ impl SessionRecorder for SqliteSessionRecorder {
                     if let Some(end_time) = &last.end_time {
                         if time::parse_db(end_time).is_some_and(|closed_at| should_merge(closed_at, at_time)) {
                             db::sessions::SessionsRepo::reopen(conn, last.id, &at)?;
-                            return Ok((last.id, created));
+                            // Unreadable, it counts as long ago: the resumed block is never young.
+                            let started_at = time::parse_db(&last.start_time).unwrap_or(DateTime::<Utc>::MIN_UTC);
+                            let opened = OpenedRow {
+                                id: last.id.into(),
+                                started_at,
+                            };
+                            return Ok((opened, created));
                         }
                     }
                 }
@@ -62,19 +68,22 @@ impl SessionRecorder for SqliteSessionRecorder {
                     last_seen: &at,
                 },
             )?;
-            Ok((session.id, created))
+            let opened = OpenedRow {
+                id: session.id.into(),
+                started_at: at_time,
+            };
+            Ok((opened, created))
         })?;
         if created {
             self.indexer.refresh();
         }
-        Ok(session_id.into())
+        Ok(opened)
     }
 
     fn end(&self, id: SessionId, at: DateTime<Utc>) -> Result<()> {
         let id = i64::from(id);
         let end_time = time::to_db(at);
-        // Read per close, so a change on the settings page applies to the very next block.
-        let min_seconds = self.settings.get().tracking.min_session_seconds;
+        let min_seconds = self.min_session_seconds();
         let mut conn = self.db.write();
         conn.transaction(|conn| -> QueryResult<()> {
             let Some(session) = db::sessions::SessionsRepo::get(conn, id)? else {
@@ -92,7 +101,7 @@ impl SessionRecorder for SqliteSessionRecorder {
         .map_err(Into::into)
     }
 
-    fn refine_title(&self, id: SessionId, app: &FocusedApp, window_title: &str, url: Option<&str>) -> Result<()> {
+    fn retitle(&self, id: SessionId, app: &FocusedApp, window_title: &str, url: Option<&str>) -> Result<()> {
         let id = i64::from(id);
         let mut conn = self.db.write();
         let created = conn.transaction(|conn| -> QueryResult<bool> {
@@ -103,26 +112,23 @@ impl SessionRecorder for SqliteSessionRecorder {
                 return Ok(false);
             };
             let canonical = canonical_title(window_title, &app.app_name, url);
-            if canonical.is_empty() || !old_activity.title.is_empty() {
-                return Ok(false);
-            }
-
             let source = SourceKey::of(&app.exe_path, url);
             let path = url.map(url_path).unwrap_or_default();
             let source_id = ensure_source(conn, &source, &source.display_name(&app.app_name))?;
             let (target, created) = ensure_activity(conn, source_id, &path, &canonical)?;
-
-            // The session moves onto the target activity, so the user's pin moves with it —
-            // unless the target already has a different one, in which case it stays put.
-            let before = classifications::load_many(conn, &[old_activity.id.into(), target.id.into()])?;
-            let mut after = before.clone();
-            let Some((old, [target_classification])) = after.split_first_mut() else {
-                return Ok(created);
-            };
-            if old.carry_pin_into(target_classification).is_err() {
+            if target.id == old_activity.id {
                 return Ok(created);
             }
-            classifications::save_changes(conn, &before, &after)?;
+
+            // The session moves onto the target activity, so the user's pin moves with it —
+            // unless the target already has a different one, which wins.
+            let before = classifications::load_many(conn, &[old_activity.id.into(), target.id.into()])?;
+            let mut after = before.clone();
+            if let Some((old, [target_classification])) = after.split_first_mut() {
+                if old.carry_pin_into(target_classification).is_ok() {
+                    classifications::save_changes(conn, &before, &after)?;
+                }
+            }
 
             db::sessions::SessionsRepo::reassign_activity(conn, id, target.id)?;
             prune_orphans(conn, &[old_activity.id])?;
@@ -140,7 +146,7 @@ impl SessionRecorder for SqliteSessionRecorder {
     }
 
     fn close_dangling(&self) -> Result<()> {
-        let min_seconds = self.settings.get().tracking.min_session_seconds;
+        let min_seconds = self.min_session_seconds();
         let mut conn = self.db.write();
         conn.transaction(|conn| -> QueryResult<()> {
             let mut dropped = Vec::new();
@@ -165,20 +171,36 @@ impl SessionRecorder for SqliteSessionRecorder {
         })
         .map_err(Into::into)
     }
+
+    /// Read per call, so a change on the settings page applies to the very next block.
+    fn min_session_seconds(&self) -> i64 {
+        self.settings.get().tracking.min_session_seconds
+    }
 }
 
 pub struct SettingsExclusions {
     settings: Arc<dyn SettingsStore>,
+    /// The set built from the exclusions it was last asked with, rebuilt only once they change.
+    cache: Mutex<(Vec<Exclusion>, ExclusionSet)>,
 }
 
 impl SettingsExclusions {
     pub fn new(settings: Arc<dyn SettingsStore>) -> Self {
-        Self { settings }
+        Self {
+            settings,
+            cache: Mutex::default(),
+        }
     }
 }
 
 impl ExclusionPolicy for SettingsExclusions {
     fn is_excluded(&self, app: &FocusedApp, window_title: &str, url: Option<&str>) -> bool {
-        ExclusionSet::new(&self.settings.get().tracking.excluded).excludes(app, window_title, url)
+        let excluded = self.settings.get().tracking.excluded;
+        let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
+        if cache.0 != excluded {
+            let set = ExclusionSet::new(&excluded);
+            *cache = (excluded, set);
+        }
+        cache.1.excludes(app, window_title, url)
     }
 }
