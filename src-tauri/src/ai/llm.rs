@@ -44,7 +44,7 @@ use crate::shared::sync::lock;
 
 use super::cache::Cache;
 use super::choices::{choices, Choice};
-use super::prompt::{related_line, system_prompt, user_prompt, NONE_ANSWER};
+use super::prompt::{related_line, system_prompt, user_prompt, without_markers, NONE_ANSWER};
 
 /// Offload used when the model's GPU memory footprint could not be measured (see
 /// [`fitted_model_params`]). CPU-only always loads, just slower than a GPU-fit config would be.
@@ -58,7 +58,8 @@ pub const DEFAULT_MODEL: &str = "qwen2.5:7b-instruct";
 
 const N_CTX: u32 = 4096;
 const N_BATCH: u32 = 512;
-const MAX_REPLY_TOKENS: usize = 48;
+/// Room left after the longest answer's own tokens, which can split differently in context.
+const REPLY_MARGIN_TOKENS: usize = 8;
 
 pub struct LlamaClassifier {
     cache: ModelCache,
@@ -314,6 +315,29 @@ pub fn classify(
     result
 }
 
+/// Threads one inference context runs on.
+pub(super) fn inference_threads() -> i32 {
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, 8);
+    i32::try_from(threads).unwrap_or(8)
+}
+
+/// The text of every control token of `model` (`<|im_start|>`, `<|eot_id|>`, ...), longest first.
+/// The prompt is tokenized with special tokens parsed, so these must not come from activity text.
+fn control_texts(model: &LlamaModel) -> Vec<String> {
+    let vocab = model.vocab();
+    let mut texts: Vec<String> = vocab
+        .tokens()
+        .filter(|&token| vocab.is_control(token))
+        .filter_map(|token| vocab.text(token))
+        .filter_map(|text| text.to_str().ok())
+        .filter(|text| !text.trim().is_empty())
+        .map(str::to_string)
+        .collect();
+    texts.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
+    texts.dedup();
+    texts
+}
+
 /// The most likely token the grammar allows, fed back to the grammar. `None` when the grammar
 /// allows nothing.
 fn pick_token(ctx: &LlamaContext<'_>, grammar: &mut LlamaSampler) -> Option<LlamaToken> {
@@ -339,10 +363,7 @@ fn run(
     mut on_result: impl FnMut(usize, Option<CategoryId>) -> bool,
 ) -> Result<()> {
     let setup = Instant::now();
-    let threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
-        .clamp(2, 8) as i32;
+    let threads = inference_threads();
     let mut ctx = model
         .new_context(
             backend,
@@ -362,6 +383,13 @@ fn run(
     let vocab = model.vocab();
     let bos = String::from_utf8_lossy(&vocab.token_to_piece(vocab.bos(), true, None)).into_owned();
     let by_path: HashMap<&str, CategoryId> = choices.iter().map(|c| (c.path.as_str(), c.id)).collect();
+    let max_reply_tokens = std::iter::once(NONE_ANSWER)
+        .chain(choices.iter().map(|c| c.path.as_str()))
+        .map(|path| vocab.tokenize(path.as_bytes(), false, false).len())
+        .max()
+        .unwrap_or(0)
+        + REPLY_MARGIN_TOKENS;
+    let markers = control_texts(model);
 
     let mut grammar = LlamaSampler::grammar(model, &grammar(choices), "root")
         .map_err(|err| anyhow!("building category grammar: {err}"))?;
@@ -371,7 +399,21 @@ fn run(
     let mut cached: Vec<LlamaToken> = Vec::new();
 
     for (index, activity) in activities.iter().enumerate() {
-        let related = related(index);
+        let clean = |text: &str| without_markers(text, &markers);
+        let activity = ActivityText {
+            app_name: clean(&activity.app_name),
+            url: activity.url.as_deref().map(clean),
+            title: clean(&activity.title),
+        };
+        let related: Vec<RelatedActivity> = related(index)
+            .into_iter()
+            .map(|related| RelatedActivity {
+                app_name: clean(&related.app_name),
+                url: related.url.as_deref().map(clean),
+                title: clean(&related.title),
+                ..related
+            })
+            .collect();
         let encode = |with_related: bool| -> Result<Vec<LlamaToken>> {
             let lines: Vec<String> = if with_related {
                 related
@@ -383,7 +425,7 @@ fn run(
             };
             let chat = [
                 LlamaChatMessage::new("system".into(), system.clone())?,
-                LlamaChatMessage::new("user".into(), user_prompt(activity, &lines))?,
+                LlamaChatMessage::new("user".into(), user_prompt(&activity, &lines))?,
             ];
             let prompt = model
                 .apply_chat_template(&template, &chat, true)
@@ -394,7 +436,7 @@ fn run(
             }
             Ok(tokens)
         };
-        let fits = |tokens: &[LlamaToken]| tokens.len() + MAX_REPLY_TOKENS <= N_CTX as usize;
+        let fits = |tokens: &[LlamaToken]| tokens.len() + max_reply_tokens <= N_CTX as usize;
         let mut tokens = encode(true)?;
         // Related activities are a bonus: drop them before giving up on the activity.
         if !fits(&tokens) && !related.is_empty() {
@@ -448,7 +490,7 @@ fn run(
 
         grammar.reset();
         let mut answer = Vec::new();
-        for position in (tokens.len()..).take(MAX_REPLY_TOKENS) {
+        for position in (tokens.len()..).take(max_reply_tokens) {
             let Some(token) = pick_token(&ctx, &mut grammar) else {
                 break;
             };
