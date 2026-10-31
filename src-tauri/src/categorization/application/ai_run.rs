@@ -20,6 +20,7 @@ use crate::categorization::ports::{ActivityText, Classifier, Embedder, LlmSpec};
 use crate::domain::types::AiVerdict;
 use crate::domain::LabelingSvc;
 use crate::shared::ids::{ActivityId, CategoryId};
+use crate::shared::sync::RunGuard;
 use crate::taxonomy::CategorySvc;
 use crate::tracking::domain::source_key::url_location;
 
@@ -79,15 +80,6 @@ pub struct AiRunDeps<'a> {
     pub embeddings: &'a dyn EmbeddingSvc,
 }
 
-/// Clears the running flag however the run ends, panics included.
-struct RunGuard<'a>(&'a AtomicBool);
-
-impl Drop for RunGuard<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
-}
-
 impl AiRunState {
     pub fn status(&self) -> AiRunStatus {
         AiRunStatus {
@@ -111,10 +103,7 @@ impl AiRunState {
         recheck: bool,
         on_progress: &mut dyn FnMut(AiRunProgress),
     ) -> Result<AiRunOutcome, AiRunError> {
-        if self.running.swap(true, Ordering::AcqRel) {
-            return Err(AiRunError::AlreadyRunning);
-        }
-        let _running = RunGuard(&self.running);
+        let _running = RunGuard::start(&self.running).ok_or(AiRunError::AlreadyRunning)?;
         self.cancel.store(false, Ordering::Release);
         self.recheck.store(recheck, Ordering::Release);
         self.done.store(0, Ordering::Release);

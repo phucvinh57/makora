@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::ai::{embedding, llm};
+use crate::shared::sync;
 use crate::tracking::domain::exclusion::Exclusion;
 use crate::tracking::domain::session_policy::{DEFAULT_MIN_SESSION_SECONDS, MIN_SESSION_SECONDS_RANGE};
 
@@ -181,7 +182,7 @@ impl TomlSettings {
 
     fn update(&self, change: impl FnOnce(&mut Settings)) -> Result<Settings> {
         // Held across the write so two saves cannot reach the file out of order.
-        let mut current = self.current.write().unwrap();
+        let mut current = sync::write(&self.current);
         let mut next = current.clone();
         change(&mut next);
         write_atomically(&self.path, &next)?;
@@ -249,7 +250,7 @@ fn model_name(model: &str) -> Result<String> {
 
 impl SettingsStore for TomlSettings {
     fn get(&self) -> Settings {
-        self.current.read().unwrap().clone()
+        sync::read(&self.current).clone()
     }
 
     fn set_min_session_seconds(&self, seconds: i64) -> Result<Settings> {

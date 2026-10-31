@@ -26,6 +26,8 @@ use diesel::r2d2::{ConnectionManager, CustomizeConnection, Pool, PooledConnectio
 use diesel::sqlite::SqliteConnection;
 use diesel::Connection;
 
+use crate::shared::sync::lock;
+
 const BUSY_TIMEOUT_MS: u32 = 5000;
 const MAX_READERS: u32 = 4;
 
@@ -43,7 +45,7 @@ pub struct Db {
 
 impl Db {
     pub fn write(&self) -> MutexGuard<'_, SqliteConnection> {
-        self.writer.lock().unwrap()
+        lock(&self.writer)
     }
 
     pub fn read(&self) -> Result<ReadConn> {
