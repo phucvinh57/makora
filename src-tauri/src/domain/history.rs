@@ -14,7 +14,7 @@ use crate::tracking::domain::source_key::{source_url, KeyKind};
 
 use super::types::{
     ActivityStats, AppStat, CategoryFilter, CategorySource, CategorySourceFilter, CategoryStat, DailyStat,
-    SessionFilter, SessionRow, SessionsPage,
+    Paging, SessionFilter, SessionRow, SessionsPage,
 };
 
 pub use super::traits::HistorySvc;
@@ -31,13 +31,12 @@ impl SqliteHistory {
 
 impl HistorySvc for SqliteHistory {
     fn get_sessions(&self, page: i64, page_size: i64, filter: &SessionFilter) -> Result<SessionsPage> {
-        let page_size = page_size.max(1);
-        let offset = page.max(0) * page_size;
+        let paging = Paging::new(page, page_size);
         let mut conn = self.db.read()?;
         // One transaction, so the rows and the total come from the same snapshot.
         (*conn).transaction(|conn| {
             let query = to_session_query(conn, filter)?;
-            let rows = reporting::history::HistoryRepo::get_sessions(conn, page_size, offset, &query)?;
+            let rows = reporting::history::HistoryRepo::get_sessions(conn, paging.limit, paging.offset, &query)?;
             let total = reporting::history::HistoryRepo::get_session_count(conn, &query)?;
             Ok(SessionsPage {
                 rows: rows.into_iter().map(to_session_row).collect(),

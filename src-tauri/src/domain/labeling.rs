@@ -14,7 +14,8 @@ use crate::taxonomy::store::load_tree;
 use crate::tracking::domain::source_key::KeyKind;
 
 use super::types::{
-    AiReviewGroup, AiReviewGroupPage, AiReviewPage, AiReviewRow, FeedbackStats, ReviewFilter, UncategorizedActivity,
+    AiReviewGroup, AiReviewGroupPage, AiReviewPage, AiReviewRow, FeedbackStats, Paging, ReviewFilter,
+    UncategorizedActivity,
 };
 
 pub use super::traits::LabelingSvc;
@@ -44,36 +45,41 @@ impl LabelingSvc for SqliteLabeling {
     }
 
     fn get_review_page(&self, page: i64, page_size: i64, filter: &ReviewFilter) -> Result<AiReviewPage> {
-        let mut conn = self.db.read()?;
-        let category = resolve_category_scope(&mut conn, filter.category)?;
+        let paging = Paging::new(page, page_size);
         let activities = filter.activities.as_deref().map(raw);
-        let (rows, total) = reporting::review::ReviewRepo::get_review_page(
-            &mut *conn,
-            page,
-            page_size,
-            &category,
-            activities.as_deref(),
-            &Window::until(Utc::now()),
-        )?;
-        Ok(AiReviewPage {
-            rows: rows.into_iter().map(to_review_row).collect(),
-            total,
+        let window = Window::until(Utc::now());
+        let mut conn = self.db.read()?;
+        (*conn).transaction(|conn| {
+            let category = resolve_category_scope(conn, filter.category)?;
+            let rows = reporting::review::ReviewRepo::get_review_page(
+                conn,
+                paging.limit,
+                paging.offset,
+                &category,
+                activities.as_deref(),
+                &window,
+            )?;
+            let total = reporting::review::ReviewRepo::get_review_count(conn, &category, activities.as_deref())?;
+            Ok(AiReviewPage {
+                rows: rows.into_iter().map(to_review_row).collect(),
+                total,
+            })
         })
     }
 
     fn get_review_groups(&self, page: i64, page_size: i64, filter: &ReviewFilter) -> Result<AiReviewGroupPage> {
+        let paging = Paging::new(page, page_size);
+        let window = Window::until(Utc::now());
         let mut conn = self.db.read()?;
-        let category = resolve_category_scope(&mut conn, filter.category)?;
-        let (groups, total) = reporting::review::ReviewRepo::get_review_groups(
-            &mut *conn,
-            page,
-            page_size,
-            &category,
-            &Window::until(Utc::now()),
-        )?;
-        Ok(AiReviewGroupPage {
-            groups: groups.into_iter().map(to_review_group).collect(),
-            total,
+        (*conn).transaction(|conn| {
+            let category = resolve_category_scope(conn, filter.category)?;
+            let groups =
+                reporting::review::ReviewRepo::get_review_groups(conn, paging.limit, paging.offset, &category, &window)?;
+            let total = reporting::review::ReviewRepo::get_review_group_count(conn, &category)?;
+            Ok(AiReviewGroupPage {
+                groups: groups.into_iter().map(to_review_group).collect(),
+                total,
+            })
         })
     }
 
