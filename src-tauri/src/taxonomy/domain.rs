@@ -1,6 +1,13 @@
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 
+use crate::shared::text::single_line;
+
+use super::error::TaxonomyError;
+
+/// Joins a category to its parent's name in the path the AI picks from (`Work > Meetings`).
+pub(crate) const PATH_SEPARATOR: &str = " > ";
+
 #[derive(Debug, Clone)]
 pub(crate) struct CategoryTree {
     ids: HashSet<i64>,
@@ -69,5 +76,43 @@ impl CategoryTree {
         let mut ordered = descendants;
         ordered.sort_by_key(|id| (Reverse(depth.get(id).copied().unwrap_or(0)), *id));
         ordered
+    }
+}
+
+/// `name` on one line with its whitespace collapsed, as it is stored and shown. A name must not be
+/// empty, and must not contain the path separator, or two categories could share a path.
+pub(crate) fn category_name(name: &str) -> Result<String, TaxonomyError> {
+    let name = single_line(name);
+    if name.is_empty() {
+        return Err(TaxonomyError::InvalidName("a category needs a name".into()));
+    }
+    if name.contains(PATH_SEPARATOR) {
+        return Err(TaxonomyError::InvalidName(format!(
+            "a category name cannot contain \"{}\"",
+            PATH_SEPARATOR.trim()
+        )));
+    }
+    Ok(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_are_kept_on_one_trimmed_line() {
+        assert_eq!(category_name("  Deep\n work\t ").unwrap(), "Deep work");
+    }
+
+    #[test]
+    fn blank_names_are_rejected() {
+        assert!(matches!(category_name(" \n\t"), Err(TaxonomyError::InvalidName(_))));
+    }
+
+    #[test]
+    fn names_with_the_path_separator_are_rejected() {
+        assert!(matches!(category_name("Work > Meetings"), Err(TaxonomyError::InvalidName(_))));
+        assert!(matches!(category_name("Work\n>  Meetings"), Err(TaxonomyError::InvalidName(_))));
+        assert_eq!(category_name("A>B").unwrap(), "A>B");
     }
 }

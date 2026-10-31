@@ -41,6 +41,7 @@ impl From<TaxonomyError> for IpcError {
     fn from(err: TaxonomyError) -> Self {
         let code = match &err {
             TaxonomyError::TopLevelNameTaken(_) | TaxonomyError::SubcategoryNameTaken(_) => "name_taken",
+            TaxonomyError::InvalidName(_) => "invalid_input",
             TaxonomyError::ParentMissing => "parent_missing",
             TaxonomyError::Cycle => "cycle",
             TaxonomyError::NotFound(_) => "not_found",

@@ -6,6 +6,7 @@ use crate::db::{self, Db};
 use crate::domain::types::{Category, NewCategory};
 use crate::shared::ids::CategoryId;
 
+use super::domain::category_name;
 use super::error::TaxonomyError;
 use super::store::{load_tree, translate_write_error};
 
@@ -47,21 +48,23 @@ impl CategorySvc for SqliteCategories {
     }
 
     fn create(&self, new: &NewCategory) -> Result<Category, TaxonomyError> {
+        let name = category_name(&new.name)?;
         let mut conn = self.db.write();
         let row = db::categories::CategoriesRepo::insert(
             &mut *conn,
             &NewCategoryRow {
-                name: &new.name,
+                name: &name,
                 color: &new.color,
                 parent_id: new.parent_id.map(Into::into),
                 description: new.description.as_deref(),
             },
         )
-        .map_err(|err| translate_write_error(err, &new.name, new.parent_id))?;
+        .map_err(|err| translate_write_error(err, &name, new.parent_id))?;
         Ok(to_category(row))
     }
 
     fn update(&self, id: CategoryId, new: &NewCategory) -> Result<Category, TaxonomyError> {
+        let name = category_name(&new.name)?;
         let mut conn = self.db.write();
         if let Some(parent_id) = new.parent_id {
             let tree = load_tree(&mut conn)?;
@@ -70,13 +73,13 @@ impl CategorySvc for SqliteCategories {
             }
         }
         let changes = CategoryChanges {
-            name: &new.name,
+            name: &name,
             color: &new.color,
             parent_id: new.parent_id.map(Into::into),
             description: new.description.as_deref(),
         };
         let row = db::categories::CategoriesRepo::update(&mut *conn, id.into(), &changes)
-            .map_err(|err| translate_write_error(err, &new.name, new.parent_id))?;
+            .map_err(|err| translate_write_error(err, &name, new.parent_id))?;
         row.map(to_category).ok_or(TaxonomyError::NotFound(id))
     }
 
