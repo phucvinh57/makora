@@ -1,8 +1,9 @@
 use diesel::prelude::*;
 
-use super::schema::{activities, ai_labels, categories, category_rules, sessions, sources};
+use super::schema::{activities, ai_labels, ai_runs, categories, category_rules, sessions, sources};
 use super::text_enums::PatternFieldColumn;
 use crate::categorization::domain::rules::{PatternField, RuleKind};
+use crate::categorization::domain::usage::{RunStatus, RunTrigger};
 use crate::tracking::domain::source_key::KeyKind;
 
 #[derive(Debug, Clone, Queryable, Selectable, Identifiable)]
@@ -146,4 +147,87 @@ pub struct CategorizedEmbeddingRow {
     pub category_id: i64,
     #[diesel(sql_type = diesel::sql_types::Binary)]
     pub vector: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Queryable, Selectable)]
+#[diesel(table_name = ai_runs)]
+pub struct AiRunRow {
+    pub id: i64,
+    pub triggered_by: RunTrigger,
+    pub provider: Option<String>,
+    pub model: String,
+    pub status: RunStatus,
+    pub error: Option<String>,
+    pub started_at: String,
+    pub finished_at: String,
+    pub items: i64,
+    pub labeled: i64,
+    pub requests: i64,
+    pub failed_requests: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub output_tokens: i64,
+    pub llm_ms: i64,
+    pub busy_ms: i64,
+    pub prefill_ms: i64,
+    pub decode_ms: i64,
+    pub embed_count: i64,
+    pub embed_ms: i64,
+}
+
+#[derive(Debug, Clone, Insertable)]
+#[diesel(table_name = ai_runs)]
+pub struct NewAiRunRow<'a> {
+    pub triggered_by: &'a str,
+    pub provider: Option<&'a str>,
+    pub model: &'a str,
+    pub status: &'a str,
+    pub error: Option<&'a str>,
+    pub started_at: &'a str,
+    pub finished_at: &'a str,
+    pub items: i64,
+    pub labeled: i64,
+    pub requests: i64,
+    pub failed_requests: i64,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub output_tokens: i64,
+    pub llm_ms: i64,
+    pub busy_ms: i64,
+    pub prefill_ms: i64,
+    pub decode_ms: i64,
+    pub embed_count: i64,
+    pub embed_ms: i64,
+}
+
+#[derive(Debug, Clone, QueryableByName)]
+pub struct AiModelTotalsRow {
+    #[diesel(sql_type = diesel::sql_types::Nullable<diesel::sql_types::Text>)]
+    pub provider: Option<String>,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    pub model: String,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub runs: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub items: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub labeled: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub requests: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub failed_requests: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub input_tokens: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub cached_input_tokens: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub output_tokens: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub llm_ms: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub busy_ms: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub prefill_ms: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    pub decode_ms: i64,
 }

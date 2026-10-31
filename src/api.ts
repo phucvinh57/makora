@@ -9,6 +9,8 @@ import type {
   ActivityStats,
   AiRunOutcome,
   AiRunStatus,
+  AiRunView,
+  AiUsageSummary,
   AiReviewGroupPage,
   AiReviewPage,
   Category,
@@ -333,5 +335,17 @@ export const autostart = {
 
   setEnabled(enabled: boolean): Promise<void> {
     return enabled ? enableAutostart() : disableAutostart();
+  },
+};
+
+export const aiUsage = {
+  /** The most recent runs, newest first. */
+  runs(limit?: number): Promise<AiRunView[]> {
+    return call("ai_usage_runs", { limit: limit ?? null });
+  },
+
+  /** Totals and per-model sums over the last `days`, or all time when null. */
+  summary(days: number | null): Promise<AiUsageSummary> {
+    return call("ai_usage_summary", { days });
   },
 };

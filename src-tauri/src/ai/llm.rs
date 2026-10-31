@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::categorization::domain::retrieval::RelatedActivity;
-use crate::categorization::ports::{ActivityText, Classifier, LlmSpec};
+use crate::categorization::ports::{ActivityText, Classifier, LlmSpec, TokenUsage, UsageMeter};
 use crate::domain::types::Category;
 use crate::shared::ids::CategoryId;
 use crate::shared::sync::lock;
@@ -78,9 +78,10 @@ impl Classifier for LlamaClassifier {
         taxonomy: &[Category],
         activities: &[ActivityText],
         related: &dyn Fn(usize) -> Vec<RelatedActivity>,
+        meter: &UsageMeter,
         on_answer: &mut dyn FnMut(usize, Option<CategoryId>) -> bool,
     ) -> Result<()> {
-        classify(&self.cache, &llm.model, taxonomy, activities, related, on_answer)
+        classify(&self.cache, &llm.model, taxonomy, activities, related, meter, on_answer)
     }
 }
 
@@ -296,13 +297,14 @@ fn grammar(choices: &[Choice]) -> String {
 /// `false` from it cancels the run, and the results so far are kept.
 ///
 /// `related(index)` is asked for just before activity `index` is decoded, and what it returns is
-/// added to that activity's prompt.
+/// added to that activity's prompt. Each activity's tokens and timings go to `meter`.
 pub fn classify(
     cache: &ModelCache,
     name: &str,
     categories: &[Category],
     activities: &[ActivityText],
     related: &dyn Fn(usize) -> Vec<RelatedActivity>,
+    meter: &UsageMeter,
     on_result: impl FnMut(usize, Option<CategoryId>) -> bool,
 ) -> Result<()> {
     let choices = choices(categories);
@@ -311,7 +313,7 @@ pub fn classify(
     }
     let backend = backend()?;
     let model = cache.acquire(name)?;
-    let result = run(backend, &model, &choices, activities, related, on_result);
+    let result = run(backend, &model, &choices, activities, related, meter, on_result);
     drop(model);
     cache.touch(name);
     result
@@ -362,6 +364,7 @@ fn run(
     choices: &[Choice],
     activities: &[ActivityText],
     related: &dyn Fn(usize) -> Vec<RelatedActivity>,
+    meter: &UsageMeter,
     mut on_result: impl FnMut(usize, Option<CategoryId>) -> bool,
 ) -> Result<()> {
     let setup = Instant::now();
@@ -481,17 +484,20 @@ fn run(
                 .map_err(|err| anyhow!("decoding prompt: {err}"))?;
         }
 
+        let prefill = prefill.elapsed();
         if index == 0 {
             info!(
-                prefill_ms = prefill.elapsed().as_millis(),
+                prefill_ms = prefill.as_millis(),
                 prompt_tokens = tokens.len(),
                 reused = keep,
                 "first prompt decoded"
             );
         }
 
+        let decode = Instant::now();
         grammar.reset();
         let mut answer = Vec::new();
+        let mut generated = 0;
         for position in (tokens.len()..).take(max_reply_tokens) {
             let Some(token) = pick_token(&ctx, &mut grammar) else {
                 break;
@@ -499,12 +505,22 @@ fn run(
             if vocab.is_eog(token) {
                 break;
             }
+            generated += 1;
             answer.extend(vocab.token_to_piece(token, true, None));
             batch.clear();
             batch.add(token, position as i32, &[0], true)?;
             ctx.decode(&mut batch)
                 .map_err(|err| anyhow!("decoding reply: {err}"))?;
         }
+        meter.record_local(
+            TokenUsage {
+                input: tokens.len() as u64,
+                cached_input: keep as u64,
+                output: generated,
+            },
+            prefill,
+            decode.elapsed(),
+        );
 
         let answer = String::from_utf8_lossy(&answer);
         let answer = answer.trim();

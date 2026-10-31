@@ -14,6 +14,7 @@ use tracing::{info, warn};
 
 use crate::ai::llm;
 use crate::categorization::application::ai_run::{AiRunError, AiRunState};
+use crate::categorization::domain::usage::RunTrigger;
 use crate::domain::LabelingSvc;
 use crate::host::commands::categorization::run_categorization;
 use crate::host::tray;
@@ -126,7 +127,7 @@ fn check(app: &AppHandle) {
 
     info!(hours, "starting scheduled AI categorization");
     let _ = app.emit("ai-categorize-started", Started { recheck: false });
-    match run_categorization(app, false) {
+    match run_categorization(app, false, RunTrigger::Scheduled) {
         Ok(outcome) => {
             info!(labeled = outcome.labeled, skipped = outcome.skipped, "scheduled AI categorization finished");
             if outcome.labeled > 0 {

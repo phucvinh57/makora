@@ -6,6 +6,7 @@
 pub mod activities;
 pub mod activity_embeddings;
 pub mod ai_labels;
+pub mod ai_runs;
 pub mod categories;
 pub mod category_rules;
 mod migrate;

@@ -92,7 +92,7 @@ pub struct UnknownValue {
 }
 
 impl UnknownValue {
-    fn new(what: &'static str, value: &str) -> Self {
+    pub(crate) fn new(what: &'static str, value: &str) -> Self {
         Self {
             what,
             value: value.to_string(),

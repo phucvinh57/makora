@@ -7,7 +7,7 @@ use anyhow::{anyhow, Result};
 use tracing::warn;
 
 use crate::categorization::domain::retrieval::RelatedActivity;
-use crate::categorization::ports::{ActivityText, Classifier, LlmSpec};
+use crate::categorization::ports::{ActivityText, Classifier, LlmSpec, UsageMeter};
 use crate::domain::types::Category;
 use crate::settings::SettingsStore;
 use crate::shared::ids::{CategoryId, ProviderId};
@@ -35,10 +35,11 @@ impl Classifier for LlmRouter {
         taxonomy: &[Category],
         activities: &[ActivityText],
         related: &dyn Fn(usize) -> Vec<RelatedActivity>,
+        meter: &UsageMeter,
         on_answer: &mut dyn FnMut(usize, Option<CategoryId>) -> bool,
     ) -> Result<()> {
         let Some(id) = llm.provider.as_ref().map(ProviderId::as_str) else {
-            return self.local.classify(llm, taxonomy, activities, related, on_answer);
+            return self.local.classify(llm, taxonomy, activities, related, meter, on_answer);
         };
         let provider = self
             .settings
@@ -53,6 +54,15 @@ impl Classifier for LlmRouter {
             None
         });
         let api = remote::api_for(&provider, key);
-        remote::classify(&*api, &llm.model, taxonomy, activities, related, on_answer)
+        remote::classify(
+            &*api,
+            &provider.base_url,
+            &llm.model,
+            taxonomy,
+            activities,
+            related,
+            meter,
+            on_answer,
+        )
     }
 }

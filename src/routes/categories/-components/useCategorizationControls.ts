@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { describeRunUsage } from "@/aiUsage";
 import { aiModel, categorization, settings } from "@/api";
 import { useCategories } from "@/hooks/useCategories";
 import { openDialog } from "@/hooks/useDialog";
@@ -143,6 +144,10 @@ export function useCategorizationControls() {
     mutationFn: (recheck: boolean) => categorization.run(recheck),
     onMutate: (recheck) => markCategorizeStarted(queryClient, recheck),
     onSuccess: (outcome, recheck) => {
+      const usage = describeRunUsage(outcome.usage);
+      const counts = recheck
+        ? `${outcome.changed} labels changed, ${outcome.skipped} cleared as uncertain.`
+        : `${outcome.labeled} activities labeled, ${outcome.skipped} left uncategorized.`;
       toast.success(
         outcome.stopped
           ? "AI categorization stopped"
@@ -150,9 +155,7 @@ export function useCategorizationControls() {
             ? "AI labels re-checked"
             : "AI categorization finished",
         {
-          description: recheck
-            ? `${outcome.changed} labels changed, ${outcome.skipped} cleared as uncertain.`
-            : `${outcome.labeled} activities labeled, ${outcome.skipped} left uncategorized.`,
+          description: usage ? `${counts} ${usage}` : counts,
         },
       );
     },

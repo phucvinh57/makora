@@ -1,7 +1,7 @@
 use diesel::QueryResult;
 
 use super::models::{
-    ActivityIdentityRow, ActivityRow, AiLabelRow, CategorizedEmbeddingRow, CategoryChanges, CategoryRow,
+    ActivityIdentityRow, ActivityRow, AiLabelRow, AiModelTotalsRow, AiRunRow, NewAiRunRow, CategorizedEmbeddingRow, CategoryChanges, CategoryRow,
     CategoryRuleRow, CategoryRuleValues, NewActivityRow, NewCategoryRow, NewSessionRow, NewSourceRow, SessionRow,
     SourceRow,
 };
@@ -103,4 +103,13 @@ pub trait ActivityEmbeddingsRepo {
     fn get_many(&mut self, model: &str, activity_ids: &[i64]) -> QueryResult<Vec<(i64, Vec<u8>)>>;
     /// Every activity the user has filed, by pin or by rule, that has a vector from `model`.
     fn get_categorized(&mut self, model: &str) -> QueryResult<Vec<CategorizedEmbeddingRow>>;
+}
+
+pub trait AiRunsRepo {
+    fn insert(&mut self, new: &NewAiRunRow<'_>) -> QueryResult<()>;
+    /// Up to `limit` runs, the most recent first.
+    fn get_recent(&mut self, limit: i64) -> QueryResult<Vec<AiRunRow>>;
+    /// The runs started at or after `since` (every run when `None`), summed per provider and
+    /// model, the most recently used first.
+    fn get_totals_by_model(&mut self, since: Option<&str>) -> QueryResult<Vec<AiModelTotalsRow>>;
 }

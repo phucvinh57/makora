@@ -3,6 +3,7 @@ import {
   aiModel,
   aiProvider,
   aiReview,
+  aiUsage,
   categorization,
   category,
   categoryRule,
@@ -31,6 +32,7 @@ export const queryKeys = {
   aiProviderHasKey: ["aiProviderHasKey"],
   aiProviderModels: ["aiProviderModels"],
   autostartEnabled: ["autostartEnabled"],
+  aiUsage: ["aiUsage"],
   settings: ["settings"],
 } as const;
 
@@ -155,3 +157,15 @@ export async function markDownloadStarted(
     { running: true, model, downloaded: 0, total: 0 },
   );
 }
+
+export const aiUsageSummaryQueryOptions = (days: number | null) =>
+  queryOptions({
+    queryKey: [...queryKeys.aiUsage, "summary", days],
+    queryFn: () => aiUsage.summary(days),
+  });
+
+export const aiUsageRunsQueryOptions = (limit: number) =>
+  queryOptions({
+    queryKey: [...queryKeys.aiUsage, "runs", limit],
+    queryFn: () => aiUsage.runs(limit),
+  });

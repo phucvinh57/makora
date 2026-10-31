@@ -12,6 +12,6 @@ pub mod rules_store;
 pub mod store;
 
 pub use application::{
-    ActivityIndexer, BackgroundIndexer, ClassificationSvc, EmbedSkips, EmbeddingSvc, RuleSvc, SqliteClassification,
-    SqliteEmbeddings, SqliteRules,
+    ActivityIndexer, AiUsageSvc, BackgroundIndexer, ClassificationSvc, EmbedSkips, EmbeddingSvc, RuleSvc,
+    SqliteClassification, SqliteEmbeddings, SqliteRules,
 };

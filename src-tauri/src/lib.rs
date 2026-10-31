@@ -25,6 +25,7 @@ use crate::ai::model_download::ModelDownloadState;
 use crate::ai::router::LlmRouter;
 use crate::ai::secrets::{KeyringSecrets, SecretStore};
 use crate::categorization::application::ai_run::AiRunState;
+use crate::categorization::application::usage::{AiUsageSvc, SqliteAiUsage};
 use crate::categorization::ports::{Classifier, Embedder};
 use crate::categorization::{
     ActivityIndexer, BackgroundIndexer, ClassificationSvc, EmbedSkips, EmbeddingSvc, RuleSvc, SqliteClassification,
@@ -66,6 +67,8 @@ pub fn run() {
             host::commands::reporting::ai_review_list,
             host::commands::reporting::ai_review_list_groups,
             host::commands::reporting::ai_review_feedback_stats,
+            host::commands::reporting::ai_usage_runs,
+            host::commands::reporting::ai_usage_summary,
             host::commands::taxonomy::category_list,
             host::commands::taxonomy::category_create,
             host::commands::taxonomy::category_update,
@@ -148,6 +151,7 @@ pub fn run() {
             app.manage(Box::new(SqliteCategories::new(conn.clone())) as Box<dyn CategorySvc>);
             app.manage(Box::new(SqliteClassification::new(conn.clone())) as Box<dyn ClassificationSvc>);
             app.manage(Box::new(SqliteRules::new(conn.clone())) as Box<dyn RuleSvc>);
+            app.manage(Box::new(SqliteAiUsage::new(conn.clone())) as Box<dyn AiUsageSvc>);
             app.manage(Box::new(SqliteLabeling::new(conn)) as Box<dyn LabelingSvc>);
             let secrets: Arc<dyn SecretStore> = Arc::new(KeyringSecrets);
             let classifier = LlmRouter::new(LlamaClassifier::new(models.clone()), settings.clone(), secrets.clone());
