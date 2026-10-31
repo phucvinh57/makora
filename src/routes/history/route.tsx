@@ -14,17 +14,16 @@ import { useCategories } from "@/hooks/useCategories";
 import { useDebouncedCallback } from "@/hooks/useDebouncedCallback";
 import { useScopedState } from "@/hooks/useScopedState";
 import { invalidateCategorizationQueries, queryKeys } from "@/queries";
-import type { SessionRow } from "@/types";
+import type { HistorySourceFilter, SessionRow } from "@/types";
 import { BulkActionsBar } from "./-components/BulkActionsBar";
 import {
   ALL_CATEGORIES,
   ALL_SOURCES,
-  MANUAL_SOURCE,
   PAGE_SIZE,
   SEARCH_DEBOUNCE_MS,
   UNCATEGORIZED,
 } from "./-components/constants";
-import type { HistoryFilters } from "./-components/filters";
+import { type HistoryFilters, parseSourceFilter } from "./-components/filters";
 import { HistoryHeader } from "./-components/HistoryHeader";
 import { SessionsTable } from "./-components/SessionsTable";
 import {
@@ -47,7 +46,7 @@ const RANGE_KINDS: TimeRangeKind[] = [
 interface HistorySearch extends TimeRange {
   q?: string;
   category?: string;
-  source?: typeof MANUAL_SOURCE;
+  source?: HistorySourceFilter;
   /** One-based, and absent for the first page. */
   page?: number;
 }
@@ -71,7 +70,7 @@ function validateSearch(search: Record<string, unknown>): HistorySearch {
       typeof search.category === "string" && search.category !== ALL_CATEGORIES
         ? search.category
         : undefined,
-    source: search.source === MANUAL_SOURCE ? MANUAL_SOURCE : undefined,
+    source: parseSourceFilter(search.source),
     page:
       typeof search.page === "number" &&
       Number.isInteger(search.page) &&
@@ -125,7 +124,7 @@ function HistoryPage() {
         category: category === ALL_CATEGORIES ? undefined : category,
       }),
       ...(source !== undefined && {
-        source: source === ALL_SOURCES ? undefined : MANUAL_SOURCE,
+        source: source === ALL_SOURCES ? undefined : source,
       }),
       // Spelled out so switching to a preset also drops a custom range's bounds.
       ...(range && { kind: range.kind, from: range.from, to: range.to }),
@@ -168,7 +167,7 @@ function HistoryPage() {
         search: query || undefined,
         category:
           filters.category === ALL_CATEGORIES ? undefined : filters.category,
-        source: filters.source === ALL_SOURCES ? undefined : MANUAL_SOURCE,
+        source: filters.source === ALL_SOURCES ? undefined : filters.source,
         start,
         end,
       });
