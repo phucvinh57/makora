@@ -56,7 +56,8 @@ pub fn ai_review_accept(
     Ok(classification.accept_ai_labels(&activity_ids)?)
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct CategorizationResetOutcome {
     pub labels_cleared: usize,
 }

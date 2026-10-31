@@ -10,7 +10,8 @@ use crate::host::error::IpcError;
 use crate::settings::{ProviderConfig, ProviderKind, Settings, SettingsStore};
 
 /// A provider as the settings page sends it: no `id` when it is new.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ts_rs::TS)]
+#[ts(export, optional_fields)]
 pub struct ProviderDraft {
     pub id: Option<String>,
     pub name: String,

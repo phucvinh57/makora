@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 macro_rules! id_type {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, ts_rs::TS)]
         #[serde(transparent)]
+        #[ts(export)]
         pub struct $name(pub i64);
 
         impl From<i64> for $name {

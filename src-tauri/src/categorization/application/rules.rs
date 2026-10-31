@@ -55,7 +55,8 @@ pub struct RuleDraft {
     pub category_id: CategoryId,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct CategoryRuleView {
     pub id: RuleId,
     pub kind: RuleKind,
@@ -67,7 +68,8 @@ pub struct CategoryRuleView {
     pub total_seconds: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct RulePreview {
     pub activity_count: usize,
     pub total_seconds: f64,
@@ -77,7 +79,8 @@ pub struct RulePreview {
     pub samples: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct SourceSuggestion {
     pub kind: KeyKind,
     pub key: String,
@@ -85,7 +88,8 @@ pub struct SourceSuggestion {
     pub total_seconds: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct PathSuggestion {
     pub path: String,
     pub total_seconds: f64,

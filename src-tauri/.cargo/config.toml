@@ -5,3 +5,5 @@
 [env]
 CMAKE_GENERATOR_x86_64-pc-windows-msvc = "Ninja"
 CMAKE_OBJECT_PATH_MAX = "1024"
+TS_RS_EXPORT_DIR = { value = "../src/bindings", relative = true }
+TS_RS_LARGE_INT = "number"
