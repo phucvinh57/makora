@@ -322,7 +322,7 @@ jobs:
       - name: Check and build browser extension
         run: |
           bun run ext:check
-          bun run ext:build
+          bun run ext:build --store
 
       - name: Set extension version and create package
         shell: bash
