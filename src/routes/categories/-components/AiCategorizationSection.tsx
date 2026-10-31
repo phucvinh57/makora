@@ -3,7 +3,6 @@ import { PlusIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { aiModel, categorization, settings } from "@/api";
-import type { AddModelDialogData } from "@/components/dialogs/AddModelDialog";
 import { type Suggestion, SuggestInput } from "@/components/SuggestInput";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -161,7 +160,7 @@ function ModelSelect({
         onValueChange={(next) => {
           if (!next) return;
           if (next === ADD_MODEL_VALUE) {
-            openDialog<AddModelDialogData>("add-model", {
+            openDialog("add-model", {
               role: modelRole,
               onDownloaded: (_, model) => onChange(model),
             });
@@ -284,7 +283,7 @@ export function AiCategorizationSection() {
   const wasDownloading = useRef(backendDownloading);
   useEffect(() => {
     if (backendDownloading && !wasDownloading.current) {
-      openDialog<AddModelDialogData>("add-model", { onDownloaded: applyModel });
+      openDialog("add-model", { onDownloaded: applyModel });
     }
     wasDownloading.current = backendDownloading;
   }, [backendDownloading, applyModel]);
@@ -300,7 +299,7 @@ export function AiCategorizationSection() {
       applyModel("llm", model);
       return;
     }
-    openDialog<AddModelDialogData>("add-model", {
+    openDialog("add-model", {
       role: "llm",
       onDownloaded: applyModel,
     });

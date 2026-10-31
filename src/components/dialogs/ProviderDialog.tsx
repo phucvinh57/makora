@@ -280,7 +280,7 @@ function ProviderForm({
 }
 
 export function ProviderDialog() {
-  const { open, setOpen, data } = useDialog<ProviderDialogData>("provider");
+  const { open, setOpen, data } = useDialog("provider");
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent>

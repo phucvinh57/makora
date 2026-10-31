@@ -20,8 +20,7 @@ export interface RemoveProviderDialogData {
 
 export function RemoveProviderDialog() {
   const queryClient = useQueryClient();
-  const { open, setOpen, data } =
-    useDialog<RemoveProviderDialogData>("remove-provider");
+  const { open, setOpen, data } = useDialog("remove-provider");
   const settingsQuery = useQuery(settingsQueryOptions);
   const provider = data?.provider;
   const inUse =
