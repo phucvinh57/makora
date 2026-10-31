@@ -3,11 +3,12 @@
 //! [`crate::categorization`]'s job.
 
 use anyhow::Result;
+use chrono::Utc;
 use diesel::sqlite::SqliteConnection;
 use diesel::Connection;
 
 use crate::db::Db;
-use crate::reporting::{self, CategoryScope};
+use crate::reporting::{self, CategoryScope, Window};
 use crate::shared::ids::{raw, ActivityId, CategoryId};
 use crate::taxonomy::store::load_tree;
 use crate::tracking::domain::source_key::KeyKind;
@@ -52,6 +53,7 @@ impl LabelingSvc for SqliteLabeling {
             page_size,
             &category,
             activities.as_deref(),
+            &Window::until(Utc::now()),
         )?;
         Ok(AiReviewPage {
             rows: rows.into_iter().map(to_review_row).collect(),
@@ -62,7 +64,13 @@ impl LabelingSvc for SqliteLabeling {
     fn get_review_groups(&self, page: i64, page_size: i64, filter: &ReviewFilter) -> Result<AiReviewGroupPage> {
         let mut conn = self.db.read()?;
         let category = resolve_category_scope(&mut conn, filter.category)?;
-        let (groups, total) = reporting::review::ReviewRepo::get_review_groups(&mut *conn, page, page_size, &category)?;
+        let (groups, total) = reporting::review::ReviewRepo::get_review_groups(
+            &mut *conn,
+            page,
+            page_size,
+            &category,
+            &Window::until(Utc::now()),
+        )?;
         Ok(AiReviewGroupPage {
             groups: groups.into_iter().map(to_review_group).collect(),
             total,
@@ -73,7 +81,7 @@ impl LabelingSvc for SqliteLabeling {
         let mut conn = self.db.read()?;
         (*conn).transaction(|conn| {
             let counts = reporting::review::ReviewRepo::get_feedback_counts(conn)?;
-            let seconds = reporting::review::ReviewRepo::get_feedback_seconds(conn)?;
+            let seconds = reporting::review::ReviewRepo::get_feedback_seconds(conn, &Window::until(Utc::now()))?;
             Ok(FeedbackStats {
                 corrected: counts.corrected,
                 confirmed: counts.confirmed,

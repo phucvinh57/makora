@@ -93,3 +93,10 @@ pub fn open_sqlite(path: &Path) -> Result<Db> {
         readers,
     })
 }
+
+#[cfg(test)]
+pub(crate) fn open_in_memory() -> SqliteConnection {
+    let mut conn = SqliteConnection::establish(":memory:").expect("opening an in-memory database");
+    migrate::migrate(&mut conn).expect("migrating an in-memory database");
+    conn
+}

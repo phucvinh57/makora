@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use chrono::Utc;
 use diesel::result::{DatabaseErrorKind, Error as DieselError};
 use diesel::Connection;
 use serde::Serialize;
@@ -14,6 +15,7 @@ use crate::categorization::rules_store;
 use crate::db::models::CategoryRuleValues;
 use crate::db::{self, Db};
 use crate::reporting::rules::RulesReportRepo;
+use crate::reporting::Window;
 use crate::shared::ids::{CategoryId, RuleId};
 use crate::tracking::domain::source_key::KeyKind;
 
@@ -123,7 +125,7 @@ fn values_of(category: CategoryId, parts: &(RuleKind, Option<PatternField>, Stri
 impl RuleSvc for SqliteRules {
     fn list(&self) -> Result<Vec<CategoryRuleView>, RuleError> {
         let mut conn = self.db.read()?;
-        let stats: HashMap<i64, (i64, f64)> = RulesReportRepo::get_rule_stats(&mut *conn)?
+        let stats: HashMap<i64, (i64, f64)> = RulesReportRepo::get_rule_stats(&mut *conn, &Window::until(Utc::now()))?
             .into_iter()
             .map(|row| (row.rule_id, (row.activity_count, row.total_seconds)))
             .collect();
@@ -183,7 +185,7 @@ impl RuleSvc for SqliteRules {
     fn preview(&self, kind: RuleKind, field: Option<PatternField>, value: &str) -> Result<RulePreview, RuleError> {
         let matcher = RuleMatcher::parse(kind, field, value)?;
         let mut conn = self.db.read()?;
-        let mut matched: Vec<(String, f64, bool)> = RulesReportRepo::get_activities_for_preview(&mut *conn)?
+        let mut matched: Vec<(String, f64, bool)> = RulesReportRepo::get_activities_for_preview(&mut *conn, &Window::until(Utc::now()))?
             .into_iter()
             .filter_map(|row| {
                 let facts = ActivityFacts::new(
@@ -219,7 +221,7 @@ impl RuleSvc for SqliteRules {
 
     fn source_suggestions(&self) -> Result<Vec<SourceSuggestion>, RuleError> {
         let mut conn = self.db.read()?;
-        Ok(RulesReportRepo::get_source_suggestions(&mut *conn)?
+        Ok(RulesReportRepo::get_source_suggestions(&mut *conn, &Window::until(Utc::now()))?
             .into_iter()
             .map(|row| SourceSuggestion {
                 kind: KeyKind::from_db(&row.kind),
@@ -232,7 +234,7 @@ impl RuleSvc for SqliteRules {
 
     fn path_suggestions(&self, domain: &str) -> Result<Vec<PathSuggestion>, RuleError> {
         let mut conn = self.db.read()?;
-        let rows = RulesReportRepo::get_paths_of(&mut *conn, &domain.trim().to_lowercase())?;
+        let rows = RulesReportRepo::get_paths_of(&mut *conn, &domain.trim().to_lowercase(), &Window::until(Utc::now()))?;
         Ok(folder_totals(rows.into_iter().map(|row| (row.path, row.total_seconds))))
     }
 }

@@ -13,11 +13,10 @@ use diesel::{sql_query, QueryResult, QueryableByName, RunQueryDsl};
 
 use crate::db::sql::{bind_all, in_clause, Param};
 
-use super::CategoryScope;
+use super::window::{overlaps, sum_seconds, WITH_WINDOW};
+use super::{CategoryScope, Window};
 
 const ACTIVITY_URL: &str = "CASE WHEN src.kind = 'domain' THEN 'https://' || src.key || a.path END";
-
-const SECONDS: &str = "COALESCE(SUM((julianday(s.end_time) - julianday(s.start_time)) * 86400.0), 0.0)";
 
 #[derive(QueryableByName)]
 pub struct ActivityToLabelRow {
@@ -136,16 +135,18 @@ pub trait ReviewRepo {
         page_size: i64,
         category: &CategoryScope,
         activity_ids: Option<&[i64]>,
+        window: &Window,
     ) -> QueryResult<(Vec<ReviewRow>, i64)>;
     fn get_review_groups(
         &mut self,
         page: i64,
         page_size: i64,
         category: &CategoryScope,
+        window: &Window,
     ) -> QueryResult<(Vec<ReviewGroupRow>, i64)>;
     fn get_feedback_counts(&mut self) -> QueryResult<FeedbackCountsRow>;
     /// Time, not rows: a few long activities matter more than many short ones.
-    fn get_feedback_seconds(&mut self) -> QueryResult<FeedbackSecondsRow>;
+    fn get_feedback_seconds(&mut self, window: &Window) -> QueryResult<FeedbackSecondsRow>;
 }
 
 impl ReviewRepo for SqliteConnection {
@@ -173,6 +174,7 @@ impl ReviewRepo for SqliteConnection {
         page_size: i64,
         category: &CategoryScope,
         activity_ids: Option<&[i64]>,
+        window: &Window,
     ) -> QueryResult<(Vec<ReviewRow>, i64)> {
         let (pending, pending_binds) = pending_fragment(category, activity_ids);
 
@@ -185,22 +187,27 @@ impl ReviewRepo for SqliteConnection {
             .get_result::<CountRow>(self)?
             .count;
 
-        let mut binds = pending_binds;
+        let mut binds = window.binds();
+        binds.extend(pending_binds);
         binds.push(Param::I64(page_size));
         binds.push(Param::I64(page * page_size));
         let rows_sql = format!(
-            "SELECT a.id AS activity_id, src.name AS app_name, {ACTIVITY_URL} AS url, a.title,
+            "{WITH_WINDOW}
+             SELECT a.id AS activity_id, src.name AS app_name, {ACTIVITY_URL} AS url, a.title,
                     cat.id AS category_id, cat.name AS category_name, cat.color AS category_color,
-                    {SECONDS} AS total_seconds, COUNT(s.id) AS session_count
-             FROM activities a
+                    {seconds} AS total_seconds, COUNT(s.id) AS session_count
+             FROM w
+             JOIN activities a
              JOIN sources src ON src.id = a.source_id
              JOIN activity_category ac ON ac.activity_id = a.id
              JOIN categories cat ON cat.id = ac.category_id
-             LEFT JOIN sessions s ON s.activity_id = a.id AND s.end_time IS NOT NULL
+             LEFT JOIN sessions s ON s.activity_id = a.id AND {overlaps}
              WHERE {pending}
              GROUP BY a.id
              ORDER BY 8 DESC, a.id
-             LIMIT ? OFFSET ?"
+             LIMIT ? OFFSET ?",
+            seconds = sum_seconds("s"),
+            overlaps = overlaps("s"),
         );
         let rows = bind_all(sql_query(rows_sql).into_boxed(), binds).get_results(self)?;
         Ok((rows, total))
@@ -211,34 +218,39 @@ impl ReviewRepo for SqliteConnection {
         page: i64,
         page_size: i64,
         category: &CategoryScope,
+        window: &Window,
     ) -> QueryResult<(Vec<ReviewGroupRow>, i64)> {
         // A group picks its own members, so unlike `review_page` this ignores any activity filter.
         let (pending, pending_binds) = pending_fragment(category, None);
         let grouped = format!(
             "SELECT src.kind AS key_kind, src.key, MIN(src.name) AS app_name, cat.id AS category_id,
                     cat.name AS category_name, cat.color AS category_color,
-                    COUNT(DISTINCT a.id) AS activity_count, {SECONDS} AS total_seconds,
+                    COUNT(DISTINCT a.id) AS activity_count, {seconds} AS total_seconds,
                     GROUP_CONCAT(DISTINCT a.id) AS activity_ids
-             FROM activities a
+             FROM w
+             JOIN activities a
              JOIN sources src ON src.id = a.source_id
              JOIN activity_category ac ON ac.activity_id = a.id
              JOIN categories cat ON cat.id = ac.category_id
-             LEFT JOIN sessions s ON s.activity_id = a.id AND s.end_time IS NOT NULL
+             LEFT JOIN sessions s ON s.activity_id = a.id AND {overlaps}
              WHERE {pending}
-             GROUP BY src.id, cat.id"
+             GROUP BY src.id, cat.id",
+            seconds = sum_seconds("s"),
+            overlaps = overlaps("s"),
         );
+        let mut binds = window.binds();
+        binds.extend(pending_binds);
 
         let total = bind_all(
-            sql_query(format!("SELECT COUNT(*) AS count FROM ({grouped})")).into_boxed(),
-            pending_binds.clone(),
+            sql_query(format!("{WITH_WINDOW} SELECT COUNT(*) AS count FROM ({grouped})")).into_boxed(),
+            binds.clone(),
         )
         .get_result::<CountRow>(self)?
         .count;
 
-        let mut binds = pending_binds;
         binds.push(Param::I64(page_size));
         binds.push(Param::I64(page * page_size));
-        let rows_sql = format!("{grouped} ORDER BY 8 DESC, key_kind, key LIMIT ? OFFSET ?");
+        let rows_sql = format!("{WITH_WINDOW} {grouped} ORDER BY 8 DESC, key_kind, key LIMIT ? OFFSET ?");
         let groups = bind_all(sql_query(rows_sql).into_boxed(), binds).get_results(self)?;
         Ok((groups, total))
     }
@@ -264,24 +276,26 @@ impl ReviewRepo for SqliteConnection {
         .get_result(self)
     }
 
-    fn get_feedback_seconds(&mut self) -> QueryResult<FeedbackSecondsRow> {
-        sql_query(
-            "SELECT COALESCE(SUM(CASE WHEN pending THEN secs END), 0.0) AS pending_seconds,
+    fn get_feedback_seconds(&mut self, window: &Window) -> QueryResult<FeedbackSecondsRow> {
+        let sql = format!(
+            "{WITH_WINDOW}
+             SELECT COALESCE(SUM(CASE WHEN pending THEN secs END), 0.0) AS pending_seconds,
                     COALESCE(SUM(CASE WHEN reviewed THEN secs END), 0.0) AS reviewed_seconds
              FROM (
                SELECT (a.category_id IS NULL AND l.activity_id IS NOT NULL
                        AND m.activity_id IS NULL) AS pending,
                       ((l.activity_id IS NOT NULL AND a.category_id IS NOT NULL)
                        OR rej.activity_id IS NOT NULL) AS reviewed,
-                      (SELECT COALESCE(SUM((julianday(s.end_time) - julianday(s.start_time))
-                                           * 86400.0), 0.0)
-                       FROM sessions s
-                       WHERE s.activity_id = a.id AND s.end_time IS NOT NULL) AS secs
-               FROM activities a
+                      (SELECT {seconds} FROM sessions s
+                       WHERE s.activity_id = a.id AND {overlaps}) AS secs
+               FROM w
+               JOIN activities a
                LEFT JOIN ai_labels l ON l.activity_id = a.id AND l.rejected = 0
                LEFT JOIN ai_labels rej ON rej.activity_id = a.id AND rej.rejected = 1
                LEFT JOIN rule_matches m ON m.activity_id = a.id)",
-        )
-        .get_result(self)
+            seconds = sum_seconds("s"),
+            overlaps = overlaps("s"),
+        );
+        bind_all(sql_query(sql).into_boxed(), window.binds()).get_result(self)
     }
 }

@@ -10,5 +10,7 @@ pub mod history;
 pub mod review;
 pub mod rules;
 mod scope;
+mod window;
 
 pub use scope::CategoryScope;
+pub use window::Window;
