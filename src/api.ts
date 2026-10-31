@@ -30,19 +30,25 @@ import type {
   Settings,
   SourceSuggestion,
 } from "./types";
+import { parseOneOf } from "@/lib/utils";
 
-export type ApiErrorCode =
-  | "name_taken"
-  | "parent_missing"
-  | "cycle"
-  | "not_found"
-  | "invalid_rule"
-  | "duplicate_rule"
-  | "category_missing"
-  | "already_running"
-  | "no_categories"
-  | "invalid_input"
-  | "internal";
+/** The `code`s the backend's `IpcError` sends; anything else arrives as `unknown`. */
+const API_ERROR_CODES = [
+  "name_taken",
+  "parent_missing",
+  "cycle",
+  "not_found",
+  "invalid_rule",
+  "duplicate_rule",
+  "category_missing",
+  "already_running",
+  "no_categories",
+  "invalid_input",
+  "provider_error",
+  "internal",
+] as const;
+
+export type ApiErrorCode = (typeof API_ERROR_CODES)[number] | "unknown";
 
 /**
  * A failed command. `String(error)` gives just the message, so it can be shown as it is;
@@ -62,25 +68,25 @@ export class ApiError extends Error {
   }
 }
 
-function isWireError(
-  value: unknown,
-): value is { code: ApiErrorCode; message: string } {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    typeof (value as { code?: unknown }).code === "string" &&
-    typeof (value as { message?: unknown }).message === "string"
-  );
+function parseApiError(raw: unknown): ApiError {
+  if (typeof raw === "object" && raw !== null) {
+    const { code, message } = raw as { code?: unknown; message?: unknown };
+    if (typeof message === "string") {
+      return new ApiError(
+        parseOneOf(API_ERROR_CODES, code) ?? "unknown",
+        message,
+      );
+    }
+  }
+  // Tauri itself rejects with a bare string, e.g. for arguments it cannot read.
+  return new ApiError("internal", String(raw));
 }
 
 async function call<T>(command: string, args?: InvokeArgs): Promise<T> {
   try {
     return await invoke<T>(command, args);
   } catch (raw) {
-    // Tauri itself rejects with a bare string, e.g. for arguments it cannot read.
-    throw isWireError(raw)
-      ? new ApiError(raw.code, raw.message)
-      : new ApiError("internal", String(raw));
+    throw parseApiError(raw);
   }
 }
 
