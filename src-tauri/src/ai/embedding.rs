@@ -13,7 +13,7 @@ use llama_cpp_2::token::LlamaToken;
 
 use crate::categorization::ports::{Embedder, Embedding};
 
-use super::llm::{backend, ModelCache};
+use super::llm::{backend, inference_threads, ModelCache};
 
 /// The embedding model a fresh install uses; a small model in the Ollama library.
 pub const DEFAULT_MODEL: &str = "all-minilm";
@@ -58,10 +58,7 @@ fn run(
     texts: &[String],
 ) -> Result<Vec<Embedding>> {
     let n_ctx = model.n_ctx_train().clamp(1, MAX_TOKENS);
-    let threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
-        .clamp(2, 8) as i32;
+    let threads = inference_threads();
     let mut ctx = model
         .new_context(
             backend,
@@ -82,7 +79,7 @@ fn run(
     let tokenized: Vec<Vec<LlamaToken>> = texts
         .iter()
         .map(|text| {
-            let mut tokens = vocab.tokenize(text.as_bytes(), false, true);
+            let mut tokens = vocab.tokenize(text.as_bytes(), false, false);
             tokens.insert(0, vocab.bos());
             tokens.truncate(n_ctx as usize);
             Ok(tokens)
