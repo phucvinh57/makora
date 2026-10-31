@@ -270,7 +270,8 @@ impl ReviewRepo for SqliteConnection {
                             AND l.category_id = a.category_id), 0) AS confirmed,
                COALESCE(SUM(a.category_id IS NOT NULL AND l.activity_id IS NULL
                             AND rej.activity_id IS NULL), 0) AS pinned,
-               COALESCE(SUM(a.category_id IS NULL AND rej.activity_id IS NOT NULL), 0) AS rejected,
+               COALESCE(SUM(a.category_id IS NULL AND rej.activity_id IS NOT NULL
+                            AND m.activity_id IS NULL), 0) AS rejected,
                COALESCE(SUM(a.category_id IS NULL AND l.activity_id IS NOT NULL
                             AND m.activity_id IS NULL), 0) AS pending_review
              FROM activities a
@@ -290,7 +291,8 @@ impl ReviewRepo for SqliteConnection {
                SELECT (a.category_id IS NULL AND l.activity_id IS NOT NULL
                        AND m.activity_id IS NULL) AS pending,
                       ((l.activity_id IS NOT NULL AND a.category_id IS NOT NULL)
-                       OR rej.activity_id IS NOT NULL) AS reviewed,
+                       OR (rej.activity_id IS NOT NULL
+                           AND (a.category_id IS NOT NULL OR m.activity_id IS NULL))) AS reviewed,
                       (SELECT {seconds} FROM sessions s
                        WHERE s.activity_id = a.id AND {overlaps}) AS secs
                FROM w
@@ -361,6 +363,23 @@ mod tests {
         assert_eq!(groups[0].activity_count, 2);
         assert_eq!(groups[0].total_seconds.round() as i64, 3000);
         assert_eq!(conn.get_review_group_count(&CategoryScope::Any).unwrap(), 1);
+    }
+
+    #[test]
+    fn a_rejected_label_on_a_rule_matched_activity_is_not_counted_as_rejected() {
+        let mut conn = conn();
+        conn.batch_execute(
+            "INSERT INTO activities (id, source_id, path, title) VALUES (3, 1, '', 'c'), (4, 1, '', 'd');
+             INSERT INTO ai_labels (activity_id, category_id, rejected) VALUES (3, 1, 1), (4, 1, 1);
+             INSERT INTO category_rules (id, category_id, kind, value) VALUES (1, 1, 'app', 'code');
+             INSERT INTO rule_matches (activity_id, rule_id) VALUES (4, 1);
+             INSERT INTO sessions (activity_id, start_time, end_time) VALUES
+               (3, '2026-03-01T08:00:00+00:00', '2026-03-01T08:01:00+00:00'),
+               (4, '2026-03-01T08:00:00+00:00', '2026-03-01T08:02:00+00:00');",
+        )
+        .unwrap();
+        assert_eq!(conn.get_feedback_counts().unwrap().rejected, 1);
+        assert_eq!(conn.get_feedback_seconds(&now()).unwrap().reviewed_seconds.round() as i64, 60);
     }
 
     #[test]
