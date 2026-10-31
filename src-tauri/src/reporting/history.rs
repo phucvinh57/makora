@@ -13,8 +13,8 @@ use super::window::{clipped_end, clipped_start, overlaps, sum_seconds, WITH_WIND
 use super::{CategoryScope, Window};
 
 /// `sessions` joined out to its activity, source and resolved category. The category comes from
-/// the `activity_category` view (`ac`): a manual pin wins over an AI suggestion the user has not
-/// rejected, and `ac.source` says which of the two it was.
+/// the `activity_category` view (`ac`), which decides the precedence (pin, then rule, then an AI
+/// suggestion the user has not rejected); `ac.source` says which one it was.
 const JOIN: &str = "FROM sessions s
      JOIN activities a ON a.id = s.activity_id
      JOIN sources src ON src.id = a.source_id
