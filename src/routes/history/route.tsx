@@ -133,6 +133,11 @@ function HistoryPage() {
   }
 
   const [searchInput, setSearchInput] = useState(query);
+  const [syncedQuery, setSyncedQuery] = useState(query);
+  if (query !== syncedQuery) {
+    setSyncedQuery(query);
+    if (query !== searchInput.trim()) setSearchInput(query);
+  }
   const commitQuery = useDebouncedCallback(
     (text: string) => changeSearch({ q: text.trim() || undefined }, true),
     SEARCH_DEBOUNCE_MS,
@@ -217,7 +222,7 @@ function HistoryPage() {
         toast.success(
           `Set to ${picker.pathById.get(categoryId) ?? "category"}`,
           {
-            description: row.title ?? row.url ?? row.app_name,
+            description: row.title || row.url || row.app_name,
           },
         );
       }
