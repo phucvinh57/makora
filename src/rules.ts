@@ -1,4 +1,21 @@
+import { parseOneOf } from "@/lib/utils";
 import type { PatternField, RuleKind } from "./types";
+
+export const RULE_KINDS: readonly RuleKind[] = [
+  "app",
+  "site",
+  "page",
+  "pattern",
+];
+export const PATTERN_FIELDS: readonly PatternField[] = ["url", "title", "app"];
+
+export function parseRuleKind(value: unknown): RuleKind | undefined {
+  return parseOneOf(RULE_KINDS, value);
+}
+
+export function parsePatternField(value: unknown): PatternField | undefined {
+  return parseOneOf(PATTERN_FIELDS, value);
+}
 
 export const RULE_KIND_LABELS: Record<RuleKind, string> = {
   app: "App",

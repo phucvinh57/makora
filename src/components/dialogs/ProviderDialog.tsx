@@ -23,7 +23,9 @@ import { useDialog } from "@/hooks/useDialog";
 import {
   CUSTOM_PRESET,
   PROVIDER_KIND_LABELS,
+  PROVIDER_KINDS,
   PROVIDER_PRESETS,
+  parseProviderKind,
   presetOf,
 } from "@/providers";
 import {
@@ -39,7 +41,6 @@ const PRESET_ITEMS = {
   ),
   [CUSTOM_PRESET]: "Other (OpenAI-compatible)",
 };
-const KINDS: ProviderKind[] = ["openai", "anthropic"];
 
 export interface ProviderDialogData {
   /** The provider to edit; left out to add one. */
@@ -188,14 +189,17 @@ function ProviderForm({
             </label>
             <Select
               value={kind}
-              onValueChange={(next) => next && setKind(next as ProviderKind)}
+              onValueChange={(next) => {
+                const parsed = parseProviderKind(next);
+                if (parsed) setKind(parsed);
+              }}
               items={PROVIDER_KIND_LABELS}
             >
               <SelectTrigger id="provider-kind" className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {KINDS.map((item) => (
+                {PROVIDER_KINDS.map((item) => (
                   <SelectItem key={item} value={item}>
                     {PROVIDER_KIND_LABELS[item]}
                   </SelectItem>

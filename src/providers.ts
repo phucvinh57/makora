@@ -1,3 +1,4 @@
+import { parseOneOf } from "@/lib/utils";
 import type { ProviderConfig, ProviderKind } from "./types";
 
 export interface ProviderPreset {
@@ -56,10 +57,16 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
   },
 ];
 
+export const PROVIDER_KINDS: readonly ProviderKind[] = ["openai", "anthropic"];
+
 export const PROVIDER_KIND_LABELS: Record<ProviderKind, string> = {
   openai: "OpenAI-compatible",
   anthropic: "Anthropic",
 };
+
+export function parseProviderKind(value: unknown): ProviderKind | undefined {
+  return parseOneOf(PROVIDER_KINDS, value);
+}
 
 /** The preset a saved provider was made from, judged by its kind and address. */
 export function presetOf(provider: ProviderConfig): ProviderPreset | undefined {
