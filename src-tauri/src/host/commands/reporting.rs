@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use serde::Deserialize;
 use tauri::State;
 
 use crate::domain::types::{
@@ -10,10 +11,9 @@ use crate::host::error::IpcError;
 use crate::shared::ids::CategoryId;
 use crate::shared::time::TimeRange;
 
-#[tauri::command(async)]
-#[allow(clippy::too_many_arguments)]
-pub fn session_list(
-    history: State<Box<dyn HistorySvc>>,
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionListQuery {
     page: i64,
     page_size: i64,
     search: Option<String>,
@@ -21,17 +21,18 @@ pub fn session_list(
     source: Option<String>,
     start: Option<String>,
     end: Option<String>,
-) -> Result<SessionsPage, IpcError> {
-    let start = start.as_deref().map(parse_rfc3339).transpose()?;
-    let end = end.as_deref().map(parse_rfc3339).transpose()?;
+}
+
+#[tauri::command(async)]
+pub fn session_list(history: State<Box<dyn HistorySvc>>, query: SessionListQuery) -> Result<SessionsPage, IpcError> {
     let filter = SessionFilter {
-        search,
-        category: parse_category_filter(category.as_deref())?,
-        source: parse_category_source_filter(source.as_deref())?,
-        start,
-        end,
+        search: query.search,
+        category: parse_category_filter(query.category.as_deref())?,
+        source: parse_category_source_filter(query.source.as_deref())?,
+        start: query.start.as_deref().map(parse_rfc3339).transpose()?,
+        end: query.end.as_deref().map(parse_rfc3339).transpose()?,
     };
-    Ok(history.get_sessions(page, page_size, &filter)?)
+    Ok(history.get_sessions(query.page, query.page_size, &filter)?)
 }
 
 #[tauri::command(async)]
