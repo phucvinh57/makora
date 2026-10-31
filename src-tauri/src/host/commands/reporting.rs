@@ -11,15 +11,22 @@ use crate::host::error::IpcError;
 use crate::shared::ids::CategoryId;
 use crate::shared::time::TimeRange;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ts_rs::TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionListQuery {
     page: i64,
     page_size: i64,
+    #[ts(optional)]
     search: Option<String>,
+    /// A category id, or `"uncategorized"`.
+    #[ts(optional)]
     category: Option<String>,
+    #[ts(optional, type = "\"manual\" | \"rule\" | \"ai\"")]
     source: Option<String>,
+    #[ts(optional)]
     start: Option<String>,
+    #[ts(optional)]
     end: Option<String>,
 }
 

@@ -2,6 +2,7 @@ import type { AiRunStatus } from "./bindings/AiRunStatus";
 import type { CategoryId } from "./bindings/CategoryId";
 import type { PatternField } from "./bindings/PatternField";
 import type { RuleKind } from "./bindings/RuleKind";
+import type { SessionListQuery } from "./bindings/SessionListQuery";
 
 export type { ActivityId } from "./bindings/ActivityId";
 export type { ActivityStats } from "./bindings/ActivityStats";
@@ -36,6 +37,7 @@ export type { RuleId } from "./bindings/RuleId";
 export type { RuleKind } from "./bindings/RuleKind";
 export type { RulePreview } from "./bindings/RulePreview";
 export type { SessionId } from "./bindings/SessionId";
+export type { SessionListQuery } from "./bindings/SessionListQuery";
 export type { SessionRow } from "./bindings/SessionRow";
 export type { SessionsPage } from "./bindings/SessionsPage";
 export type { Settings } from "./bindings/Settings";
@@ -46,7 +48,10 @@ export type { TrackingSettings } from "./bindings/TrackingSettings";
 export type AiRunProgress = Pick<AiRunStatus, "done" | "total">;
 
 /** The category sources the history list can be narrowed to. */
-export type HistorySourceFilter = "manual" | "rule";
+export type HistorySourceFilter = Exclude<
+  NonNullable<SessionListQuery["source"]>,
+  "ai"
+>;
 
 /** The arguments of `category_rule_create` / `category_rule_update`. */
 export interface RuleDraft {
