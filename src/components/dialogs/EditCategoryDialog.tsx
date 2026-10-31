@@ -142,8 +142,7 @@ export interface EditCategoryDialogData {
 }
 
 export function EditCategoryDialog() {
-  const { open, setOpen, data } =
-    useDialog<EditCategoryDialogData>("edit-category");
+  const { open, setOpen, data } = useDialog("edit-category");
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

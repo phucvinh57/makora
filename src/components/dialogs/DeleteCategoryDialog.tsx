@@ -22,8 +22,7 @@ export interface DeleteCategoryDialogData {
 
 export function DeleteCategoryDialog() {
   const queryClient = useQueryClient();
-  const { open, setOpen, data } =
-    useDialog<DeleteCategoryDialogData>("delete-category");
+  const { open, setOpen, data } = useDialog("delete-category");
   const { categories } = useCategories();
   const category = data?.category;
   const descendantCount = category

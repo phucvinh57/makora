@@ -207,7 +207,7 @@ export interface AddModelDialogData {
 
 export function AddModelDialog() {
   const queryClient = useQueryClient();
-  const { open, setOpen, data } = useDialog<AddModelDialogData>("add-model");
+  const { open, setOpen, data } = useDialog("add-model");
   const status = useQuery(downloadStatusQueryOptions).data;
 
   const downloadMutation = useMutation({

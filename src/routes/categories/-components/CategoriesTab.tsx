@@ -1,7 +1,4 @@
 import { useMemo } from "react";
-import type { AddCategoryDialogData } from "@/components/dialogs/AddCategoryDialog";
-import type { DeleteCategoryDialogData } from "@/components/dialogs/DeleteCategoryDialog";
-import type { EditCategoryDialogData } from "@/components/dialogs/EditCategoryDialog";
 import { Button } from "@/components/ui/button";
 import { orderedCategories } from "@/categories";
 import { useCategories } from "@/hooks/useCategories";
@@ -23,9 +20,7 @@ export function CategoriesTab() {
       <div className="mb-4 flex justify-end">
         <Button
           size="sm"
-          onClick={() =>
-            openDialog<AddCategoryDialogData>("add-category", { parent: null })
-          }
+          onClick={() => openDialog("add-category", { parent: null })}
         >
           Add category
         </Button>
@@ -46,16 +41,14 @@ export function CategoriesTab() {
             category={category}
             depth={depth}
             subcategoryCount={children.length}
-            onEdit={() =>
-              openDialog<EditCategoryDialogData>("edit-category", { category })
-            }
+            onEdit={() => openDialog("edit-category", { category })}
             onDelete={(cat) =>
-              openDialog<DeleteCategoryDialogData>("delete-category", {
+              openDialog("delete-category", {
                 category: cat,
               })
             }
             onAddSubcategory={() =>
-              openDialog<AddCategoryDialogData>("add-category", {
+              openDialog("add-category", {
                 parent: category,
               })
             }

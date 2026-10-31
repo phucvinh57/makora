@@ -1,8 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
-import type { ProviderDialogData } from "@/components/dialogs/ProviderDialog";
-import type { RemoveProviderDialogData } from "@/components/dialogs/RemoveProviderDialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -78,9 +76,7 @@ function ProviderRow({
           variant="ghost"
           aria-label={`Edit ${provider.name}`}
           title="Edit"
-          onClick={() =>
-            openDialog<ProviderDialogData>("provider", { provider })
-          }
+          onClick={() => openDialog("provider", { provider })}
         >
           <Pencil />
         </Button>
@@ -91,7 +87,7 @@ function ProviderRow({
           aria-label={`Remove ${provider.name}`}
           title="Remove"
           onClick={() =>
-            openDialog<RemoveProviderDialogData>("remove-provider", {
+            openDialog("remove-provider", {
               provider,
             })
           }
@@ -116,7 +112,7 @@ export function AiProvidersSection() {
           <Button
             type="button"
             size="sm"
-            onClick={() => openDialog<ProviderDialogData>("provider", {})}
+            onClick={() => openDialog("provider", {})}
           >
             <Plus />
             Add provider

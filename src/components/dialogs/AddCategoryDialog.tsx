@@ -150,8 +150,7 @@ export interface AddCategoryDialogData {
 }
 
 export function AddCategoryDialog() {
-  const { open, setOpen, data } =
-    useDialog<AddCategoryDialogData>("add-category");
+  const { open, setOpen, data } = useDialog("add-category");
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

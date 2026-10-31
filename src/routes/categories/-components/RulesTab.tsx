@@ -4,7 +4,6 @@ import { toast } from "sonner";
 import { categoryRule } from "@/api";
 import { useCategoryPicker } from "@/components/CategoryOptions";
 import { Badge } from "@/components/ui/badge";
-import type { RuleDialogData } from "@/components/dialogs/RuleDialog";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatSeconds } from "@/duration";
@@ -75,7 +74,7 @@ export function RulesTab() {
         <Button
           size="sm"
           disabled={loading || categories.length === 0}
-          onClick={() => openDialog<RuleDialogData>("rule", { rule: null })}
+          onClick={() => openDialog("rule", { rule: null })}
         >
           Add rules
         </Button>
@@ -137,7 +136,7 @@ export function RulesTab() {
               variant="ghost"
               aria-label="Edit rule"
               title="Edit rule"
-              onClick={() => openDialog<RuleDialogData>("rule", { rule })}
+              onClick={() => openDialog("rule", { rule })}
             >
               <Pencil />
             </Button>

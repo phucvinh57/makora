@@ -487,7 +487,7 @@ export interface RuleDialogData {
 }
 
 export function RuleDialog() {
-  const { open, setOpen, data } = useDialog<RuleDialogData>("rule");
+  const { open, setOpen, data } = useDialog("rule");
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
