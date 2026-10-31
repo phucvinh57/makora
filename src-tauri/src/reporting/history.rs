@@ -9,7 +9,8 @@ use diesel::{sql_query, QueryResult, QueryableByName, RunQueryDsl};
 
 use crate::db::sql::{bind_all, Param};
 
-use super::CategoryScope;
+use super::window::{clipped_end, clipped_start, overlaps, sum_seconds, WITH_WINDOW};
+use super::{CategoryScope, Window};
 
 /// `sessions` joined out to its activity, source and resolved category. The category comes from
 /// the `activity_category` view (`ac`): a manual pin wins over an AI suggestion the user has not
@@ -150,21 +151,22 @@ pub struct AppStatRow {
     pub session_count: i64,
 }
 
+/// The part of one session inside a window.
 #[derive(QueryableByName)]
-pub struct DailyStatRow {
+pub struct IntervalRow {
     #[diesel(sql_type = Text)]
-    pub day: String,
-    #[diesel(sql_type = Double)]
-    pub total_seconds: f64,
+    pub start_time: String,
+    #[diesel(sql_type = Text)]
+    pub end_time: String,
 }
 
 pub trait HistoryRepo {
     fn get_session_count(&mut self, query: &SessionQuery) -> QueryResult<i64>;
     fn get_sessions(&mut self, limit: i64, offset: i64, query: &SessionQuery) -> QueryResult<Vec<SessionListRow>>;
-    fn get_totals(&mut self, start: &str, end: &str) -> QueryResult<TotalsRow>;
-    fn get_category_stats(&mut self, start: &str, end: &str) -> QueryResult<Vec<CategoryStatRow>>;
-    fn get_app_stats(&mut self, start: &str, end: &str) -> QueryResult<Vec<AppStatRow>>;
-    fn get_daily_stats(&mut self, start: &str, end: &str) -> QueryResult<Vec<DailyStatRow>>;
+    fn get_totals(&mut self, window: &Window) -> QueryResult<TotalsRow>;
+    fn get_category_stats(&mut self, window: &Window) -> QueryResult<Vec<CategoryStatRow>>;
+    fn get_app_stats(&mut self, window: &Window) -> QueryResult<Vec<AppStatRow>>;
+    fn get_intervals(&mut self, window: &Window) -> QueryResult<Vec<IntervalRow>>;
 }
 
 impl HistoryRepo for SqliteConnection {
@@ -193,75 +195,188 @@ impl HistoryRepo for SqliteConnection {
         bind_all(sql_query(sql).into_boxed(), binds).get_results(self)
     }
 
-    fn get_totals(&mut self, start: &str, end: &str) -> QueryResult<TotalsRow> {
-        const DURATION: &str = "(julianday(s.end_time) - julianday(s.start_time)) * 86400.0";
-        sql_query(format!(
-            "SELECT COALESCE(SUM({DURATION}), 0.0) AS total_seconds, COUNT(*) AS session_count
-             FROM sessions s
-             WHERE s.end_time IS NOT NULL AND s.start_time >= ? AND s.start_time < ?"
-        ))
-        .bind::<Text, _>(start)
-        .bind::<Text, _>(end)
-        .get_result(self)
+    fn get_totals(&mut self, window: &Window) -> QueryResult<TotalsRow> {
+        let sql = format!(
+            "{WITH_WINDOW}
+             SELECT {seconds} AS total_seconds, COUNT(*) AS session_count
+             FROM w JOIN sessions s
+             WHERE {overlaps}",
+            seconds = sum_seconds("s"),
+            overlaps = overlaps("s"),
+        );
+        bind_all(sql_query(sql).into_boxed(), window.binds()).get_result(self)
     }
 
-    fn get_category_stats(&mut self, start: &str, end: &str) -> QueryResult<Vec<CategoryStatRow>> {
-        const DURATION: &str = "(julianday(s.end_time) - julianday(s.start_time)) * 86400.0";
-        sql_query(format!(
-            "SELECT cat.id AS category_id, cat.name, cat.color,
-                    COALESCE(SUM({DURATION}), 0.0) AS total_seconds, COUNT(*) AS session_count
+    fn get_category_stats(&mut self, window: &Window) -> QueryResult<Vec<CategoryStatRow>> {
+        let sql = format!(
+            "{WITH_WINDOW}
+             SELECT cat.id AS category_id, cat.name, cat.color,
+                    {seconds} AS total_seconds, COUNT(*) AS session_count
              {JOIN}
-             WHERE s.end_time IS NOT NULL AND s.start_time >= ? AND s.start_time < ?
+             JOIN w
+             WHERE {overlaps}
              GROUP BY cat.id
-             ORDER BY total_seconds DESC"
-        ))
-        .bind::<Text, _>(start)
-        .bind::<Text, _>(end)
-        .get_results(self)
+             ORDER BY total_seconds DESC",
+            seconds = sum_seconds("s"),
+            overlaps = overlaps("s"),
+        );
+        bind_all(sql_query(sql).into_boxed(), window.binds()).get_results(self)
     }
 
-    fn get_app_stats(&mut self, start: &str, end: &str) -> QueryResult<Vec<AppStatRow>> {
-        const DURATION: &str = "(julianday(s.end_time) - julianday(s.start_time)) * 86400.0";
+    fn get_app_stats(&mut self, window: &Window) -> QueryResult<Vec<AppStatRow>> {
         // A source can span several categories; it takes the colour of the one it spent the most
         // time in (ties broken by category id) rather than whichever row SQLite happens to keep.
-        sql_query(format!(
-            "SELECT src.kind, src.name AS label,
+        let sql = format!(
+            "{WITH_WINDOW}
+             SELECT src.kind, src.name AS label,
                     (SELECT c2.color
                      FROM sessions s2
                      JOIN activities a2 ON a2.id = s2.activity_id
                      JOIN activity_category ac2 ON ac2.activity_id = a2.id
                      JOIN categories c2 ON c2.id = ac2.category_id
-                     WHERE a2.source_id = src.id AND s2.end_time IS NOT NULL
-                       AND s2.start_time >= ? AND s2.start_time < ?
+                     WHERE a2.source_id = src.id AND {overlaps2}
                      GROUP BY c2.id
-                     ORDER BY SUM((julianday(s2.end_time) - julianday(s2.start_time)) * 86400.0) DESC, c2.id
+                     ORDER BY {seconds2} DESC, c2.id
                      LIMIT 1) AS category_color,
-                    COALESCE(SUM({DURATION}), 0.0) AS total_seconds, COUNT(*) AS session_count
+                    {seconds} AS total_seconds, COUNT(*) AS session_count
              {JOIN}
-             WHERE s.end_time IS NOT NULL AND s.start_time >= ? AND s.start_time < ?
+             JOIN w
+             WHERE {overlaps}
              GROUP BY src.id
              ORDER BY total_seconds DESC
-             LIMIT ?"
-        ))
-        .bind::<Text, _>(start)
-        .bind::<Text, _>(end)
-        .bind::<Text, _>(start)
-        .bind::<Text, _>(end)
-        .bind::<BigInt, _>(TOP_APPS_LIMIT)
-        .get_results(self)
+             LIMIT ?",
+            seconds = sum_seconds("s"),
+            overlaps = overlaps("s"),
+            seconds2 = sum_seconds("s2"),
+            overlaps2 = overlaps("s2"),
+        );
+        let mut binds = window.binds();
+        binds.push(Param::I64(TOP_APPS_LIMIT));
+        bind_all(sql_query(sql).into_boxed(), binds).get_results(self)
     }
 
-    fn get_daily_stats(&mut self, start: &str, end: &str) -> QueryResult<Vec<DailyStatRow>> {
-        const DURATION: &str = "(julianday(s.end_time) - julianday(s.start_time)) * 86400.0";
-        sql_query(format!(
-            "SELECT date(s.start_time, 'localtime') AS day, COALESCE(SUM({DURATION}), 0.0) AS total_seconds
-             FROM sessions s
-             WHERE s.end_time IS NOT NULL AND s.start_time >= ? AND s.start_time < ?
-             GROUP BY day
-             ORDER BY day ASC"
-        ))
-        .bind::<Text, _>(start)
-        .bind::<Text, _>(end)
-        .get_results(self)
+    fn get_intervals(&mut self, window: &Window) -> QueryResult<Vec<IntervalRow>> {
+        let sql = format!(
+            "{WITH_WINDOW}
+             SELECT {start} AS start_time, {end} AS end_time
+             FROM w JOIN sessions s
+             WHERE {overlaps}",
+            start = clipped_start("s"),
+            end = clipped_end("s"),
+            overlaps = overlaps("s"),
+        );
+        bind_all(sql_query(sql).into_boxed(), window.binds()).get_results(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{DateTime, Utc};
+    use diesel::connection::SimpleConnection;
+
+    use super::*;
+    use crate::shared::time::TimeRange;
+
+    fn utc(at: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(at).unwrap().with_timezone(&Utc)
+    }
+
+    fn db_time(at: &str) -> String {
+        crate::shared::time::to_db(utc(at))
+    }
+
+    /// One app with these sessions (`None` = still open).
+    fn conn_with(sessions: &[(&str, Option<&str>)]) -> SqliteConnection {
+        let mut conn = crate::db::open_in_memory();
+        conn.batch_execute(
+            "INSERT INTO sources (id, kind, key, name) VALUES (1, 'exe', 'code', 'Code');
+             INSERT INTO activities (id, source_id, path, title) VALUES (1, 1, '', 'main.rs');",
+        )
+        .unwrap();
+        for (start, end) in sessions {
+            let end = end.map_or("NULL".to_string(), |end| format!("'{}'", db_time(end)));
+            conn.batch_execute(&format!(
+                "INSERT INTO sessions (activity_id, start_time, end_time) VALUES (1, '{}', {end});",
+                db_time(start)
+            ))
+            .unwrap();
+        }
+        conn
+    }
+
+    fn window(from: &str, to: &str, now: &str) -> Window {
+        Window::new(
+            &TimeRange {
+                start: utc(from),
+                end: utc(to),
+            },
+            utc(now),
+        )
+    }
+
+    const FROM: &str = "2026-03-01T00:00:00Z";
+    const TO: &str = "2026-03-02T00:00:00Z";
+    const LATER: &str = "2026-03-05T00:00:00Z";
+
+    #[test]
+    fn sessions_are_clipped_to_the_window() {
+        let mut conn = conn_with(&[
+            ("2026-02-28T23:00:00Z", Some("2026-03-01T01:00:00Z")),
+            ("2026-03-01T10:00:00Z", Some("2026-03-01T10:30:00Z")),
+            ("2026-03-01T23:30:00Z", Some("2026-03-02T02:00:00Z")),
+            ("2026-02-28T10:00:00Z", Some("2026-02-28T11:00:00Z")),
+            ("2026-03-02T00:00:00Z", Some("2026-03-02T01:00:00Z")),
+        ]);
+        let totals = conn.get_totals(&window(FROM, TO, LATER)).unwrap();
+        assert_eq!(totals.session_count, 3);
+        assert!((totals.total_seconds - 7200.0).abs() < 0.01, "{}", totals.total_seconds);
+    }
+
+    #[test]
+    fn an_open_session_runs_until_now() {
+        let mut conn = conn_with(&[("2026-03-01T10:00:00Z", None)]);
+        let totals = conn.get_totals(&window(FROM, TO, "2026-03-01T10:20:00Z")).unwrap();
+        assert_eq!(totals.session_count, 1);
+        assert!((totals.total_seconds - 1200.0).abs() < 0.01, "{}", totals.total_seconds);
+
+        let past = conn.get_totals(&window(FROM, TO, LATER)).unwrap();
+        assert!((past.total_seconds - 50400.0).abs() < 0.01, "{}", past.total_seconds);
+    }
+
+    #[test]
+    fn an_open_session_that_starts_after_the_window_is_left_out() {
+        let mut conn = conn_with(&[("2026-03-03T10:00:00Z", None)]);
+        let totals = conn.get_totals(&window(FROM, TO, LATER)).unwrap();
+        assert_eq!(totals.session_count, 0);
+        assert_eq!(totals.total_seconds, 0.0);
+    }
+
+    #[test]
+    fn category_app_and_interval_reads_agree_with_the_totals() {
+        let mut conn = conn_with(&[
+            ("2026-02-28T23:00:00Z", Some("2026-03-01T01:00:00Z")),
+            ("2026-03-01T23:30:00Z", None),
+        ]);
+        let window = window(FROM, TO, LATER);
+        let total = conn.get_totals(&window).unwrap().total_seconds;
+        let by_category: f64 = conn.get_category_stats(&window).unwrap().iter().map(|r| r.total_seconds).sum();
+        let by_app: f64 = conn.get_app_stats(&window).unwrap().iter().map(|r| r.total_seconds).sum();
+        assert!((total - 5400.0).abs() < 0.01, "{total}");
+        assert!((by_category - total).abs() < 0.01);
+        assert!((by_app - total).abs() < 0.01);
+
+        let intervals: Vec<(String, String)> = conn
+            .get_intervals(&window)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.start_time, r.end_time))
+            .collect();
+        assert_eq!(
+            intervals,
+            [
+                (db_time(FROM), db_time("2026-03-01T01:00:00Z")),
+                (db_time("2026-03-01T23:30:00Z"), db_time(TO)),
+            ]
+        );
     }
 }
