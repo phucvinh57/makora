@@ -14,11 +14,10 @@ use crate::tracking::domain::source_key::KeyKind;
 use super::window::{clipped_end, clipped_start, overlaps, sum_seconds, WITH_WINDOW};
 use super::{CategoryScope, Window};
 
-/// `sessions` joined out to its activity, source and resolved category. The category comes from
-/// the `activity_category` view (`ac`), which decides the precedence (pin, then rule, then an AI
-/// suggestion the user has not rejected); `ac.source` says which one it was.
-const JOIN: &str = "FROM sessions s
-     JOIN activities a ON a.id = s.activity_id
+/// `sessions s` joined out to its activity, source and resolved category. The category comes
+/// from the `activity_category` view (`ac`), which decides the precedence (pin, then rule, then
+/// an AI suggestion the user has not rejected); `ac.source` says which one it was.
+const JOIN: &str = "JOIN activities a ON a.id = s.activity_id
      JOIN sources src ON src.id = a.source_id
      LEFT JOIN activity_category ac ON ac.activity_id = a.id
      LEFT JOIN categories cat ON cat.id = ac.category_id";
@@ -176,7 +175,7 @@ pub trait HistoryRepo {
 impl HistoryRepo for SqliteConnection {
     fn get_session_count(&mut self, query: &SessionQuery) -> QueryResult<i64> {
         let (where_sql, binds) = where_clause(query);
-        let sql = format!("SELECT COUNT(*) AS count {JOIN} WHERE {where_sql}");
+        let sql = format!("SELECT COUNT(*) AS count FROM sessions s {JOIN} WHERE {where_sql}");
         count(self, sql, binds)
     }
 
@@ -188,7 +187,7 @@ impl HistoryRepo for SqliteConnection {
                     cat.id AS category_id, cat.name AS category_name, cat.color AS category_color,
                     COALESCE(ac.source = 'manual', 0) AS category_is_pinned,
                     ac.source AS category_source
-             {JOIN}
+             FROM sessions s {JOIN}
              WHERE {where_sql}
              ORDER BY s.start_time DESC
              LIMIT ? OFFSET ?"
@@ -215,8 +214,7 @@ impl HistoryRepo for SqliteConnection {
             "{WITH_WINDOW}
              SELECT cat.id AS category_id, cat.name, cat.color,
                     {seconds} AS total_seconds, COUNT(*) AS session_count
-             {JOIN}
-             JOIN w
+             FROM w JOIN sessions s {JOIN}
              WHERE {overlaps}
              GROUP BY cat.id
              ORDER BY total_seconds DESC",
@@ -242,8 +240,7 @@ impl HistoryRepo for SqliteConnection {
                      ORDER BY {seconds2} DESC, c2.id
                      LIMIT 1) AS category_color,
                     {seconds} AS total_seconds, COUNT(*) AS session_count
-             {JOIN}
-             JOIN w
+             FROM w JOIN sessions s {JOIN}
              WHERE {overlaps}
              GROUP BY src.id
              ORDER BY total_seconds DESC
