@@ -129,21 +129,23 @@ pub struct FeedbackSecondsRow {
 
 pub trait ReviewRepo {
     fn get_activities_to_label(&mut self, recheck: bool) -> QueryResult<Vec<ActivityToLabelRow>>;
+    fn get_review_count(&mut self, category: &CategoryScope, activity_ids: Option<&[i64]>) -> QueryResult<i64>;
     fn get_review_page(
         &mut self,
-        page: i64,
-        page_size: i64,
+        limit: i64,
+        offset: i64,
         category: &CategoryScope,
         activity_ids: Option<&[i64]>,
         window: &Window,
-    ) -> QueryResult<(Vec<ReviewRow>, i64)>;
+    ) -> QueryResult<Vec<ReviewRow>>;
+    fn get_review_group_count(&mut self, category: &CategoryScope) -> QueryResult<i64>;
     fn get_review_groups(
         &mut self,
-        page: i64,
-        page_size: i64,
+        limit: i64,
+        offset: i64,
         category: &CategoryScope,
         window: &Window,
-    ) -> QueryResult<(Vec<ReviewGroupRow>, i64)>;
+    ) -> QueryResult<Vec<ReviewGroupRow>>;
     fn get_feedback_counts(&mut self) -> QueryResult<FeedbackCountsRow>;
     /// Time, not rows: a few long activities matter more than many short ones.
     fn get_feedback_seconds(&mut self, window: &Window) -> QueryResult<FeedbackSecondsRow>;
@@ -168,29 +170,29 @@ impl ReviewRepo for SqliteConnection {
         .get_results(self)
     }
 
-    fn get_review_page(
-        &mut self,
-        page: i64,
-        page_size: i64,
-        category: &CategoryScope,
-        activity_ids: Option<&[i64]>,
-        window: &Window,
-    ) -> QueryResult<(Vec<ReviewRow>, i64)> {
-        let (pending, pending_binds) = pending_fragment(category, activity_ids);
-
-        let total_sql = format!(
+    fn get_review_count(&mut self, category: &CategoryScope, activity_ids: Option<&[i64]>) -> QueryResult<i64> {
+        let (pending, binds) = pending_fragment(category, activity_ids);
+        let sql = format!(
             "SELECT COUNT(*) AS count FROM activities a
              JOIN activity_category ac ON ac.activity_id = a.id
              WHERE {pending}"
         );
-        let total = bind_all(sql_query(total_sql).into_boxed(), pending_binds.clone())
-            .get_result::<CountRow>(self)?
-            .count;
+        Ok(bind_all(sql_query(sql).into_boxed(), binds).get_result::<CountRow>(self)?.count)
+    }
 
+    fn get_review_page(
+        &mut self,
+        limit: i64,
+        offset: i64,
+        category: &CategoryScope,
+        activity_ids: Option<&[i64]>,
+        window: &Window,
+    ) -> QueryResult<Vec<ReviewRow>> {
+        let (pending, pending_binds) = pending_fragment(category, activity_ids);
         let mut binds = window.binds();
         binds.extend(pending_binds);
-        binds.push(Param::I64(page_size));
-        binds.push(Param::I64(page * page_size));
+        binds.push(Param::I64(limit));
+        binds.push(Param::I64(offset));
         let rows_sql = format!(
             "{WITH_WINDOW}
              SELECT a.id AS activity_id, src.name AS app_name, {ACTIVITY_URL} AS url, a.title,
@@ -209,17 +211,29 @@ impl ReviewRepo for SqliteConnection {
             seconds = sum_seconds("s"),
             overlaps = overlaps("s"),
         );
-        let rows = bind_all(sql_query(rows_sql).into_boxed(), binds).get_results(self)?;
-        Ok((rows, total))
+        bind_all(sql_query(rows_sql).into_boxed(), binds).get_results(self)
+    }
+
+    fn get_review_group_count(&mut self, category: &CategoryScope) -> QueryResult<i64> {
+        let (pending, binds) = pending_fragment(category, None);
+        let sql = format!(
+            "SELECT COUNT(*) AS count FROM (
+               SELECT 1 FROM activities a
+               JOIN sources src ON src.id = a.source_id
+               JOIN activity_category ac ON ac.activity_id = a.id
+               WHERE {pending}
+               GROUP BY src.id, ac.category_id)"
+        );
+        Ok(bind_all(sql_query(sql).into_boxed(), binds).get_result::<CountRow>(self)?.count)
     }
 
     fn get_review_groups(
         &mut self,
-        page: i64,
-        page_size: i64,
+        limit: i64,
+        offset: i64,
         category: &CategoryScope,
         window: &Window,
-    ) -> QueryResult<(Vec<ReviewGroupRow>, i64)> {
+    ) -> QueryResult<Vec<ReviewGroupRow>> {
         // A group picks its own members, so unlike `review_page` this ignores any activity filter.
         let (pending, pending_binds) = pending_fragment(category, None);
         let grouped = format!(
@@ -240,19 +254,10 @@ impl ReviewRepo for SqliteConnection {
         );
         let mut binds = window.binds();
         binds.extend(pending_binds);
-
-        let total = bind_all(
-            sql_query(format!("{WITH_WINDOW} SELECT COUNT(*) AS count FROM ({grouped})")).into_boxed(),
-            binds.clone(),
-        )
-        .get_result::<CountRow>(self)?
-        .count;
-
-        binds.push(Param::I64(page_size));
-        binds.push(Param::I64(page * page_size));
+        binds.push(Param::I64(limit));
+        binds.push(Param::I64(offset));
         let rows_sql = format!("{WITH_WINDOW} {grouped} ORDER BY 8 DESC, key_kind, key LIMIT ? OFFSET ?");
-        let groups = bind_all(sql_query(rows_sql).into_boxed(), binds).get_results(self)?;
-        Ok((groups, total))
+        bind_all(sql_query(rows_sql).into_boxed(), binds).get_results(self)
     }
 
     fn get_feedback_counts(&mut self) -> QueryResult<FeedbackCountsRow> {
@@ -297,5 +302,72 @@ impl ReviewRepo for SqliteConnection {
             overlaps = overlaps("s"),
         );
         bind_all(sql_query(sql).into_boxed(), window.binds()).get_result(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{DateTime, Utc};
+    use diesel::connection::SimpleConnection;
+
+    use super::*;
+
+    fn utc(at: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(at).unwrap().with_timezone(&Utc)
+    }
+
+    /// Activities 1 and 2 carry a pending AI label; 1 has a closed half hour and a session open
+    /// since 11:00, 2 has ten minutes.
+    fn conn() -> SqliteConnection {
+        let mut conn = crate::db::open_in_memory();
+        conn.batch_execute(
+            "INSERT INTO categories (id, name, color) VALUES (1, 'Work', '#000000');
+             INSERT INTO sources (id, kind, key, name) VALUES (1, 'exe', 'code', 'Code');
+             INSERT INTO activities (id, source_id, path, title) VALUES (1, 1, '', 'a'), (2, 1, '', 'b');
+             INSERT INTO ai_labels (activity_id, category_id) VALUES (1, 1), (2, 1);
+             INSERT INTO sessions (activity_id, start_time, end_time) VALUES
+               (1, '2026-03-01T10:00:00+00:00', '2026-03-01T10:30:00+00:00'),
+               (1, '2026-03-01T11:00:00+00:00', NULL),
+               (2, '2026-03-01T09:00:00+00:00', '2026-03-01T09:10:00+00:00');",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn now() -> Window {
+        Window::until(utc("2026-03-01T11:10:00Z"))
+    }
+
+    #[test]
+    fn the_review_queue_counts_open_sessions_up_to_now() {
+        let mut conn = conn();
+        let rows = conn.get_review_page(10, 0, &CategoryScope::Any, None, &now()).unwrap();
+        let totals: Vec<(i64, i64, i64)> = rows
+            .iter()
+            .map(|r| (r.activity_id, r.total_seconds.round() as i64, r.session_count))
+            .collect();
+        assert_eq!(totals, [(1, 2400, 2), (2, 600, 1)]);
+        assert_eq!(conn.get_review_count(&CategoryScope::Any, None).unwrap(), 2);
+
+        let page = conn.get_review_page(1, 1, &CategoryScope::Any, None, &now()).unwrap();
+        assert_eq!(page.iter().map(|r| r.activity_id).collect::<Vec<_>>(), [2]);
+    }
+
+    #[test]
+    fn review_groups_fold_a_source_and_category_into_one_row() {
+        let mut conn = conn();
+        let groups = conn.get_review_groups(10, 0, &CategoryScope::Any, &now()).unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].activity_count, 2);
+        assert_eq!(groups[0].total_seconds.round() as i64, 3000);
+        assert_eq!(conn.get_review_group_count(&CategoryScope::Any).unwrap(), 1);
+    }
+
+    #[test]
+    fn feedback_seconds_count_open_sessions_up_to_now() {
+        let mut conn = conn();
+        let seconds = conn.get_feedback_seconds(&now()).unwrap();
+        assert_eq!(seconds.pending_seconds.round() as i64, 3000);
+        assert_eq!(seconds.reviewed_seconds, 0.0);
     }
 }

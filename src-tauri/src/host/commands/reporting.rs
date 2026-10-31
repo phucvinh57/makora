@@ -54,7 +54,7 @@ pub fn ai_review_list(
     page_size: i64,
     filter: ReviewFilter,
 ) -> Result<AiReviewPage, IpcError> {
-    Ok(labeling.get_review_page(page.max(0), page_size.max(1), &filter)?)
+    Ok(labeling.get_review_page(page, page_size, &filter)?)
 }
 
 #[tauri::command(async)]
@@ -64,7 +64,7 @@ pub fn ai_review_list_groups(
     page_size: i64,
     filter: ReviewFilter,
 ) -> Result<AiReviewGroupPage, IpcError> {
-    Ok(labeling.get_review_groups(page.max(0), page_size.max(1), &filter)?)
+    Ok(labeling.get_review_groups(page, page_size, &filter)?)
 }
 
 #[tauri::command(async)]

@@ -133,3 +133,36 @@ impl RulesReportRepo for SqliteConnection {
         bind_all(sql_query(sql).into_boxed(), window.binds()).get_results(self)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use chrono::{DateTime, Utc};
+    use diesel::connection::SimpleConnection;
+
+    use super::*;
+
+    #[test]
+    fn rule_and_source_totals_count_open_sessions_up_to_now() {
+        let mut conn = crate::db::open_in_memory();
+        conn.batch_execute(
+            "INSERT INTO categories (id, name, color) VALUES (1, 'Work', '#000000');
+             INSERT INTO sources (id, kind, key, name) VALUES (1, 'domain', 'github.com', 'github.com');
+             INSERT INTO activities (id, source_id, path, title) VALUES (1, 1, '/acme', 'a');
+             INSERT INTO category_rules (id, category_id, kind, value) VALUES (1, 1, 'site', 'github.com');
+             INSERT INTO rule_matches (activity_id, rule_id) VALUES (1, 1);
+             INSERT INTO sessions (activity_id, start_time, end_time) VALUES
+               (1, '2026-03-01T10:00:00+00:00', '2026-03-01T10:30:00+00:00'),
+               (1, '2026-03-01T11:00:00+00:00', NULL);",
+        )
+        .unwrap();
+        let now = DateTime::parse_from_rfc3339("2026-03-01T11:10:00Z").unwrap().with_timezone(&Utc);
+        let window = Window::until(now);
+
+        let rules = conn.get_rule_stats(&window).unwrap();
+        assert_eq!((rules[0].rule_id, rules[0].activity_count), (1, 1));
+        assert_eq!(rules[0].total_seconds.round() as i64, 2400);
+        assert_eq!(conn.get_source_suggestions(&window).unwrap()[0].total_seconds.round() as i64, 2400);
+        assert_eq!(conn.get_paths_of("github.com", &window).unwrap()[0].total_seconds.round() as i64, 2400);
+        assert_eq!(conn.get_activities_for_preview(&window).unwrap()[0].total_seconds.round() as i64, 2400);
+    }
+}

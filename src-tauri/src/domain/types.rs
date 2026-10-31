@@ -168,6 +168,24 @@ pub struct DailyStat {
     pub total_seconds: f64,
 }
 
+/// A page of a list as `LIMIT`/`OFFSET`. A negative page reads as the first and a page size
+/// below one as one, so any request names a real page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Paging {
+    pub limit: i64,
+    pub offset: i64,
+}
+
+impl Paging {
+    pub fn new(page: i64, page_size: i64) -> Self {
+        let limit = page_size.max(1);
+        Self {
+            limit,
+            offset: page.max(0).saturating_mul(limit),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub enum CategoryFilter {
     #[default]
@@ -192,4 +210,20 @@ pub struct SessionFilter {
     /// Sessions that ended after this (a still-open one always qualifies).
     pub start: Option<DateTime<Utc>>,
     pub end: Option<DateTime<Utc>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paging_turns_a_page_into_limit_and_offset() {
+        assert_eq!(Paging::new(2, 25), Paging { limit: 25, offset: 50 });
+    }
+
+    #[test]
+    fn paging_clamps_what_names_no_page() {
+        assert_eq!(Paging::new(-3, 0), Paging { limit: 1, offset: 0 });
+        assert_eq!(Paging::new(i64::MAX, 50).offset, i64::MAX);
+    }
 }
