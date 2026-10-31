@@ -48,7 +48,7 @@ fn where_clause(query: &SessionQuery) -> (String, Vec<Param>) {
               OR (src.key || a.path) LIKE ? ESCAPE '\\')"
                 .to_string(),
         );
-        let pattern = format!("%{}%", term.replace('%', "\\%").replace('_', "\\_"));
+        let pattern = like_pattern(term);
         for _ in 0..3 {
             binds.push(Param::Text(pattern.clone()));
         }
@@ -75,6 +75,12 @@ fn where_clause(query: &SessionQuery) -> (String, Vec<Param>) {
     }
 
     (clauses.join(" AND "), binds)
+}
+/// `%term%` for `LIKE … ESCAPE '\'`; the escape is doubled first so the ones added after stay intact.
+/// `%term%` for `LIKE … ESCAPE '\\'`; the escape goes first so the ones added after stay intact.
+fn like_pattern(term: &str) -> String {
+    let escaped = term.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    format!("%{escaped}%")
 }
 
 #[derive(QueryableByName)]
@@ -317,6 +323,11 @@ mod tests {
     const FROM: &str = "2026-03-01T00:00:00Z";
     const TO: &str = "2026-03-02T00:00:00Z";
     const LATER: &str = "2026-03-05T00:00:00Z";
+
+    #[test]
+    fn a_search_term_matches_literally() {
+        assert_eq!(like_pattern(r"50%_a\b"), r"%50\%\_a\\b%");
+    }
 
     #[test]
     fn sessions_are_clipped_to_the_window() {
