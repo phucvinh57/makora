@@ -98,9 +98,7 @@ export function AutoCategorizeSetting() {
         </Select>
       </div>
       <p className="m-0 text-xs text-muted-foreground">
-        Runs in the background while Makora is open, then sends a notification
-        when there are suggestions to review.
-        {enabled && nextRun && ` ${describeNextRun(nextRun, running)}`}
+        {enabled && nextRun && `${describeNextRun(nextRun, running)}`}
       </p>
       {saveMutation.isError && (
         <p className="m-0 text-xs text-destructive">
