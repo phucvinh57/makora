@@ -32,22 +32,16 @@ import {
 } from "@/queries";
 import {
   PATTERN_FIELD_LABELS,
+  PATTERN_FIELDS,
+  parsePatternField,
+  parseRuleKind,
   RULE_KIND_LABELS,
+  RULE_KINDS,
   RULE_VALUE_PLACEHOLDERS,
 } from "@/rules";
 import type { CategoryRule, PatternField, RuleKind } from "@/types";
 
 const PREVIEW_DEBOUNCE_MS = 300;
-
-const KINDS: RuleKind[] = ["app", "site", "page", "pattern"];
-const PATTERN_FIELDS: PatternField[] = ["url", "title", "app"];
-
-const KIND_ITEMS = Object.fromEntries(
-  KINDS.map((kind) => [kind, RULE_KIND_LABELS[kind]]),
-);
-const FIELD_ITEMS = Object.fromEntries(
-  PATTERN_FIELDS.map((field) => [field, PATTERN_FIELD_LABELS[field]]),
-);
 
 interface Form {
   kind: RuleKind;
@@ -175,16 +169,17 @@ function RuleFields({
       <div className="flex items-center gap-2">
         <Select
           value={form.kind}
-          onValueChange={(value) =>
-            value && change({ kind: value as RuleKind })
-          }
-          items={KIND_ITEMS}
+          onValueChange={(value) => {
+            const kind = parseRuleKind(value);
+            if (kind) change({ kind });
+          }}
+          items={RULE_KIND_LABELS}
         >
           <SelectTrigger className="min-w-0 flex-1" aria-label="What to match">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {KINDS.map((kind) => (
+            {RULE_KINDS.map((kind) => (
               <SelectItem key={kind} value={kind}>
                 {RULE_KIND_LABELS[kind]}
               </SelectItem>
@@ -195,10 +190,11 @@ function RuleFields({
         {form.kind === "pattern" && (
           <Select
             value={form.field}
-            onValueChange={(value) =>
-              value && change({ field: value as PatternField })
-            }
-            items={FIELD_ITEMS}
+            onValueChange={(value) => {
+              const field = parsePatternField(value);
+              if (field) change({ field });
+            }}
+            items={PATTERN_FIELD_LABELS}
           >
             <SelectTrigger
               className="min-w-0 flex-1"

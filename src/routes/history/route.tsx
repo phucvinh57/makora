@@ -13,6 +13,7 @@ import { PaginationControls } from "@/components/PaginationControls";
 import { useCategories } from "@/hooks/useCategories";
 import { useDebouncedCallback } from "@/hooks/useDebouncedCallback";
 import { useScopedState } from "@/hooks/useScopedState";
+import { parseOneOf } from "@/lib/utils";
 import { invalidateCategorizationQueries, queryKeys } from "@/queries";
 import type { HistorySourceFilter, SessionRow } from "@/types";
 import { BulkActionsBar } from "./-components/BulkActionsBar";
@@ -34,7 +35,7 @@ import {
   type TimeRangeKind,
 } from "./-components/timeRange";
 
-const RANGE_KINDS: TimeRangeKind[] = [
+const RANGE_KINDS: readonly TimeRangeKind[] = [
   "all",
   "today",
   "yesterday",
@@ -52,7 +53,7 @@ interface HistorySearch extends TimeRange {
 }
 
 function validateRange(search: Record<string, unknown>): TimeRange {
-  const kind = RANGE_KINDS.find((k) => k === search.kind);
+  const kind = parseOneOf(RANGE_KINDS, search.kind);
   if (!kind || kind === "all") return ALL_TIME;
   if (kind === "custom") {
     const from = typeof search.from === "string" ? search.from : undefined;

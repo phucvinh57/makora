@@ -22,20 +22,14 @@ import {
 import {
   describeRule,
   PATTERN_FIELD_LABELS,
+  PATTERN_FIELDS,
+  parsePatternField,
+  parseRuleKind,
   RULE_KIND_LABELS,
+  RULE_KINDS,
   RULE_VALUE_PLACEHOLDERS,
 } from "@/rules";
 import type { PatternField, RuleKind } from "@/types";
-
-const KINDS: RuleKind[] = ["app", "site", "page", "pattern"];
-const PATTERN_FIELDS: PatternField[] = ["url", "title", "app"];
-
-const KIND_ITEMS = Object.fromEntries(
-  KINDS.map((kind) => [kind, RULE_KIND_LABELS[kind]]),
-);
-const FIELD_ITEMS = Object.fromEntries(
-  PATTERN_FIELDS.map((field) => [field, PATTERN_FIELD_LABELS[field]]),
-);
 
 const HINTS: Record<RuleKind, string> = {
   app: "Nothing done in this app is recorded, including its browser tabs if it is a browser.",
@@ -101,17 +95,18 @@ export function ExclusionsSection() {
             <Select
               value={kind}
               onValueChange={(next) => {
-                if (!next) return;
+                const parsed = parseRuleKind(next);
+                if (!parsed) return;
                 addMutation.reset();
-                setKind(next as RuleKind);
+                setKind(parsed);
               }}
-              items={KIND_ITEMS}
+              items={RULE_KIND_LABELS}
             >
               <SelectTrigger className="w-32" aria-label="What to exclude">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {KINDS.map((item) => (
+                {RULE_KINDS.map((item) => (
                   <SelectItem key={item} value={item}>
                     {RULE_KIND_LABELS[item]}
                   </SelectItem>
@@ -121,8 +116,11 @@ export function ExclusionsSection() {
             {kind === "pattern" && (
               <Select
                 value={field}
-                onValueChange={(next) => next && setField(next as PatternField)}
-                items={FIELD_ITEMS}
+                onValueChange={(next) => {
+                  const parsed = parsePatternField(next);
+                  if (parsed) setField(parsed);
+                }}
+                items={PATTERN_FIELD_LABELS}
               >
                 <SelectTrigger className="w-40" aria-label="Match against">
                   <SelectValue />
