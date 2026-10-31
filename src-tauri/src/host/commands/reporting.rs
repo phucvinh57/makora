@@ -76,6 +76,7 @@ fn parse_category_source_filter(source: Option<&str>) -> Result<CategorySourceFi
     match source {
         None => Ok(CategorySourceFilter::All),
         Some("manual") => Ok(CategorySourceFilter::Manual),
+        Some("rule") => Ok(CategorySourceFilter::Rule),
         Some("ai") => Ok(CategorySourceFilter::Ai),
         Some(value) => Err(IpcError::invalid_input(format!(
             "invalid category source filter: {value}"
@@ -98,4 +99,18 @@ fn parse_rfc3339(value: &str) -> Result<DateTime<Utc>, IpcError> {
     DateTime::parse_from_rfc3339(value)
         .map(|t| t.with_timezone(&Utc))
         .map_err(|_| IpcError::invalid_input(format!("invalid timestamp: {value}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_source_filter_reads_every_category_source() {
+        assert!(matches!(parse_category_source_filter(None), Ok(CategorySourceFilter::All)));
+        assert!(matches!(parse_category_source_filter(Some("manual")), Ok(CategorySourceFilter::Manual)));
+        assert!(matches!(parse_category_source_filter(Some("rule")), Ok(CategorySourceFilter::Rule)));
+        assert!(matches!(parse_category_source_filter(Some("ai")), Ok(CategorySourceFilter::Ai)));
+        assert!(parse_category_source_filter(Some("other")).is_err());
+    }
 }

@@ -80,6 +80,7 @@ fn to_session_query(conn: &mut SqliteConnection, filter: &SessionFilter) -> Resu
     let source = match filter.source {
         CategorySourceFilter::All => reporting::history::SourceScope::Any,
         CategorySourceFilter::Manual => reporting::history::SourceScope::Manual,
+        CategorySourceFilter::Rule => reporting::history::SourceScope::Rule,
         CategorySourceFilter::Ai => reporting::history::SourceScope::Ai,
     };
     Ok(reporting::history::SessionQuery {
