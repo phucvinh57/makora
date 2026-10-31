@@ -16,14 +16,16 @@ use crate::shared::sync;
 use crate::tracking::domain::exclusion::Exclusion;
 use crate::tracking::domain::session_policy::{DEFAULT_MIN_SESSION_SECONDS, MIN_SESSION_SECONDS_RANGE};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 #[serde(default)]
 pub struct Settings {
     pub tracking: TrackingSettings,
     pub ai: AiSettings,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 #[serde(default)]
 pub struct TrackingSettings {
     pub min_session_seconds: i64,
@@ -47,7 +49,8 @@ pub const AUTO_CATEGORIZE_HOURS_OPTIONS: [u32; 6] = [3, 6, 12, 24, 72, 168];
 /// The models AI categorization runs on, and how often it runs on its own. The embedding model is
 /// always local (an Ollama name or a `.gguf` path); the LLM is local too unless `llm_provider`
 /// names one of `providers`, in which case `llm_model` is that provider's model id.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 #[serde(default)]
 pub struct AiSettings {
     pub llm_provider: Option<String>,
@@ -60,7 +63,8 @@ pub struct AiSettings {
 
 /// How a remote provider is spoken to: the OpenAI chat-completions API, which most providers and
 /// local servers also offer, or Anthropic's messages API.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderKind {
     OpenAi,
@@ -69,7 +73,8 @@ pub enum ProviderKind {
 
 /// A remote LLM provider. Its API key, if it needs one, is kept in the OS keychain under `id`,
 /// never here.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct ProviderConfig {
     pub id: String,
     pub name: String,

@@ -43,7 +43,8 @@ pub struct AiRunState {
     total: AtomicUsize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct AiRunStatus {
     pub running: bool,
     pub recheck: bool,
@@ -57,7 +58,8 @@ pub struct AiRunProgress {
     pub total: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct AiRunOutcome {
     pub labeled: usize,
     pub skipped: usize,

@@ -14,7 +14,8 @@ use super::events::FocusedApp;
 use super::source_key::{url_path, KeyKind, SourceKey};
 use super::title::canonical_title;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct Exclusion {
     pub kind: RuleKind,
     /// Only for a pattern.
