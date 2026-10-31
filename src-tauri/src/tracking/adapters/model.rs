@@ -25,6 +25,8 @@ pub struct PresenceEvent {
 #[derive(Debug, Clone)]
 pub enum WatchEvent {
     Focus(FocusEvent),
+    /// Focus moved to something that is not recorded: Makora's own window, or no window at all.
+    Unattributed { timestamp: DateTime<Utc> },
     Presence(PresenceEvent),
 }
 

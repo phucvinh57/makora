@@ -32,7 +32,7 @@ impl ToplevelProvider for WlrProvider {
         probe.found.then_some(Self { connection })
     }
 
-    fn run(self, emit: &mut dyn FnMut(WindowObservation)) {
+    fn run(self, emit: &mut dyn FnMut(Option<WindowObservation>)) {
         let mut queue = self.connection.new_event_queue::<Toplevels>();
         self.connection.display().get_registry(&queue.handle(), ());
 
@@ -43,7 +43,7 @@ impl ToplevelProvider for WlrProvider {
                 return;
             }
             for observation in state.emitted.drain(..) {
-                emit(observation);
+                emit(Some(observation));
             }
             if state.finished {
                 error!("the compositor stopped reporting toplevels");
@@ -103,6 +103,7 @@ impl Toplevel {
 struct Toplevels {
     windows: HashMap<ObjectId, Toplevel>,
     active: Option<ObjectId>,
+    active_title: String,
     emitted: Vec<WindowObservation>,
     finished: bool,
 }
@@ -179,8 +180,10 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Toplevels {
                     return;
                 };
                 window.commit();
-                if window.activated && state.active.as_ref() != Some(&id) {
+                let changed = state.active.as_ref() != Some(&id) || state.active_title != window.title;
+                if window.activated && changed {
                     state.active = Some(id);
+                    state.active_title.clone_from(&window.title);
                     state.emitted.push(WindowObservation {
                         pid: None,
                         app_id: window.app_id.clone(),
@@ -202,7 +205,8 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for Toplevels {
 
 fn is_activated(flags: &[u8]) -> bool {
     flags
-        .chunks_exact(4)
-        .filter_map(|chunk| chunk.try_into().ok().map(u32::from_ne_bytes))
-        .any(|flag| flag == HandleState::Activated as u32)
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .any(|chunk| u32::from_ne_bytes(*chunk) == HandleState::Activated as u32)
 }

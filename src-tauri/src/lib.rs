@@ -178,6 +178,9 @@ pub fn run() {
                             Ok(WatchEvent::Focus(event)) => {
                                 event_tracker.lock().unwrap().handle_focus(event.into())
                             }
+                            Ok(WatchEvent::Unattributed { timestamp }) => {
+                                event_tracker.lock().unwrap().close_current(timestamp)
+                            }
                             Ok(WatchEvent::Presence(event)) => {
                                 event_tracker.lock().unwrap().handle_presence(event.into())
                             }

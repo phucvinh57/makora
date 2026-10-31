@@ -32,7 +32,7 @@ impl ToplevelProvider for GnomeProvider {
             .then_some(Self)
     }
 
-    fn run(self, emit: &mut dyn FnMut(WindowObservation)) {
+    fn run(self, emit: &mut dyn FnMut(Option<WindowObservation>)) {
         loop {
             if let Err(err) = watch(emit) {
                 warn!(
@@ -45,7 +45,7 @@ impl ToplevelProvider for GnomeProvider {
     }
 }
 
-fn watch(emit: &mut dyn FnMut(WindowObservation)) -> Result<()> {
+fn watch(emit: &mut dyn FnMut(Option<WindowObservation>)) -> Result<()> {
     let connection = Connection::session().context("connecting to the session bus")?;
     let dbus = DBusProxy::new(&connection).context("opening the bus driver proxy")?;
 
@@ -76,9 +76,7 @@ fn watch(emit: &mut dyn FnMut(WindowObservation)) -> Result<()> {
                     .body()
                     .deserialize()
                     .context("decoding a FocusChanged signal")?;
-                if let Some(observation) = observation(payload) {
-                    emit(observation);
-                }
+                emit(observation(payload));
             }
             Some("NameOwnerChanged") => {
                 let (_name, _old_owner, new_owner): (String, String, String) = message
@@ -121,13 +119,9 @@ fn name_owner_changed_rule() -> Result<MatchRule<'static>> {
         .to_owned())
 }
 
-fn sync_focused_window(proxy: &Proxy<'_>, emit: &mut dyn FnMut(WindowObservation)) {
+fn sync_focused_window(proxy: &Proxy<'_>, emit: &mut dyn FnMut(Option<WindowObservation>)) {
     match proxy.call::<_, _, FocusPayload>("GetFocusedWindow", &()) {
-        Ok(payload) => {
-            if let Some(observation) = observation(payload) {
-                emit(observation);
-            }
-        }
+        Ok(payload) => emit(observation(payload)),
         Err(err) => warn!(error = %err, "could not read the focused window"),
     }
 }
