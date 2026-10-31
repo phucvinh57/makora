@@ -41,7 +41,6 @@ use crate::categorization::ports::{ActivityText, Classifier, LlmSpec};
 use crate::domain::types::Category;
 use crate::shared::ids::CategoryId;
 use crate::shared::sync::lock;
-use crate::shared::text::single_line;
 
 use super::cache::Cache;
 use super::choices::{choices, Choice};
@@ -280,7 +279,7 @@ fn grammar(choices: &[Choice]) -> String {
     let alternatives = std::iter::once(NONE_ANSWER)
         .chain(choices.iter().map(|c| c.path.as_str()))
         .map(|path| {
-            let escaped = single_line(path).replace('\\', "\\\\").replace('"', "\\\"");
+            let escaped = path.replace('\\', "\\\\").replace('"', "\\\"");
             format!("\"{escaped}\"")
         })
         .collect::<Vec<_>>()

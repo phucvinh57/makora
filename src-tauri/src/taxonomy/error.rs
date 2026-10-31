@@ -7,6 +7,8 @@ pub enum TaxonomyError {
     TopLevelNameTaken(String),
     #[error("a subcategory named \"{0}\" already exists under this parent")]
     SubcategoryNameTaken(String),
+    #[error("{0}")]
+    InvalidName(String),
     #[error("the parent category does not exist")]
     ParentMissing,
     /// Re-parenting a category under itself or under one of its own descendants would cut that
