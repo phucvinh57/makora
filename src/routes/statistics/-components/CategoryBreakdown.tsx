@@ -13,6 +13,7 @@ import {
   ChartTooltip,
   ChartTooltipContent,
 } from "@/components/ui/chart";
+import { Skeleton } from "@/components/ui/skeleton";
 import { buildCategoryTree, type CategoryNode } from "@/categories";
 import { formatSeconds } from "@/duration";
 import type { ActivityStats, Category } from "@/types";
@@ -57,9 +58,11 @@ function rollUp(
 export function CategoryBreakdown({
   stats,
   categories,
+  categoriesLoading,
 }: {
   stats: ActivityStats;
   categories: Category[];
+  categoriesLoading: boolean;
 }) {
   const { rows, topLevel } = useMemo(() => {
     const secondsById = new Map<number, number>();
@@ -109,7 +112,9 @@ export function CategoryBreakdown({
         </CardDescription>
       </CardHeader>
       <CardContent>
-        {rows.length === 0 ? (
+        {categoriesLoading ? (
+          <Skeleton className="h-52 rounded-md" />
+        ) : rows.length === 0 ? (
           <p className="py-8 text-center text-sm text-muted-foreground">
             Nothing to show for this range.
           </p>

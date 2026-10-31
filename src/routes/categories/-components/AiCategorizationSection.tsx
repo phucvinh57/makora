@@ -208,7 +208,7 @@ export function AiCategorizationSection() {
   });
   const installedModelsQuery = useQuery(installedModelsQueryOptions);
   const settingsQuery = useQuery(settingsQueryOptions);
-  const { categories } = useCategories();
+  const { categories, isLoading: categoriesLoading } = useCategories();
   const categorizeStatus = useQuery(categorizeStatusQueryOptions).data;
   const downloadStatus = useQuery(downloadStatusQueryOptions).data;
 
@@ -364,13 +364,17 @@ export function AiCategorizationSection() {
 
   const choosingProvider =
     shownProvider !== undefined && shownProvider.id !== savedProviderId;
-  const canRun = modelsReady && categories.length > 0 && !choosingProvider;
+  const canRun =
+    modelsReady &&
+    !categoriesLoading &&
+    categories.length > 0 &&
+    !choosingProvider;
   const blocker =
     choosingProvider && shownProvider
       ? `Choose a model to switch to ${shownProvider.name}.`
       : !modelsReady
         ? modelsBlocker
-        : categories.length === 0
+        : !categoriesLoading && categories.length === 0
           ? "Create a category to begin."
           : null;
   const modelsDisabled = running || downloading || setModelMutation.isPending;
