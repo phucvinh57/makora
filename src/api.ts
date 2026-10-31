@@ -16,6 +16,7 @@ import type {
   CategoryRule,
   Exclusion,
   FeedbackStats,
+  HistorySourceFilter,
   InstalledModel,
   ModelDownloadStatus,
   PathSuggestion,
@@ -89,7 +90,7 @@ export interface SessionsQuery {
   pageSize: number;
   search?: string;
   category?: string;
-  source?: "manual";
+  source?: HistorySourceFilter;
   start?: string;
   end?: string;
 }

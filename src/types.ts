@@ -15,6 +15,9 @@ export interface SessionRow {
   category_source: "manual" | "rule" | "ai" | null;
 }
 
+/** The category sources the history list can be narrowed to. */
+export type HistorySourceFilter = "manual" | "rule";
+
 export interface SessionsPage {
   rows: SessionRow[];
   total: number;

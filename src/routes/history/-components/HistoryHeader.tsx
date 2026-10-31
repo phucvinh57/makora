@@ -13,13 +13,12 @@ import type {
   CategoryChoice,
   CategoryPicker,
 } from "@/components/CategoryOptions";
+import { ALL_CATEGORIES, ALL_SOURCES, UNCATEGORIZED } from "./constants";
 import {
-  ALL_CATEGORIES,
-  ALL_SOURCES,
-  MANUAL_SOURCE,
-  UNCATEGORIZED,
-} from "./constants";
-import type { HistoryFilters } from "./filters";
+  type HistoryFilters,
+  parseSourceFilter,
+  SOURCE_CHOICE_LABELS,
+} from "./filters";
 import { TimeRangeFilter } from "./TimeRangeFilter";
 
 const CATEGORY_FILTER_CHOICES: CategoryChoice[] = [
@@ -70,19 +69,19 @@ export function HistoryHeader({
       <Select
         value={filters.source}
         onValueChange={(value) =>
-          onFiltersChange({ source: value ?? ALL_SOURCES })
+          onFiltersChange({ source: parseSourceFilter(value) ?? ALL_SOURCES })
         }
-        items={{
-          [ALL_SOURCES]: "All sources",
-          [MANUAL_SOURCE]: "Manual",
-        }}
+        items={SOURCE_CHOICE_LABELS}
       >
         <SelectTrigger size="sm" className="w-32" aria-label="Category source">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value={ALL_SOURCES}>All sources</SelectItem>
-          <SelectItem value={MANUAL_SOURCE}>Manual</SelectItem>
+          {Object.entries(SOURCE_CHOICE_LABELS).map(([value, label]) => (
+            <SelectItem key={value} value={value}>
+              {label}
+            </SelectItem>
+          ))}
         </SelectContent>
       </Select>
       <TimeRangeFilter
