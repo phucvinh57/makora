@@ -17,14 +17,6 @@ impl CategoriesRepo for SqliteConnection {
             .load(self)
     }
 
-    fn get(&mut self, id: i64) -> QueryResult<Option<CategoryRow>> {
-        categories::table
-            .find(id)
-            .select(CategoryRow::as_select())
-            .first(self)
-            .optional()
-    }
-
     fn filter_existing(&mut self, ids: &[i64]) -> QueryResult<Vec<i64>> {
         categories::table
             .filter(categories::id.eq_any(ids))
