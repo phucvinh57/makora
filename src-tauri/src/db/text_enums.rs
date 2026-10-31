@@ -7,6 +7,7 @@ use diesel::sql_types::Text;
 use diesel::sqlite::{Sqlite, SqliteValue};
 
 use crate::categorization::domain::rules::{PatternField, RuleKind};
+use crate::categorization::domain::usage::{RunStatus, RunTrigger};
 use crate::domain::types::CategorySource;
 use crate::tracking::domain::source_key::KeyKind;
 
@@ -29,7 +30,7 @@ macro_rules! text_enum {
     )*};
 }
 
-text_enum!(KeyKind, RuleKind, CategorySource);
+text_enum!(KeyKind, RuleKind, CategorySource, RunTrigger, RunStatus);
 
 /// `category_rules.field`: a pattern's field, `''` for the other kinds of rule.
 pub struct PatternFieldColumn(Option<PatternField>);

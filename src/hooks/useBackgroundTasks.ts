@@ -72,6 +72,7 @@ export function useBackgroundTaskSync() {
   useEffect(() => {
     if (wasCategorizing.current && !categorizing) {
       void invalidateCategorizationQueries(queryClient);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.aiUsage });
     }
     wasCategorizing.current = categorizing;
   }, [categorizing, queryClient]);

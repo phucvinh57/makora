@@ -75,6 +75,32 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    ai_runs (id) {
+        id -> BigInt,
+        triggered_by -> Text,
+        provider -> Nullable<Text>,
+        model -> Text,
+        status -> Text,
+        error -> Nullable<Text>,
+        started_at -> Text,
+        finished_at -> Text,
+        items -> BigInt,
+        labeled -> BigInt,
+        requests -> BigInt,
+        failed_requests -> BigInt,
+        input_tokens -> BigInt,
+        cached_input_tokens -> BigInt,
+        output_tokens -> BigInt,
+        llm_ms -> BigInt,
+        busy_ms -> BigInt,
+        prefill_ms -> BigInt,
+        decode_ms -> BigInt,
+        embed_count -> BigInt,
+        embed_ms -> BigInt,
+    }
+}
+
 diesel::joinable!(activities -> sources (source_id));
 diesel::joinable!(activities -> categories (category_id));
 diesel::joinable!(sessions -> activities (activity_id));

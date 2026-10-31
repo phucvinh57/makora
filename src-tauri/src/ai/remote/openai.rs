@@ -11,7 +11,9 @@ use serde_json::{json, Value};
 use tracing::info;
 
 use super::http::{ApiError, Http};
-use super::{trimmed, ChatApi};
+use crate::categorization::ports::TokenUsage;
+
+use super::{count, trimmed, ChatApi, Pick};
 
 const PLAIN_REPLY: &str = "\n\nReply with only the category, exactly as written in the list, and nothing else.";
 
@@ -94,7 +96,7 @@ impl OpenAi {
 }
 
 impl ChatApi for OpenAi {
-    fn pick(&self, model: &str, system: &str, user: &str, choices: &[String]) -> Result<String> {
+    fn pick(&self, model: &str, system: &str, user: &str, choices: &[String]) -> Result<Pick> {
         let url = format!("{}/chat/completions", self.base_url);
         loop {
             let schema = self.schema.load(Ordering::Acquire);
@@ -114,17 +116,30 @@ impl ChatApi for OpenAi {
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow!("the provider's reply has no message"))?;
             // A provider may accept the schema and still not follow it.
-            return Ok(schema
+            let answer = schema
                 .then(|| serde_json::from_str::<Value>(content).ok())
                 .flatten()
                 .and_then(|value| value.get("category").and_then(Value::as_str).map(str::to_string))
-                .unwrap_or_else(|| content.to_string()));
+                .unwrap_or_else(|| content.to_string());
+            return Ok(Pick {
+                answer,
+                usage: usage(&reply),
+            });
         }
     }
 
     fn list_models(&self) -> Result<Vec<String>> {
         let reply = self.http.get_json(&format!("{}/models", self.base_url), &self.headers())?;
         model_ids(&reply)
+    }
+}
+
+/// The tokens a chat completion reports using; zero for what the provider leaves out.
+fn usage(reply: &Value) -> TokenUsage {
+    TokenUsage {
+        input: count(reply, "/usage/prompt_tokens"),
+        cached_input: count(reply, "/usage/prompt_tokens_details/cached_tokens"),
+        output: count(reply, "/usage/completion_tokens"),
     }
 }
 
@@ -142,4 +157,46 @@ pub(super) fn model_ids(reply: &Value) -> Result<Vec<String>> {
     ids.sort();
     ids.dedup();
     Ok(ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn usage_is_read_with_cached_tokens() {
+        let reply = json!({
+            "choices": [{ "message": { "content": "{\"category\":\"Work\"}" } }],
+            "usage": {
+                "prompt_tokens": 812,
+                "completion_tokens": 9,
+                "total_tokens": 821,
+                "prompt_tokens_details": { "cached_tokens": 768 },
+            },
+        });
+        assert_eq!(
+            usage(&reply),
+            TokenUsage {
+                input: 812,
+                cached_input: 768,
+                output: 9,
+            }
+        );
+    }
+
+    #[test]
+    fn missing_usage_counts_as_zero() {
+        let reply = json!({ "choices": [{ "message": { "content": "Work" } }] });
+        assert_eq!(usage(&reply), TokenUsage::default());
+        let partial = json!({ "usage": { "prompt_tokens": 40, "completion_tokens": null } });
+        assert_eq!(
+            usage(&partial),
+            TokenUsage {
+                input: 40,
+                ..TokenUsage::default()
+            }
+        );
+    }
 }

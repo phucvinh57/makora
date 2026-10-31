@@ -6,6 +6,8 @@ use crate::domain::types::{
     ActivityStats, AiReviewGroupPage, AiReviewPage, CategoryFilter, CategorySourceFilter, FeedbackStats, ReviewFilter,
     SessionFilter, SessionsPage,
 };
+use crate::categorization::application::usage::{AiRunView, AiUsageSummary};
+use crate::categorization::AiUsageSvc;
 use crate::domain::{HistorySvc, LabelingSvc};
 use crate::host::error::IpcError;
 use crate::shared::ids::CategoryId;
@@ -121,4 +123,19 @@ mod tests {
         assert!(matches!(parse_category_source_filter(Some("ai")), Ok(CategorySourceFilter::Ai)));
         assert!(parse_category_source_filter(Some("other")).is_err());
     }
+}
+
+const DEFAULT_RECENT_RUNS: u32 = 20;
+
+/// The most recent AI runs, newest first.
+#[tauri::command(async)]
+pub fn ai_usage_runs(usage: State<Box<dyn AiUsageSvc>>, limit: Option<u32>) -> Result<Vec<AiRunView>, IpcError> {
+    Ok(usage.get_recent_runs(limit.unwrap_or(DEFAULT_RECENT_RUNS) as usize)?)
+}
+
+/// What AI runs cost over the last `days`, or ever when `None`, in total and per model.
+#[tauri::command(async)]
+pub fn ai_usage_summary(usage: State<Box<dyn AiUsageSvc>>, days: Option<u32>) -> Result<AiUsageSummary, IpcError> {
+    let since = days.map(|days| Utc::now() - chrono::Duration::days(days.into()));
+    Ok(usage.get_summary(since)?)
 }

@@ -11,8 +11,9 @@ use crate::categorization::application::rules::{
     CategoryRuleView, PathSuggestion, RuleDraft, RulePreview, SourceSuggestion,
 };
 use crate::categorization::domain::rules::{PatternField, RuleKind};
+use crate::categorization::domain::usage::RunTrigger;
 use crate::categorization::ports::{Classifier, Embedder, LlmSpec};
-use crate::categorization::{ClassificationSvc, EmbedSkips, EmbeddingSvc, RuleSvc};
+use crate::categorization::{AiUsageSvc, ClassificationSvc, EmbedSkips, EmbeddingSvc, RuleSvc};
 use crate::domain::LabelingSvc;
 use crate::host::auto_categorize::{next_run, ScheduleAnchor};
 use crate::host::error::IpcError;
@@ -88,14 +89,14 @@ pub fn categorization_next_auto_run(
 /// user has not confirmed. Runs on a blocking thread and reports `ai-categorize-progress` events.
 #[tauri::command]
 pub async fn categorization_run(app: AppHandle, recheck: Option<bool>) -> Result<AiRunOutcome, IpcError> {
-    tauri::async_runtime::spawn_blocking(move || run_categorization(&app, recheck.unwrap_or(false)))
+    tauri::async_runtime::spawn_blocking(move || run_categorization(&app, recheck.unwrap_or(false), RunTrigger::Manual))
         .await
         .map_err(|e| IpcError::internal(e.to_string()))?
         .map_err(IpcError::from)
 }
 
 /// Blocks until the run ends. A finished labeling run counts as the day's run for the scheduler.
-pub fn run_categorization(app: &AppHandle, recheck: bool) -> Result<AiRunOutcome, AiRunError> {
+pub fn run_categorization(app: &AppHandle, recheck: bool, trigger: RunTrigger) -> Result<AiRunOutcome, AiRunError> {
     let state = app.state::<AiRunState>();
     let categories = app.state::<Box<dyn CategorySvc>>();
     let labeling = app.state::<Box<dyn LabelingSvc>>();
@@ -104,6 +105,7 @@ pub fn run_categorization(app: &AppHandle, recheck: bool) -> Result<AiRunOutcome
     let embedder = app.state::<Arc<dyn Embedder>>();
     let embeddings = app.state::<Arc<dyn EmbeddingSvc>>();
     let embed_skips = app.state::<Arc<EmbedSkips>>();
+    let usage = app.state::<Box<dyn AiUsageSvc>>();
     let settings = app.state::<Arc<dyn SettingsStore>>().get();
     let deps = AiRunDeps {
         categories: &**categories,
@@ -113,6 +115,7 @@ pub fn run_categorization(app: &AppHandle, recheck: bool) -> Result<AiRunOutcome
         embedder: &**embedder,
         embeddings: &**embeddings,
         embed_skips: &embed_skips,
+        usage: &**usage,
     };
     let models = AiModels {
         llm: LlmSpec {
@@ -121,7 +124,7 @@ pub fn run_categorization(app: &AppHandle, recheck: bool) -> Result<AiRunOutcome
         },
         embedding: settings.ai.embedding_model,
     };
-    let outcome = state.run(&deps, &models, recheck, &mut |progress| {
+    let outcome = state.run(&deps, &models, recheck, trigger, &mut |progress| {
         let _ = app.emit("ai-categorize-progress", progress);
     })?;
     if !recheck {

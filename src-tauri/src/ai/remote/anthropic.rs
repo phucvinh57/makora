@@ -9,7 +9,9 @@ use tracing::info;
 
 use super::http::{ApiError, Http};
 use super::openai::model_ids;
-use super::{trimmed, ChatApi};
+use crate::categorization::ports::TokenUsage;
+
+use super::{count, trimmed, ChatApi, Pick};
 
 const VERSION: &str = "2023-06-01";
 const TOOL: &str = "pick_category";
@@ -45,7 +47,7 @@ impl Anthropic {
 }
 
 impl ChatApi for Anthropic {
-    fn pick(&self, model: &str, system: &str, user: &str, choices: &[String]) -> Result<String> {
+    fn pick(&self, model: &str, system: &str, user: &str, choices: &[String]) -> Result<Pick> {
         let url = format!("{}/v1/messages", self.base_url);
         loop {
             let mut body = json!({
@@ -97,7 +99,10 @@ impl ChatApi for Anthropic {
             let answer = from_tool
                 .or_else(from_text)
                 .ok_or_else(|| anyhow!("the provider's reply names no category"))?;
-            return Ok(answer.to_string());
+            return Ok(Pick {
+                answer: answer.to_string(),
+                usage: usage(&reply),
+            });
         }
     }
 
@@ -106,5 +111,65 @@ impl ChatApi for Anthropic {
             .http
             .get_json(&format!("{}/v1/models?limit=1000", self.base_url), &self.headers())?;
         model_ids(&reply)
+    }
+}
+
+/// The tokens a message reports using. Anthropic counts the cached prompt apart from
+/// `input_tokens`, both what was read from the cache and what was written to it, so all three
+/// make up the input.
+fn usage(reply: &Value) -> TokenUsage {
+    let cache_read = count(reply, "/usage/cache_read_input_tokens");
+    TokenUsage {
+        input: count(reply, "/usage/input_tokens")
+            + cache_read
+            + count(reply, "/usage/cache_creation_input_tokens"),
+        cached_input: cache_read,
+        output: count(reply, "/usage/output_tokens"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn usage_counts_cached_prompt_as_input() {
+        let reply = json!({
+            "content": [{ "type": "tool_use", "name": TOOL, "input": { "category": "Work" } }],
+            "usage": {
+                "input_tokens": 42,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 1500,
+                "output_tokens": 18,
+            },
+        });
+        assert_eq!(
+            usage(&reply),
+            TokenUsage {
+                input: 1542,
+                cached_input: 1500,
+                output: 18,
+            }
+        );
+    }
+
+    #[test]
+    fn a_cache_write_is_input_but_not_cached() {
+        let reply = json!({ "usage": { "input_tokens": 42, "cache_creation_input_tokens": 1500, "output_tokens": 18 } });
+        assert_eq!(
+            usage(&reply),
+            TokenUsage {
+                input: 1542,
+                cached_input: 0,
+                output: 18,
+            }
+        );
+    }
+
+    #[test]
+    fn missing_usage_counts_as_zero() {
+        assert_eq!(usage(&json!({ "content": [] })), TokenUsage::default());
     }
 }
