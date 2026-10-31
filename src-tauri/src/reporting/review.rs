@@ -308,6 +308,7 @@ mod tests {
     use diesel::connection::SimpleConnection;
 
     use super::*;
+    use crate::reporting::window::assert_seconds;
 
     fn utc(at: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(at).unwrap().with_timezone(&Utc)
@@ -339,11 +340,10 @@ mod tests {
     fn the_review_queue_counts_open_sessions_up_to_now() {
         let mut conn = conn();
         let rows = conn.get_review_page(10, 0, &CategoryScope::Any, None, &now()).unwrap();
-        let totals: Vec<(i64, i64, i64)> = rows
-            .iter()
-            .map(|r| (r.activity_id, r.total_seconds.round() as i64, r.session_count))
-            .collect();
-        assert_eq!(totals, [(1, 2400, 2), (2, 600, 1)]);
+        let ids: Vec<(i64, i64)> = rows.iter().map(|r| (r.activity_id, r.session_count)).collect();
+        assert_eq!(ids, [(1, 2), (2, 1)]);
+        assert_seconds(rows[0].total_seconds, 2400.0);
+        assert_seconds(rows[1].total_seconds, 600.0);
         assert_eq!(conn.get_review_count(&CategoryScope::Any, None).unwrap(), 2);
 
         let page = conn.get_review_page(1, 1, &CategoryScope::Any, None, &now()).unwrap();
@@ -356,7 +356,7 @@ mod tests {
         let groups = conn.get_review_groups(10, 0, &CategoryScope::Any, &now()).unwrap();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].activity_count, 2);
-        assert_eq!(groups[0].total_seconds.round() as i64, 3000);
+        assert_seconds(groups[0].total_seconds, 3000.0);
         assert_eq!(conn.get_review_group_count(&CategoryScope::Any).unwrap(), 1);
     }
 
@@ -374,14 +374,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(conn.get_feedback_counts().unwrap().rejected, 1);
-        assert_eq!(conn.get_feedback_seconds(&now()).unwrap().reviewed_seconds.round() as i64, 60);
+        assert_seconds(conn.get_feedback_seconds(&now()).unwrap().reviewed_seconds, 60.0);
     }
 
     #[test]
     fn feedback_seconds_count_open_sessions_up_to_now() {
         let mut conn = conn();
         let seconds = conn.get_feedback_seconds(&now()).unwrap();
-        assert_eq!(seconds.pending_seconds.round() as i64, 3000);
+        assert_seconds(seconds.pending_seconds, 3000.0);
         assert_eq!(seconds.reviewed_seconds, 0.0);
     }
 }

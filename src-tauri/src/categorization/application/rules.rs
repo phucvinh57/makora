@@ -69,11 +69,11 @@ pub struct CategoryRuleView {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RulePreview {
-    pub activity_count: i64,
+    pub activity_count: usize,
     pub total_seconds: f64,
     /// Of those, how many the user pinned to a category themselves, which the rule will not
     /// change.
-    pub pinned_count: i64,
+    pub pinned_count: usize,
     pub samples: Vec<String>,
 }
 
@@ -198,9 +198,9 @@ impl RuleSvc for SqliteRules {
                 matcher.matches(&facts).then(|| (sample_label(&row), row.total_seconds, row.pinned))
             })
             .collect();
-        let activity_count = matched.len() as i64;
+        let activity_count = matched.len();
         let total_seconds = matched.iter().map(|(_, seconds, _)| seconds).sum();
-        let pinned_count = matched.iter().filter(|(_, _, pinned)| *pinned).count() as i64;
+        let pinned_count = matched.iter().filter(|(_, _, pinned)| *pinned).count();
         matched.sort_by(|a, b| b.1.total_cmp(&a.1));
         let mut samples: Vec<String> = Vec::new();
         for (label, _, _) in matched {
