@@ -3,7 +3,8 @@
 //! to boxed raw SQL for it. This is the shared plumbing for that.
 
 use diesel::sql_types::{BigInt, Text};
-use diesel::sqlite::Sqlite;
+use diesel::sqlite::{Sqlite, SqliteConnection};
+use diesel::{sql_query, QueryResult, QueryableByName, RunQueryDsl};
 
 pub(crate) type BoxedQuery<'a> = diesel::query_builder::BoxedSqlQuery<'a, Sqlite, diesel::query_builder::SqlQuery>;
 
@@ -21,6 +22,17 @@ pub(crate) fn bind_all(mut query: BoxedQuery<'static>, binds: Vec<Param>) -> Box
         };
     }
     query
+}
+
+#[derive(QueryableByName)]
+struct CountRow {
+    #[diesel(sql_type = BigInt)]
+    count: i64,
+}
+
+/// Runs `sql`, a `SELECT COUNT(*) AS count …`, with `binds`.
+pub(crate) fn count(conn: &mut SqliteConnection, sql: String, binds: Vec<Param>) -> QueryResult<i64> {
+    Ok(bind_all(sql_query(sql).into_boxed(), binds).get_result::<CountRow>(conn)?.count)
 }
 
 /// `col IN (id1, id2, …)` with its binds, or the given fallback clause when `ids` is empty
