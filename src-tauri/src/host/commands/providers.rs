@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 use tauri::State;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::ai::remote;
 use crate::ai::secrets::SecretStore;
@@ -40,6 +40,7 @@ fn save_provider(
     api_key: Option<String>,
 ) -> Result<Settings, IpcError> {
     let current = settings.get();
+    let is_new = provider.id.is_none();
     let id = match provider.id {
         Some(id) if current.ai.provider(&id).is_some() => id,
         Some(id) => return Err(IpcError::new("not_found", format!("there is no provider \"{id}\""))),
@@ -52,6 +53,11 @@ fn save_provider(
         base_url: provider.base_url,
     }
     .validated()?;
+    let (name, kind) = (provider.name.clone(), format!("{:?}", provider.kind));
+    let host = url::Url::parse(&provider.base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_string))
+        .unwrap_or_default();
 
     let keychain = |err: anyhow::Error| IpcError::internal(format!("{err:#}"));
     let previous = match api_key.as_deref().map(str::trim) {
@@ -66,7 +72,7 @@ fn save_provider(
             Some(previous)
         }
     };
-    settings.save_provider(provider).inspect_err(|_| {
+    let saved = settings.save_provider(provider).inspect_err(|_| {
         let restored = match previous {
             Some(Some(key)) => secrets.set(&id, &key),
             Some(None) => secrets.delete(&id),
@@ -75,8 +81,16 @@ fn save_provider(
         if let Err(err) = restored {
             warn!(provider = %id, error = format!("{err:#}"), "could not put the provider's API key back after a failed save");
         }
-    })
-    .map_err(IpcError::from)
+    })?;
+
+    let action = if is_new { "provider added" } else { "provider updated" };
+    info!(provider = %id, name, kind, host, "{action}");
+    match api_key.as_deref().map(str::trim) {
+        Some("") => info!(provider = %id, "API key removed"),
+        Some(_) => info!(provider = %id, "API key saved"),
+        None => {}
+    }
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -88,8 +102,10 @@ pub async fn ai_provider_remove(
     let (settings, secrets) = (Arc::clone(&settings), Arc::clone(&secrets));
     blocking(move || {
         let saved = settings.remove_provider(&id)?;
-        if let Err(err) = secrets.delete(&id) {
-            warn!(provider = %id, error = format!("{err:#}"), "could not remove the provider's API key");
+        info!(provider = %id, "provider removed");
+        match secrets.delete(&id) {
+            Ok(()) => info!(provider = %id, "API key removed"),
+            Err(err) => warn!(provider = %id, error = format!("{err:#}"), "could not remove the provider's API key"),
         }
         Ok(saved)
     })

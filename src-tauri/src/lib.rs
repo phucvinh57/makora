@@ -4,6 +4,7 @@ mod db;
 mod domain;
 mod host;
 mod logging;
+mod logs;
 mod reporting;
 mod settings;
 mod shared;
@@ -105,6 +106,10 @@ pub fn run() {
             host::commands::settings::settings_set_llm,
             host::commands::settings::settings_set_embedding_model,
             host::commands::settings::settings_set_auto_categorize_hours,
+            host::commands::logs::logs_query,
+            host::commands::logs::logs_network_summary,
+            host::commands::logs::logs_dir,
+            host::commands::logs::logs_open_dir,
         ])
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
@@ -113,6 +118,14 @@ pub fn run() {
                 Ok(None) => {}
                 Err(err) => eprintln!("makora: failed to start logging: {err:#}"),
             }
+            info!(
+                version = env!("CARGO_PKG_VERSION"),
+                os = std::env::consts::OS,
+                arch = std::env::consts::ARCH,
+                data_dir = %data_dir.display(),
+                "Makora started"
+            );
+            app.manage(Box::new(logs::JsonlLogReader::new(logging::log_dir(&data_dir))) as Box<dyn logs::LogReader>);
 
             let db_path = data_dir.join("makora.sqlite");
             info!(path = %db_path.display(), "writing sessions");
@@ -220,6 +233,7 @@ pub fn run() {
                     api.prevent_exit();
                     return;
                 }
+                info!("Makora shutting down");
                 if let Some(tracker) = app_handle.try_state::<SharedTracker>() {
                     let result = lock(&tracker).close_current(Utc::now());
                     if let Err(err) = result {
@@ -229,6 +243,7 @@ pub fn run() {
                         );
                     }
                 }
+                logging::flush();
             }
         });
 }

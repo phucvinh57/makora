@@ -16,7 +16,10 @@ import type {
   CategoryRuleView,
   Exclusion,
   FeedbackStats,
+  HostTraffic,
   InstalledModel,
+  LogPage,
+  LogQuery,
   ModelDownloadStatus,
   PathSuggestion,
   PatternField,
@@ -333,5 +336,24 @@ export const autostart = {
 
   setEnabled(enabled: boolean): Promise<void> {
     return enabled ? enableAutostart() : disableAutostart();
+  },
+};
+
+export const logs = {
+  query(query: LogQuery): Promise<LogPage> {
+    return call("logs_query", { query });
+  },
+
+  /** Per host contacted in the last `days` days, most recent first. */
+  networkSummary(days: number): Promise<HostTraffic[]> {
+    return call("logs_network_summary", { days });
+  },
+
+  dir(): Promise<string> {
+    return call("logs_dir");
+  },
+
+  openDir(): Promise<void> {
+    return call("logs_open_dir");
   },
 };
