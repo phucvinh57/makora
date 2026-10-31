@@ -420,6 +420,11 @@ export function AiCategorizationSection() {
                 />
               )}
         </div>
+        {shownProvider && (
+          <p className="m-0 text-xs text-muted-foreground">
+            Titles, URLs and category names are sent to {shownProvider.name}.
+          </p>
+        )}
         <AutoCategorizeSetting />
         <div className="flex flex-wrap items-center gap-3">
           <Button

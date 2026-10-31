@@ -97,9 +97,11 @@ export function AutoCategorizeSetting() {
           </SelectContent>
         </Select>
       </div>
-      <p className="m-0 text-xs text-muted-foreground">
-        {enabled && nextRun && `${describeNextRun(nextRun, running)}`}
-      </p>
+      {enabled && nextRun && (
+        <p className="m-0 text-xs text-muted-foreground">
+          {describeNextRun(nextRun, running)}
+        </p>
+      )}
       {saveMutation.isError && (
         <p className="m-0 text-xs text-destructive">
           {String(saveMutation.error)}
