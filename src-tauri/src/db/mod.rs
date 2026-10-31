@@ -76,7 +76,7 @@ pub fn open_sqlite(path: &Path) -> Result<Db> {
         "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = {BUSY_TIMEOUT_MS};"
     ))
     .context("enabling WAL")?;
-    migrate::migrate(&mut conn).context("migrating schema")?;
+    migrate::migrate(&mut conn, path).context("migrating schema")?;
     conn.batch_execute("PRAGMA foreign_keys = ON;")
         .context("enabling foreign keys")?;
 
