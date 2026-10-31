@@ -10,7 +10,7 @@ pub fn category_list(categories: State<Box<dyn CategorySvc>>) -> Result<Vec<Cate
     Ok(categories.get_list()?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn category_create(
     categories: State<Box<dyn CategorySvc>>,
     name: String,
@@ -26,7 +26,7 @@ pub fn category_create(
     })?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn category_update(
     categories: State<Box<dyn CategorySvc>>,
     id: CategoryId,
@@ -47,7 +47,7 @@ pub fn category_update(
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn category_delete(categories: State<Box<dyn CategorySvc>>, id: CategoryId) -> Result<(), IpcError> {
     Ok(categories.delete(id)?)
 }
