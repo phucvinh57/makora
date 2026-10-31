@@ -10,8 +10,9 @@ mod shared;
 mod taxonomy;
 mod tracking;
 
-use std::sync::mpsc;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use chrono::Utc;
@@ -40,6 +41,8 @@ use crate::tracking::domain::focus_machine::FocusStateMachine;
 use crate::tracking::ports::{ExclusionPolicy, SessionRecorder, SessionTracker};
 
 type SharedTracker = Arc<Mutex<Box<dyn SessionTracker>>>;
+
+const HEARTBEAT: Duration = Duration::from_secs(30);
 
 pub fn run() {
     let mut builder = tauri::Builder::default()
@@ -169,17 +172,26 @@ pub fn run() {
             std::thread::Builder::new()
                 .name("makora-activity-tracker".into())
                 .spawn(move || {
-                    for event in rx {
-                        let result = match event {
-                            WatchEvent::Focus(event) => {
+                    let mut next_heartbeat = Instant::now() + HEARTBEAT;
+                    loop {
+                        let result = match rx.recv_timeout(next_heartbeat.saturating_duration_since(Instant::now())) {
+                            Ok(WatchEvent::Focus(event)) => {
                                 event_tracker.lock().unwrap().handle_focus(event.into())
                             }
-                            WatchEvent::Presence(event) => {
+                            Ok(WatchEvent::Presence(event)) => {
                                 event_tracker.lock().unwrap().handle_presence(event.into())
                             }
+                            Err(RecvTimeoutError::Timeout) => Ok(()),
+                            Err(RecvTimeoutError::Disconnected) => break,
                         };
                         if let Err(err) = result {
                             error!(error = format!("{err:#}"), "failed to record session");
+                        }
+                        if Instant::now() >= next_heartbeat {
+                            next_heartbeat = Instant::now() + HEARTBEAT;
+                            if let Err(err) = event_tracker.lock().unwrap().heartbeat(Utc::now()) {
+                                error!(error = format!("{err:#}"), "failed to record heartbeat");
+                            }
                         }
                     }
                 })

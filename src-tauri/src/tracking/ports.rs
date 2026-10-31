@@ -9,6 +9,8 @@ pub trait SessionTracker: Send {
     fn handle_focus(&mut self, change: FocusChange) -> Result<()>;
     fn handle_tab(&mut self, change: TabChange) -> Result<()>;
     fn handle_presence(&mut self, change: PresenceChange) -> Result<()>;
+    /// The tracker is alive at `at`: the open row, if any, is known to run at least until then.
+    fn heartbeat(&mut self, at: DateTime<Utc>) -> Result<()>;
     fn close_current(&mut self, at: DateTime<Utc>) -> Result<()>;
 }
 
@@ -22,6 +24,9 @@ pub trait SessionRecorder: Send + Sync {
     /// that resolves to a different activity than the one the session opened against, the
     /// session moves onto it, carrying its manual pin along if the target has none yet.
     fn refine_title(&self, id: SessionId, app: &FocusedApp, window_title: &str, url: Option<&str>) -> Result<()>;
+    /// The open session was still running at `at`; a crash after this closes it there.
+    fn touch(&self, id: SessionId, at: DateTime<Utc>) -> Result<()>;
+    /// Closes the sessions a crash or a forced quit left open at the moment each was last seen.
     fn close_dangling(&self) -> Result<()>;
 }
 

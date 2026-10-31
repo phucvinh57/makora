@@ -59,15 +59,16 @@ pub trait SessionsRepo {
     /// The most recently opened session, whether or not it has closed yet.
     fn get_last(&mut self) -> QueryResult<Option<SessionRow>>;
     fn insert(&mut self, new: &NewSessionRow<'_>) -> QueryResult<SessionRow>;
-    fn reopen(&mut self, id: i64) -> QueryResult<()>;
+    fn reopen(&mut self, id: i64, at: &str) -> QueryResult<()>;
+    /// Records that the session, if still open, was running at `at`.
+    fn touch(&mut self, id: i64, at: &str) -> QueryResult<()>;
     fn set_end(&mut self, id: i64, end_time: &str) -> QueryResult<()>;
     fn reassign_activity(&mut self, id: i64, activity_id: i64) -> QueryResult<()>;
     fn delete(&mut self, id: i64) -> QueryResult<()>;
     /// The activities behind `session_ids`. Ids with no matching session are silently skipped.
     fn get_activity_ids_for(&mut self, session_ids: &[i64]) -> QueryResult<Vec<i64>>;
-    /// Activities behind a session that never closed — left dangling by a crash or a forced quit.
-    fn get_open_activity_ids(&mut self) -> QueryResult<Vec<i64>>;
-    fn delete_open(&mut self) -> QueryResult<()>;
+    /// Sessions that never closed — left dangling by a crash or a forced quit.
+    fn get_open(&mut self) -> QueryResult<Vec<SessionRow>>;
 }
 
 pub trait SourcesRepo {
