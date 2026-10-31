@@ -7,11 +7,6 @@ export interface StorageCodec<T> {
   serialize: (value: T) => string;
 }
 
-export const STRING_CODEC: StorageCodec<string> = {
-  parse: (raw) => raw || undefined,
-  serialize: (value) => value,
-};
-
 export const FLAG_CODEC: StorageCodec<boolean> = {
   parse: (raw) => (raw === "1" ? true : raw === "0" ? false : undefined),
   serialize: (value) => (value ? "1" : "0"),
