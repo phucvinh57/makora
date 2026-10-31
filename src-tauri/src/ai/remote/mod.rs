@@ -78,6 +78,7 @@ pub fn classify(
         info!(
             target: "makora_lib::network",
             host = %host_of(base_url),
+            purpose = "AI categorization",
             model,
             activities_sent,
             fields = SENT_FIELDS,
