@@ -262,6 +262,11 @@ function HistoryPage() {
     [updateSelectedIds, rows],
   );
 
+  // A row that left the page (refetch, or placeholder rows replaced) is no longer selected.
+  const selectedRowIds = rows
+    .filter((r) => selectedIds.has(r.id))
+    .map((r) => r.id);
+
   const handleRowCategoryChange = useCallback(
     (row: SessionRow, value: string) => changeRowCategory({ row, value }),
     [changeRowCategory],
@@ -291,15 +296,15 @@ function HistoryPage() {
         </div>
       )}
 
-      {selectedIds.size > 0 && (
+      {selectedRowIds.length > 0 && (
         <BulkActionsBar
-          selectedCount={selectedIds.size}
+          selectedCount={selectedRowIds.length}
           picker={picker}
           bulkCategory={bulkCategory}
           onBulkCategoryChange={(value) => updateBulkCategory(() => value)}
           onApply={() =>
             bulkApplyMutation.mutate({
-              ids: [...selectedIds],
+              ids: selectedRowIds,
               categoryId: Number(bulkCategory),
             })
           }
@@ -314,6 +319,7 @@ function HistoryPage() {
         loading={loading}
         filtered={filtered}
         selectedIds={selectedIds}
+        selectionDisabled={sessionsQuery.isPlaceholderData}
         onToggleRow={toggleRow}
         onToggleAllVisible={toggleAllVisible}
         onRowCategoryChange={handleRowCategoryChange}
