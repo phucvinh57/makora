@@ -207,15 +207,15 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build Tauri app
+      - name: Build Tauri app with the browser bridge
         shell: bash
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ startsWith(matrix.target, 'aarch64-apple-darwin') && '10.15' || '' }}
         run: |
           if [ -n "${{ matrix.target }}" ]; then
-            bun tauri build --target "${{ matrix.target }}"
+            bun run bundle --target "${{ matrix.target }}"
           else
-            bun tauri build
+            bun run bundle
           fi
 
       - name: Upload desktop installers
