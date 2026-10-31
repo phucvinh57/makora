@@ -10,17 +10,22 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tracing::info;
+use tracing::{info, warn};
+use ureq::Agent;
 
 use crate::shared::sync::{lock, RunGuard};
 
 const REGISTRY: &str = "https://registry.ollama.ai";
 const MODEL_LAYER: &str = "application/vnd.ollama.image.model";
-const CHUNK: usize = 256 * 1024;
+const READ_BUF: usize = 256 * 1024;
+const RANGE_BYTES: u64 = 64 * 1024 * 1024;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, thiserror::Error)]
 pub enum ModelDownloadError {
@@ -135,6 +140,18 @@ fn manifest_path(root: &Path, repo: &str, tag: &str) -> PathBuf {
     root.join("manifests/registry.ollama.ai").join(repo).join(tag)
 }
 
+/// Bounds every request: no answer within [`CONNECT_TIMEOUT`] or a request not done within
+/// [`REQUEST_TIMEOUT`] is an error, so a dead connection cannot hang a download.
+fn agent() -> Agent {
+    Agent::config_builder()
+        .timeout_resolve(Some(CONNECT_TIMEOUT))
+        .timeout_connect(Some(CONNECT_TIMEOUT))
+        .timeout_recv_response(Some(CONNECT_TIMEOUT))
+        .timeout_global(Some(REQUEST_TIMEOUT))
+        .build()
+        .into()
+}
+
 /// Downloads `name` into `root`, calling `progress(downloaded, total)` as bytes arrive.
 /// Returns early if `cancel` is set; a partial file is kept so the next attempt resumes.
 pub fn download(
@@ -144,8 +161,10 @@ pub fn download(
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<()> {
     let (repo, tag) = parse_name(name)?;
+    let agent = agent();
     let manifest_url = format!("{REGISTRY}/v2/{repo}/manifests/{tag}");
-    let manifest_bytes = ureq::get(&manifest_url)
+    let manifest_bytes = agent
+        .get(&manifest_url)
         .header("Accept", "application/vnd.docker.distribution.manifest.v2+json")
         .call()
         .map_err(|err| {
@@ -173,7 +192,7 @@ pub fn download(
     if !blob.is_file() {
         let partial = blobs.join(format!("sha256-{expected}.partial"));
         let url = format!("{REGISTRY}/v2/{repo}/blobs/{}", layer.digest);
-        if !fetch_blob(&url, &partial, layer.size, &expected, cancel, progress)? {
+        if !fetch_blob(&agent, &url, &partial, layer.size, &expected, cancel, progress)? {
             return Ok(());
         }
         fs::rename(&partial, &blob)?;
@@ -182,13 +201,42 @@ pub fn download(
     // The manifest goes last: a model only counts as installed once its weights are complete.
     let path = manifest_path(root, &repo, &tag);
     fs::create_dir_all(path.parent().expect("manifest path has a parent"))?;
-    fs::write(&path, &manifest_bytes)?;
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, &manifest_bytes).with_context(|| format!("writing {}", tmp.display()))?;
+    fs::rename(&tmp, &path).with_context(|| format!("replacing {}", path.display()))?;
     info!(model = name, "model downloaded");
     Ok(())
 }
 
-/// Streams `url` into `partial`, resuming what is already there. `false` means cancelled.
+/// What to do with the `have` bytes of a `.partial` file for a blob of `total` bytes.
+#[derive(Debug, PartialEq, Eq)]
+enum Resume {
+    /// Longer than the blob, so not a prefix of it.
+    Discard,
+    /// Every byte is there; only the checksum is left to check.
+    Complete,
+    /// Fetch from this offset on.
+    From(u64),
+}
+
+fn resume(have: u64, total: u64) -> Resume {
+    match have.cmp(&total) {
+        std::cmp::Ordering::Greater => Resume::Discard,
+        std::cmp::Ordering::Equal => Resume::Complete,
+        std::cmp::Ordering::Less => Resume::From(have),
+    }
+}
+
+/// The inclusive byte range of the next request, at most `chunk` bytes from `done`.
+fn next_range(done: u64, total: u64, chunk: u64) -> Option<(u64, u64)> {
+    (done < total).then(|| (done, (done + chunk).min(total) - 1))
+}
+
+/// Fetches `url` into `partial` a range at a time, resuming what is already there. A range that
+/// stalls fails the download; one cut short after some progress is asked for again from where it
+/// stopped. `false` means cancelled.
 fn fetch_blob(
+    agent: &Agent,
     url: &str,
     partial: &Path,
     total: u64,
@@ -196,25 +244,21 @@ fn fetch_blob(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(u64, u64),
 ) -> Result<bool> {
-    let mut hasher = Sha256::new();
-    let mut have = fs::metadata(partial).map(|m| m.len()).unwrap_or(0);
-    if have > total {
-        fs::remove_file(partial)?;
-        have = 0;
-    }
-    let mut request = ureq::get(url);
-    if have > 0 {
-        request = request.header("Range", format!("bytes={have}-"));
-    }
-    let mut response = request
-        .call()
-        .map_err(|err| anyhow!("downloading {url}: {err}"))?;
-    let resumed = have > 0 && response.status().as_u16() == 206;
+    let have = fs::metadata(partial).map(|m| m.len()).unwrap_or(0);
+    let mut done = match resume(have, total) {
+        Resume::Discard => {
+            fs::remove_file(partial)?;
+            0
+        }
+        Resume::Complete => total,
+        Resume::From(offset) => offset,
+    };
 
-    let mut file = if resumed {
-        // The hash must cover the bytes already on disk too.
+    // The hash must cover the bytes already on disk too.
+    let mut hasher = Sha256::new();
+    if done > 0 {
         let mut existing = File::open(partial)?;
-        let mut buf = vec![0u8; CHUNK];
+        let mut buf = vec![0u8; READ_BUF];
         loop {
             let n = existing.read(&mut buf)?;
             if n == 0 {
@@ -222,28 +266,51 @@ fn fetch_blob(
             }
             hasher.update(&buf[..n]);
         }
-        OpenOptions::new().append(true).open(partial)?
-    } else {
-        have = 0;
-        File::create(partial)?
-    };
-
-    let mut reader = response.body_mut().as_reader();
-    let mut buf = vec![0u8; CHUNK];
-    let mut done = have;
+    }
+    let mut file = OpenOptions::new().create(true).append(true).open(partial)?;
     progress(done, total);
-    loop {
+
+    let mut buf = vec![0u8; READ_BUF];
+    while let Some((start, end)) = next_range(done, total, RANGE_BYTES) {
         if cancel.load(Ordering::Acquire) {
             return Ok(false);
         }
-        let n = reader.read(&mut buf).context("download interrupted")?;
-        if n == 0 {
-            break;
+        let mut response = agent
+            .get(url)
+            .header("Range", format!("bytes={start}-{end}"))
+            .call()
+            .map_err(|err| anyhow!("downloading {url}: {err}"))?;
+        let status = response.status().as_u16();
+        if status != 206 && !(status == 200 && start == 0) {
+            bail!("downloading {url}: the server answered {status} to a ranged request");
         }
-        file.write_all(&buf[..n])?;
-        hasher.update(&buf[..n]);
-        done += n as u64;
-        progress(done, total);
+        let mut reader = response.body_mut().as_reader().take(end - start + 1);
+        let mut got = 0u64;
+        loop {
+            if cancel.load(Ordering::Acquire) {
+                file.flush()?;
+                return Ok(false);
+            }
+            let n = match reader.read(&mut buf) {
+                Ok(n) => n,
+                Err(err) if got > 0 => {
+                    warn!(%err, done, "download range cut short; continuing from where it stopped");
+                    break;
+                }
+                Err(err) => return Err(anyhow!(err).context("download stalled")),
+            };
+            if n == 0 {
+                break;
+            }
+            file.write_all(&buf[..n])?;
+            hasher.update(&buf[..n]);
+            got += n as u64;
+            done += n as u64;
+            progress(done, total);
+        }
+        if got == 0 {
+            bail!("download stalled: the server sent no data");
+        }
     }
     file.flush()?;
     drop(file);
@@ -253,4 +320,39 @@ fn fetch_blob(
         bail!("download is corrupt (size or checksum mismatch); try again");
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resume_decides_from_the_partial_length() {
+        assert_eq!(resume(0, 100), Resume::From(0));
+        assert_eq!(resume(40, 100), Resume::From(40));
+        assert_eq!(resume(100, 100), Resume::Complete);
+        assert_eq!(resume(101, 100), Resume::Discard);
+    }
+
+    #[test]
+    fn ranges_cover_the_rest_of_the_blob_in_chunks() {
+        let mut ranges = Vec::new();
+        let mut done = 10;
+        while let Some((start, end)) = next_range(done, 35, 10) {
+            ranges.push((start, end));
+            done = end + 1;
+        }
+        assert_eq!(ranges, [(10, 19), (20, 29), (30, 34)]);
+    }
+
+    #[test]
+    fn a_complete_blob_needs_no_range() {
+        assert_eq!(next_range(100, 100, 10), None);
+        assert_eq!(next_range(0, 0, 10), None);
+    }
+
+    #[test]
+    fn a_range_resumes_mid_chunk() {
+        assert_eq!(next_range(15, 100, 64), Some((15, 78)));
+    }
 }
