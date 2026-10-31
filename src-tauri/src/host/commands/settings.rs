@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use tauri::State;
+use tracing::info;
 
 use crate::categorization::domain::rules::{PatternField, RuleKind};
 use crate::categorization::ActivityIndexer;
@@ -23,7 +24,9 @@ pub fn settings_take_load_issue(settings: State<Arc<dyn SettingsStore>>) -> Opti
 
 #[tauri::command]
 pub fn settings_set_min_session_seconds(settings: State<Arc<dyn SettingsStore>>, seconds: i64) -> Result<Settings, IpcError> {
-    Ok(settings.set_min_session_seconds(seconds)?)
+    let saved = settings.set_min_session_seconds(seconds)?;
+    info!(setting = "min_session_seconds", value = seconds, "setting changed");
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -33,7 +36,10 @@ pub fn settings_add_exclusion(
     field: Option<PatternField>,
     value: String,
 ) -> Result<Settings, IpcError> {
-    Ok(settings.add_exclusion(parse_exclusion(kind, field, &value)?)?)
+    let exclusion = parse_exclusion(kind, field, &value)?;
+    let saved = settings.add_exclusion(exclusion.clone())?;
+    log_exclusion("exclusion added", &exclusion);
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -43,7 +49,15 @@ pub fn settings_remove_exclusion(
     field: Option<PatternField>,
     value: String,
 ) -> Result<Settings, IpcError> {
-    Ok(settings.remove_exclusion(&parse_exclusion(kind, field, &value)?)?)
+    let exclusion = parse_exclusion(kind, field, &value)?;
+    let saved = settings.remove_exclusion(&exclusion)?;
+    log_exclusion("exclusion removed", &exclusion);
+    Ok(saved)
+}
+
+fn log_exclusion(message: &str, exclusion: &Exclusion) {
+    let field = exclusion.field.map(|field| format!("{field:?}"));
+    info!(setting = "exclusions", kind = ?exclusion.kind, field, value = exclusion.value.as_str(), "{message}");
 }
 
 /// The exclusion in the normalized form it is stored in, so removing matches what adding saved.
@@ -58,7 +72,10 @@ pub fn settings_set_llm(
     provider: Option<String>,
     model: String,
 ) -> Result<Settings, IpcError> {
-    Ok(settings.set_llm(provider.as_deref(), &model)?)
+    let saved = settings.set_llm(provider.as_deref(), &model)?;
+    let provider = provider.as_deref().unwrap_or("local");
+    info!(setting = "llm", provider, model = model.as_str(), "setting changed");
+    Ok(saved)
 }
 
 #[tauri::command]
@@ -68,6 +85,7 @@ pub fn settings_set_embedding_model(
     model: String,
 ) -> Result<Settings, IpcError> {
     let settings = settings.set_embedding_model(&model)?;
+    info!(setting = "embedding_model", value = model.as_str(), "setting changed");
     indexer.refresh();
     Ok(settings)
 }
@@ -80,6 +98,7 @@ pub fn settings_set_auto_categorize_hours(
     hours: u32,
 ) -> Result<Settings, IpcError> {
     let saved = settings.set_auto_categorize_hours(hours)?;
+    info!(setting = "auto_categorize_hours", value = hours, "setting changed");
     anchor.set(Utc::now());
     Ok(saved)
 }

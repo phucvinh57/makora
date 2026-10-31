@@ -86,30 +86,43 @@ fn accept(listener: Listener, tracker: Arc<Mutex<Box<dyn SessionTracker>>>) {
 }
 
 fn serve(mut stream: Stream, tracker: &Mutex<Box<dyn SessionTracker>>) {
+    info!("browser extension connected");
+    let mut browser = None;
+    let mut tab_events: u64 = 0;
     loop {
         match read_frame(&mut stream) {
-            Ok(Some(Frame::Message(payload))) => handle(&payload, tracker),
+            Ok(Some(Frame::Message(payload))) => {
+                if let Some(kind) = handle(&payload, tracker) {
+                    browser = Some(kind);
+                    tab_events += 1;
+                }
+            }
             Ok(Some(Frame::Oversized)) => warn!("dropped an oversized browser tab event"),
-            Ok(None) => return,
+            Ok(None) => break,
             Err(err) => {
                 warn!(error = %err, "browser bridge connection broke");
-                return;
+                break;
             }
         }
     }
+    let browser = browser.map_or_else(|| "unknown".to_string(), |kind| format!("{kind:?}"));
+    info!(browser, tab_events, "browser extension disconnected");
 }
 
-fn handle(payload: &[u8], tracker: &Mutex<Box<dyn SessionTracker>>) {
+/// The browser the event came from, unless it was dropped.
+fn handle(payload: &[u8], tracker: &Mutex<Box<dyn SessionTracker>>) -> Option<BrowserKind> {
     let change = match parse_tab_event(payload, Utc::now()) {
         Ok(change) => change,
         Err(err) => {
             warn!(?err, "dropped an invalid browser tab event");
-            return;
+            return None;
         }
     };
+    let browser = change.browser;
     if let Err(err) = lock(tracker).handle_tab(change) {
         error!(error = format!("{err:#}"), "failed to record tab event");
     }
+    Some(browser)
 }
 
 #[derive(Deserialize)]

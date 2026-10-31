@@ -10,6 +10,7 @@ import {
   Hourglass,
   PanelLeftClose,
   PanelLeftOpen,
+  ScrollText,
   Settings as SettingsIcon,
   Tags,
 } from "lucide-react";
@@ -36,6 +37,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/statistics", label: "Statistics", icon: BarChart3 },
   { to: "/categories", label: "Categories", icon: Tags },
   { to: "/history", label: "History", icon: History },
+  { to: "/logs", label: "Logs", icon: ScrollText },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 

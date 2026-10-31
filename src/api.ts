@@ -18,7 +18,10 @@ import type {
   CategoryRuleView,
   Exclusion,
   FeedbackStats,
+  HostTraffic,
   InstalledModel,
+  LogPage,
+  LogQuery,
   ModelDownloadStatus,
   PathSuggestion,
   PatternField,
@@ -347,5 +350,24 @@ export const aiUsage = {
   /** Totals and per-model sums over the last `days`, or all time when null. */
   summary(days: number | null): Promise<AiUsageSummary> {
     return call("ai_usage_summary", { days });
+  },
+};
+
+export const logs = {
+  query(query: LogQuery): Promise<LogPage> {
+    return call("logs_query", { query });
+  },
+
+  /** Per host contacted in the last `days` days, most recent first. */
+  networkSummary(days: number): Promise<HostTraffic[]> {
+    return call("logs_network_summary", { days });
+  },
+
+  dir(): Promise<string> {
+    return call("logs_dir");
+  },
+
+  openDir(): Promise<void> {
+    return call("logs_open_dir");
   },
 };
