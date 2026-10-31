@@ -159,15 +159,6 @@ pub fn url_location(url: &str) -> Option<String> {
     Some(format!("{domain}{path}"))
 }
 
-pub fn strip_query_and_fragment(url: &str) -> String {
-    let Some(mut parsed) = parse_lenient(url) else {
-        return url.split('#').next().unwrap_or(url).to_string();
-    };
-    parsed.set_fragment(None);
-    parsed.set_query(None);
-    parsed.to_string()
-}
-
 pub(crate) fn exe_file_name(exe_path: &str) -> &str {
     exe_path
         .rsplit(['/', '\\'])
