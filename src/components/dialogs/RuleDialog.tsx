@@ -1,6 +1,6 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Plus, X } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { categoryRule, suggestion as suggestionApi } from "@/api";
 import { useCategoryPicker } from "@/components/CategoryOptions";
 import { CreatableCategoryCombobox } from "@/components/CreatableCategoryCombobox";
@@ -26,11 +26,7 @@ import { useCategories } from "@/hooks/useCategories";
 import { useDebouncedCallback } from "@/hooks/useDebouncedCallback";
 import { useDialog } from "@/hooks/useDialog";
 import { formatSeconds } from "@/duration";
-import {
-  invalidateCategorizationQueries,
-  queryKeys,
-  sourceSuggestionsQueryOptions,
-} from "@/queries";
+import { queryKeys, sourceSuggestionsQueryOptions } from "@/queries";
 import {
   PATTERN_FIELD_LABELS,
   PATTERN_FIELDS,
@@ -40,53 +36,15 @@ import {
   RULE_KINDS,
   RULE_VALUE_PLACEHOLDERS,
 } from "@/rules";
-import type { CategoryRule, PatternField, RuleKind } from "@/types";
+import type { CategoryRule } from "@/types";
+import {
+  fieldOf,
+  matchValue,
+  type RuleFormValues,
+  useRuleForm,
+} from "./useRuleForm";
 
 const PREVIEW_DEBOUNCE_MS = 300;
-
-interface Form {
-  kind: RuleKind;
-  field: PatternField;
-  value: string;
-  /** Only for a page: what follows the domain, e.g. `/acme/api`. */
-  path: string;
-}
-
-interface Row extends Form {
-  id: number;
-}
-
-function emptyForm(like?: Form): Form {
-  return {
-    kind: like?.kind ?? "site",
-    field: like?.field ?? "url",
-    value: "",
-    path: "",
-  };
-}
-
-function formOf(rule: CategoryRule): Form {
-  const slash = rule.value.indexOf("/");
-  const isPage = rule.kind === "page" && slash >= 0;
-  return {
-    kind: rule.kind,
-    field: rule.field ?? "url",
-    value: isPage ? rule.value.slice(0, slash) : rule.value,
-    path: isPage ? rule.value.slice(slash) : "",
-  };
-}
-
-function matchValue(form: Form): string {
-  if (form.kind !== "page") return form.value.trim();
-  const domain = form.value.trim();
-  const path = form.path.trim();
-  if (!domain || !path) return domain;
-  return `${domain}${path.startsWith("/") ? "" : "/"}${path}`;
-}
-
-function fieldOf(form: Form): PatternField | null {
-  return form.kind === "pattern" ? form.field : null;
-}
 
 function sourceHint(name: string, key: string, seconds: number): string {
   const label = name && name !== key ? `${name} · ` : "";
@@ -100,8 +58,8 @@ function RuleFields({
   error,
   autoFocus,
 }: {
-  form: Form;
-  onChange: (patch: Partial<Form>) => void;
+  form: RuleFormValues;
+  onChange: (patch: Partial<RuleFormValues>) => void;
   /** Absent when this is the only rule and cannot be removed. */
   onRemove?: () => void;
   error?: string;
@@ -118,7 +76,7 @@ function RuleFields({
     PREVIEW_DEBOUNCE_MS,
   );
 
-  function change(patch: Partial<Form>) {
+  function change(patch: Partial<RuleFormValues>) {
     const next = { ...form, ...patch };
     onChange(patch);
     schedulePreview({
@@ -310,12 +268,6 @@ function RuleFields({
   );
 }
 
-interface SaveResult {
-  saved: number[];
-  /** The row that stopped the save, if one did; the rows after it were not tried. */
-  failed: { id: number; message: string } | null;
-}
-
 /**
  * The form is its own component because the dialog unmounts its content on close: the fields
  * and the mutation's error start fresh every time it opens.
@@ -330,81 +282,15 @@ function RuleForm({
   rule: CategoryRule | null;
   onClose: () => void;
 }) {
-  const queryClient = useQueryClient();
   const { categories } = useCategories();
   const picker = useCategoryPicker(categories);
-  const [categoryId, setCategoryId] = useState<number | null>(
-    rule?.category_id ?? null,
-  );
-  const nextId = useRef(1);
-  const [rows, setRows] = useState<Row[]>(() => [
-    { id: 0, ...(rule ? formOf(rule) : emptyForm()) },
-  ]);
-  // Only rows added after the first take focus: the dialog opens on the category.
-  const [focusedId, setFocusedId] = useState<number | null>(null);
-
-  function changeRow(id: number, patch: Partial<Form>) {
-    setRows((prev) =>
-      prev.map((row) => (row.id === id ? { ...row, ...patch } : row)),
-    );
-  }
-
-  function addRow() {
-    const id = nextId.current++;
-    setRows((prev) => [...prev, { id, ...emptyForm(prev[prev.length - 1]) }]);
-    setFocusedId(id);
-  }
-
-  function removeRow(id: number) {
-    setRows((prev) => prev.filter((row) => row.id !== id));
-  }
-
-  // A blank row is one still waiting to be filled, so it is skipped rather than blocking.
-  const filled = rows.filter((row) => matchValue(row) !== "");
-
-  const saveMutation = useMutation({
-    mutationFn: async (category: number): Promise<SaveResult> => {
-      const draftOf = (row: Row) => ({
-        kind: row.kind,
-        field: fieldOf(row),
-        value: matchValue(row),
-        categoryId: category,
-      });
-      if (rule) {
-        await categoryRule.update(rule.id, draftOf(filled[0]));
-        return { saved: [filled[0].id], failed: null };
-      }
-      const saved: number[] = [];
-      for (const row of filled) {
-        try {
-          await categoryRule.create(draftOf(row));
-          saved.push(row.id);
-        } catch (err) {
-          return { saved, failed: { id: row.id, message: String(err) } };
-        }
-      }
-      return { saved, failed: null };
-    },
-    onSuccess: (result) => {
-      // Rules saved before a failure stay saved, so they leave the form: saving again must
-      // not add them twice.
-      if (result.failed) {
-        setRows((prev) => prev.filter((row) => !result.saved.includes(row.id)));
-      } else {
-        onClose();
-      }
-      return invalidateCategorizationQueries(queryClient);
-    },
-  });
-
-  const canSave = filled.length > 0 && categoryId !== null;
-  const failed = saveMutation.data?.failed ?? null;
+  const form = useRuleForm(rule, onClose);
 
   return (
     <form
       onSubmit={(event) => {
         event.preventDefault();
-        if (canSave && categoryId !== null) saveMutation.mutate(categoryId);
+        form.save();
       }}
       className="flex min-w-0 flex-col gap-4"
     >
@@ -421,23 +307,27 @@ function RuleForm({
 
       <CreatableCategoryCombobox
         picker={picker}
-        value={categoryId === null ? null : String(categoryId)}
-        onValueChange={(value) => setCategoryId(Number(value))}
+        value={form.categoryId === null ? null : String(form.categoryId)}
+        onValueChange={(value) => form.setCategoryId(Number(value))}
         className="w-full"
       />
 
       <div className="-mx-1 flex max-h-[50vh] min-w-0 flex-col gap-3 overflow-x-hidden overflow-y-auto px-1">
-        {rows.map((row) => {
+        {form.rows.map((row) => {
           const fields = (
             <RuleFields
               key={row.id}
               form={row}
-              onChange={(patch) => changeRow(row.id, patch)}
+              onChange={(patch) => form.changeRow(row.id, patch)}
               onRemove={
-                rule || rows.length === 1 ? undefined : () => removeRow(row.id)
+                rule || form.rows.length === 1
+                  ? undefined
+                  : () => form.removeRow(row.id)
               }
-              error={failed?.id === row.id ? failed.message : undefined}
-              autoFocus={row.id === focusedId}
+              error={
+                form.failed?.id === row.id ? form.failed.message : undefined
+              }
+              autoFocus={row.id === form.focusedId}
             />
           );
           return rule ? (
@@ -456,27 +346,25 @@ function RuleForm({
           variant="outline"
           size="sm"
           className="self-start"
-          onClick={addRow}
+          onClick={form.addRow}
         >
           <Plus />
           Add another rule
         </Button>
       )}
 
-      {saveMutation.isError && (
-        <p className="m-0 text-xs text-destructive">
-          {String(saveMutation.error)}
-        </p>
+      {form.error != null && (
+        <p className="m-0 text-xs text-destructive">{String(form.error)}</p>
       )}
       <DialogFooter>
         <Button type="button" variant="outline" onClick={onClose}>
           Cancel
         </Button>
-        <Button type="submit" disabled={!canSave || saveMutation.isPending}>
+        <Button type="submit" disabled={!form.canSave}>
           {rule
             ? "Save rule"
-            : filled.length > 1
-              ? `Add ${filled.length} rules`
+            : form.filledCount > 1
+              ? `Add ${form.filledCount} rules`
               : "Add rule"}
         </Button>
       </DialogFooter>
