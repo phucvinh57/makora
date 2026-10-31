@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import { autostart } from "@/api";
+import { queryKeys } from "@/queries";
 import { toggleTheme, useTheme } from "@/theme";
 
 export function GeneralSection() {
@@ -11,7 +12,7 @@ export function GeneralSection() {
   const queryClient = useQueryClient();
 
   const autostartQuery = useQuery({
-    queryKey: ["autostartEnabled"],
+    queryKey: queryKeys.autostartEnabled,
     queryFn: autostart.isEnabled,
     enabled: !import.meta.env.DEV,
   });
@@ -19,7 +20,7 @@ export function GeneralSection() {
   const toggleMutation = useMutation({
     mutationFn: (enabled: boolean) => autostart.setEnabled(enabled),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["autostartEnabled"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.autostartEnabled });
     },
   });
 

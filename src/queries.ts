@@ -15,6 +15,8 @@ export const queryKeys = {
   categories: ["categories"],
   categoryRules: ["categoryRules"],
   sourceSuggestions: ["sourceSuggestions"],
+  pathSuggestions: ["pathSuggestions"],
+  rulePreview: ["rulePreview"],
   sessions: ["sessions"],
   activityStats: ["activityStats"],
   aiReview: ["aiReview"],
