@@ -240,6 +240,37 @@ fn validated_provider(provider: ProviderConfig) -> Result<ProviderConfig> {
     })
 }
 
+/// A key sent over plain HTTP can be read by anyone on the path, so a provider outside this machine
+/// or its local network must use HTTPS.
+fn require_https_unless_local(base_url: &str) -> Result<()> {
+    let url = url::Url::parse(base_url)?;
+    if url.scheme() == "https" || url.host().is_some_and(|host| is_local(&host)) {
+        return Ok(());
+    }
+    bail!("\"{base_url}\" must use https:// unless it is on this machine or the local network")
+}
+
+fn is_local(host: &url::Host<&str>) -> bool {
+    match host {
+        // 100.64.0.0/10 is carrier-grade NAT space, where VPNs such as Tailscale put their peers.
+        url::Host::Ipv4(ip) => {
+            let [a, b, ..] = ip.octets();
+            ip.is_loopback() || ip.is_private() || ip.is_link_local() || (a == 100 && b & 0xc0 == 64)
+        }
+        url::Host::Ipv6(ip) => {
+            ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local()
+                || ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback() || ip.is_private())
+        }
+        url::Host::Domain(name) => {
+            let name = name.trim_end_matches('.').to_ascii_lowercase();
+            !name.contains('.')
+                || [".localhost", ".local", ".lan", ".internal", ".home.arpa"]
+                    .iter()
+                    .any(|suffix| name.ends_with(suffix))
+        }
+    }
+}
+
 fn model_name(model: &str) -> Result<String> {
     let model = model.trim();
     if model.is_empty() {
@@ -303,6 +334,7 @@ impl SettingsStore for TomlSettings {
 
     fn save_provider(&self, provider: ProviderConfig) -> Result<Settings> {
         let provider = validated_provider(provider)?;
+        require_https_unless_local(&provider.base_url)?;
         self.update(|settings| match settings.ai.providers.iter_mut().find(|other| other.id == provider.id) {
             Some(existing) => *existing = provider,
             None => settings.ai.providers.push(provider),
@@ -328,4 +360,35 @@ fn write_atomically(path: &Path, settings: &Settings) -> Result<()> {
     let tmp = path.with_extension("toml.tmp");
     std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_providers_need_https() {
+        assert!(require_https_unless_local("https://api.openai.com/v1").is_ok());
+        assert!(require_https_unless_local("http://api.openai.com/v1").is_err());
+        assert!(require_https_unless_local("http://8.8.8.8:11434").is_err());
+        assert!(require_https_unless_local("http://[2001:db8::1]:8080").is_err());
+    }
+
+    #[test]
+    fn local_providers_may_use_http() {
+        for url in [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:1234",
+            "http://192.168.1.20:1234/v1",
+            "http://10.0.0.5",
+            "http://100.101.102.103:11434",
+            "http://[::1]:8080",
+            "http://[fd00::5]:8080",
+            "http://gpu-box:1234",
+            "http://studio.local:1234",
+            "http://ollama.localhost",
+        ] {
+            assert!(require_https_unless_local(url).is_ok(), "{url}");
+        }
+    }
 }
