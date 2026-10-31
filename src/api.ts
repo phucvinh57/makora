@@ -110,7 +110,7 @@ export interface CategoryDraft {
 
 export const session = {
   list(query: SessionsQuery): Promise<SessionsPage> {
-    return call("session_list", { ...query });
+    return call("session_list", { query });
   },
 
   setRowCategory(sessionId: number, categoryId: number | null): Promise<void> {
