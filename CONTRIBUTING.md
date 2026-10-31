@@ -73,7 +73,7 @@ than ESLint or Prettier. The frontend build checks strict TypeScript.
 | `demo/` | Remotion video and fictional screenshot fixtures |
 | `docs/` | [Domain design](docs/ddd.md) and [trait guidance](docs/traits.md) |
 
-The focus watcher and browser ingest server run in-process alongside the
+The focus watcher and browser tab listener run in-process alongside the
 desktop window. An app gaining focus opens a session row; switching to another
 app closes it. Browser reports add the active URL and title so browser sessions
 can be split by site. Closing or minimizing the window hides it to the tray;
@@ -124,12 +124,22 @@ bun run ext:check    # extension TypeScript checks
 Load `extensions/browser/dist/` as an unpacked extension. It is gitignored, so
 a fresh checkout needs a build first. Reload the extension after rebuilding.
 See the [installation guide](extensions/browser/README.md#installing) for
-Chromium browsers and Safari.
+Chromium browsers and Firefox.
 
-The extension posts `{ browser, url, title }` to
-`http://127.0.0.1:47632/event` on active-tab changes, navigation, and browser
-window focus changes. The app must be running; requests fail silently otherwise.
-Keep this communication local.
+The extension reaches the app through native messaging. The browser starts
+`makora-bridge` (`src-tauri/src/bin/makora_bridge.rs`), which relays each
+`{ browser, url, title }` message to the app over a per-user local socket
+(`$XDG_RUNTIME_DIR/makora/bridge.sock` on Linux, a named pipe on Windows) and
+drops it while the app is not running. On every start the app writes the host
+manifests that point browsers at the `makora-bridge` next to its executable
+(`tracking/adapters/native_host.rs`), so a dev run points browsers at
+`target/debug/makora-bridge` until the installed app starts again.
+
+`bun tauri dev` needs no extra step: Tauri builds every binary of the crate, so
+`target/debug/makora-bridge` sits next to the dev app. Release installers need
+the bridge bundled as a sidecar, which one `tauri build` cannot do; build them
+with `bun run bundle` (`scripts/bundle.mjs`), as the release workflow does. A
+plain `bun tauri build` produces installers without the bridge.
 
 ## GNOME and Wayland development
 
