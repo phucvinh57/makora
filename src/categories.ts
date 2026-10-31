@@ -69,14 +69,7 @@ function pathOf(category: Category, byId: Map<number, Category>): string {
   return names.join(" / ");
 }
 
-export function categoryPath(
-  category: Category,
-  categories: Category[],
-): string {
-  return pathOf(category, new Map(categories.map((c) => [c.id, c])));
-}
-
-/** `categoryPath` for every category at once, for callers that would otherwise rebuild the lookup per row. */
+/** Every category's `Parent / Child` path, built from one lookup. */
 export function categoryPaths(categories: Category[]): Map<number, string> {
   const byId = new Map(categories.map((c) => [c.id, c]));
   return new Map(categories.map((c) => [c.id, pathOf(c, byId)]));
