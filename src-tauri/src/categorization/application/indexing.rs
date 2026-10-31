@@ -12,7 +12,7 @@ use tracing::{info, warn};
 use crate::categorization::ports::Embedder;
 use crate::settings::SettingsStore;
 
-use super::embeddings::{embed_missing, EmbeddingSvc};
+use super::embeddings::{embed_missing, EmbedSkips, EmbeddingSvc};
 
 pub trait ActivityIndexer: Send + Sync {
     /// Embeds, in the background, every activity that has no embedding from the configured model.
@@ -29,6 +29,7 @@ impl BackgroundIndexer {
         embeddings: Arc<dyn EmbeddingSvc>,
         embedder: Arc<dyn Embedder>,
         settings: Arc<dyn SettingsStore>,
+        skips: Arc<EmbedSkips>,
     ) -> io::Result<Self> {
         let (wake, requests) = mpsc::channel::<()>();
         std::thread::Builder::new()
@@ -40,7 +41,7 @@ impl BackgroundIndexer {
                 for () in requests.iter() {
                     while requests.try_recv().is_ok() {}
                     let model = settings.get().ai.embedding_model;
-                    match embed_missing(&*embeddings, &*embedder, &model) {
+                    match embed_missing(&*embeddings, &*embedder, &model, &skips, &|| false) {
                         Ok(count) => {
                             last_error = None;
                             if count > 0 {

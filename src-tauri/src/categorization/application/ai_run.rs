@@ -13,7 +13,7 @@ use std::time::Instant;
 use serde::Serialize;
 use tracing::{info, warn};
 
-use crate::categorization::application::embeddings::{embed_missing, EmbeddingSvc};
+use crate::categorization::application::embeddings::{embed_missing, EmbedSkips, EmbeddingSvc};
 use crate::categorization::application::ClassificationSvc;
 use crate::categorization::domain::retrieval::{top_related, RELATED_COUNT};
 use crate::categorization::ports::{ActivityText, Classifier, Embedder, LlmSpec};
@@ -78,6 +78,7 @@ pub struct AiRunDeps<'a> {
     pub classifier: &'a dyn Classifier,
     pub embedder: &'a dyn Embedder,
     pub embeddings: &'a dyn EmbeddingSvc,
+    pub embed_skips: &'a EmbedSkips,
 }
 
 impl AiRunState {
@@ -128,9 +129,20 @@ impl AiRunState {
         }
 
         let started = Instant::now();
-        let embedded = embed_missing(deps.embeddings, deps.embedder, &models.embedding)?;
-        if embedded > 0 {
-            info!(embedded, model = %models.embedding, "embedded activities before the run");
+        let cancelled = || self.cancel.load(Ordering::Acquire);
+        // Related examples only sharpen the answers, so the run goes on without them.
+        match embed_missing(deps.embeddings, deps.embedder, &models.embedding, deps.embed_skips, &cancelled) {
+            Ok(0) => {}
+            Ok(embedded) => info!(embedded, model = %models.embedding, "embedded activities before the run"),
+            Err(err) => warn!(error = format!("{err:#}"), model = %models.embedding, "embedding activities failed; labeling without related examples"),
+        }
+        if cancelled() {
+            return Ok(AiRunOutcome {
+                labeled: 0,
+                skipped: 0,
+                changed: 0,
+                stopped: true,
+            });
         }
         let embed_ms = started.elapsed().as_millis();
         let candidates = deps.embeddings.get_candidates(&models.embedding)?;
@@ -159,6 +171,7 @@ impl AiRunState {
         );
 
         let (mut labeled, mut changed, mut done, mut stopped) = (0, 0, 0, false);
+        let mut save_error = None;
         let mut save = |position: usize, answer: Option<CategoryId>| {
             let verdict = AiVerdict {
                 activity_id: pending[position].id,
@@ -167,7 +180,7 @@ impl AiRunState {
             match deps.classification.assign_ai(&[verdict]) {
                 Ok(n) => changed += n,
                 Err(err) => {
-                    warn!(%err, "saving AI label");
+                    save_error = Some(err.context("saving an AI label"));
                     return false;
                 }
             }
@@ -180,8 +193,13 @@ impl AiRunState {
             stopped = self.cancel.load(Ordering::Acquire) && done < total;
             !stopped
         };
-        deps.classifier
-            .classify(&models.llm, &taxonomy, &activities, &related, &mut save)?;
+        let classified = deps
+            .classifier
+            .classify(&models.llm, &taxonomy, &activities, &related, &mut save);
+        if let Some(err) = save_error {
+            return Err(err.into());
+        }
+        classified?;
 
         Ok(AiRunOutcome {
             labeled,

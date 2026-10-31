@@ -27,7 +27,7 @@ use crate::ai::secrets::{KeyringSecrets, SecretStore};
 use crate::categorization::application::ai_run::AiRunState;
 use crate::categorization::ports::{Classifier, Embedder};
 use crate::categorization::{
-    ActivityIndexer, BackgroundIndexer, ClassificationSvc, EmbeddingSvc, RuleSvc, SqliteClassification,
+    ActivityIndexer, BackgroundIndexer, ClassificationSvc, EmbedSkips, EmbeddingSvc, RuleSvc, SqliteClassification,
     SqliteEmbeddings, SqliteRules,
 };
 use crate::settings::{SettingsStore, TomlSettings};
@@ -127,8 +127,9 @@ pub fn run() {
             let models = ModelCache::default();
             let embedder: Arc<dyn Embedder> = Arc::new(LlamaEmbedder::new(models.clone()));
             let embeddings: Arc<dyn EmbeddingSvc> = Arc::new(SqliteEmbeddings::new(conn.clone()));
+            let embed_skips = Arc::new(EmbedSkips::default());
             let indexer: Arc<dyn ActivityIndexer> = Arc::new(
-                BackgroundIndexer::spawn(embeddings.clone(), embedder.clone(), settings.clone())
+                BackgroundIndexer::spawn(embeddings.clone(), embedder.clone(), settings.clone(), embed_skips.clone())
                     .context("spawning activity-embedder thread")?,
             );
             // Activities recorded before they were embedded as they were saved.
@@ -157,6 +158,7 @@ pub fn run() {
             app.manage(Box::new(classifier) as Box<dyn Classifier>);
             app.manage(embedder);
             app.manage(embeddings);
+            app.manage(embed_skips);
             app.manage(indexer);
             app.manage(models);
             app.manage(tracker.clone());
