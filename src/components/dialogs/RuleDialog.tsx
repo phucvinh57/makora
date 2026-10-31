@@ -28,6 +28,7 @@ import { useDialog } from "@/hooks/useDialog";
 import { formatSeconds } from "@/duration";
 import {
   invalidateCategorizationQueries,
+  queryKeys,
   sourceSuggestionsQueryOptions,
 } from "@/queries";
 import {
@@ -141,7 +142,7 @@ function RuleFields({
 
   const domain = form.value.trim().toLowerCase();
   const pathsQuery = useQuery({
-    queryKey: ["pathSuggestions", domain],
+    queryKey: [...queryKeys.pathSuggestions, domain],
     queryFn: () => suggestionApi.paths(domain),
     enabled: form.kind === "page" && domain !== "",
     staleTime: 60_000,
@@ -156,7 +157,12 @@ function RuleFields({
   );
 
   const previewQuery = useQuery({
-    queryKey: ["rulePreview", previewed.kind, previewed.field, previewed.value],
+    queryKey: [
+      ...queryKeys.rulePreview,
+      previewed.kind,
+      previewed.field,
+      previewed.value,
+    ],
     queryFn: () =>
       categoryRule.preview(previewed.kind, previewed.field, previewed.value),
     enabled: previewed.value !== "",
