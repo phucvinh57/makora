@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::info;
 
+use crate::shared::sync::{lock, RunGuard};
+
 const REGISTRY: &str = "https://registry.ollama.ai";
 const MODEL_LAYER: &str = "application/vnd.ollama.image.model";
 const CHUNK: usize = 256 * 1024;
@@ -45,20 +47,11 @@ pub struct ModelDownloadStatus {
     pub total: u64,
 }
 
-/// Clears the running flag however the download ends, panics included.
-struct RunGuard<'a>(&'a AtomicBool);
-
-impl Drop for RunGuard<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
-}
-
 impl ModelDownloadState {
     pub fn status(&self) -> ModelDownloadStatus {
         ModelDownloadStatus {
             running: self.running.load(Ordering::Acquire),
-            model: self.model.lock().expect("model download state poisoned").clone(),
+            model: lock(&self.model).clone(),
             downloaded: self.downloaded.load(Ordering::Acquire),
             total: self.total.load(Ordering::Acquire),
         }
@@ -76,12 +69,9 @@ impl ModelDownloadState {
         model: &str,
         on_progress: &mut dyn FnMut(u64, u64),
     ) -> Result<bool, ModelDownloadError> {
-        if self.running.swap(true, Ordering::AcqRel) {
-            return Err(ModelDownloadError::AlreadyRunning);
-        }
-        let _running = RunGuard(&self.running);
+        let _running = RunGuard::start(&self.running).ok_or(ModelDownloadError::AlreadyRunning)?;
         self.cancel.store(false, Ordering::Release);
-        *self.model.lock().expect("model download state poisoned") = model.to_string();
+        *lock(&self.model) = model.to_string();
         self.downloaded.store(0, Ordering::Release);
         self.total.store(0, Ordering::Release);
 

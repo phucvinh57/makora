@@ -31,6 +31,7 @@ use crate::categorization::{
     SqliteEmbeddings, SqliteRules,
 };
 use crate::settings::{SettingsStore, TomlSettings};
+use crate::shared::sync::lock;
 use crate::domain::{HistorySvc, LabelingSvc, SqliteHistory, SqliteLabeling};
 use crate::taxonomy::{CategorySvc, SqliteCategories};
 use crate::tracking::adapters::model::WatchEvent;
@@ -175,13 +176,13 @@ pub fn run() {
                     loop {
                         let result = match rx.recv_timeout(next_heartbeat.saturating_duration_since(Instant::now())) {
                             Ok(WatchEvent::Focus(event)) => {
-                                event_tracker.lock().unwrap().handle_focus(event.into())
+                                lock(&event_tracker).handle_focus(event.into())
                             }
                             Ok(WatchEvent::Unattributed { timestamp }) => {
-                                event_tracker.lock().unwrap().close_current(timestamp)
+                                lock(&event_tracker).close_current(timestamp)
                             }
                             Ok(WatchEvent::Presence(event)) => {
-                                event_tracker.lock().unwrap().handle_presence(event.into())
+                                lock(&event_tracker).handle_presence(event.into())
                             }
                             Err(RecvTimeoutError::Timeout) => Ok(()),
                             Err(RecvTimeoutError::Disconnected) => break,
@@ -191,7 +192,7 @@ pub fn run() {
                         }
                         if Instant::now() >= next_heartbeat {
                             next_heartbeat = Instant::now() + HEARTBEAT;
-                            if let Err(err) = event_tracker.lock().unwrap().heartbeat(Utc::now()) {
+                            if let Err(err) = lock(&event_tracker).heartbeat(Utc::now()) {
                                 error!(error = format!("{err:#}"), "failed to record heartbeat");
                             }
                         }
@@ -217,7 +218,7 @@ pub fn run() {
                     return;
                 }
                 if let Some(tracker) = app_handle.try_state::<SharedTracker>() {
-                    let result = tracker.lock().unwrap().close_current(Utc::now());
+                    let result = lock(&tracker).close_current(Utc::now());
                     if let Err(err) = result {
                         error!(
                             error = format!("{err:#}"),
