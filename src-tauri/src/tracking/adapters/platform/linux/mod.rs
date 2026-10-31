@@ -40,17 +40,18 @@ impl FocusWatcher for LinuxFocusWatcher {
 }
 
 fn select_and_run(tx: Sender<WatchEvent>) {
-    let mut emit = move |observation: WindowObservation| {
-        if observation.pid == Some(std::process::id()) {
-            return;
-        }
-
-        let event = FocusEvent {
-            app: proc::resolve_app_info(&observation),
-            window_title: observation.title,
-            timestamp: Utc::now(),
+    let mut emit = move |observation: Option<WindowObservation>| {
+        let timestamp = Utc::now();
+        let event = match observation {
+            Some(observation) if observation.pid != Some(std::process::id()) => FocusEvent {
+                app: proc::resolve_app_info(&observation),
+                window_title: observation.title,
+                timestamp,
+            }
+            .into(),
+            _ => WatchEvent::Unattributed { timestamp },
         };
-        let _ = tx.send(event.into());
+        let _ = tx.send(event);
     };
 
     if let Some(provider) = gnome::GnomeProvider::probe() {

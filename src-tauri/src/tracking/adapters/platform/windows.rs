@@ -14,7 +14,6 @@ use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWI
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetMessageW, GetWindowTextW, GetWindowThreadProcessId, CHILDID_SELF,
     EVENT_OBJECT_NAMECHANGE, EVENT_SYSTEM_FOREGROUND, MSG, OBJID_WINDOW, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS,
 };
 
 use crate::tracking::adapters::model::{AppInfo, FocusEvent, WatchEvent};
@@ -57,7 +56,7 @@ fn run_event_loop(tx: Sender<WatchEvent>) {
             Some(win_event_proc),
             0,
             0,
-            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+            WINEVENT_OUTOFCONTEXT,
         );
         let title_hook = SetWinEventHook(
             EVENT_OBJECT_NAMECHANGE,
@@ -66,7 +65,7 @@ fn run_event_loop(tx: Sender<WatchEvent>) {
             Some(win_event_proc),
             0,
             0,
-            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+            WINEVENT_OUTOFCONTEXT,
         );
         if focus_hook.is_null() {
             if !title_hook.is_null() {
@@ -122,19 +121,32 @@ unsafe extern "system" fn win_event_proc(
         return;
     }
 
-    let Some(app) = app_info_for_window(hwnd) else {
-        return;
+    let mut process_id: u32 = 0;
+    GetWindowThreadProcessId(hwnd, &mut process_id);
+    let timestamp = Utc::now();
+    let event = if process_id == std::process::id() {
+        if event != EVENT_SYSTEM_FOREGROUND {
+            return;
+        }
+        WatchEvent::Unattributed { timestamp }
+    } else {
+        let Some(app) = app_info(process_id) else {
+            return;
+        };
+        FocusEvent {
+            app,
+            window_title: window_title(hwnd),
+            timestamp,
+        }
+        .into()
     };
+    send(event);
+}
 
-    let focus_event = FocusEvent {
-        app,
-        window_title: window_title(hwnd),
-        timestamp: Utc::now(),
-    };
-
+fn send(event: WatchEvent) {
     EVENT_TX.with(|cell| {
         if let Some(tx) = cell.borrow().as_ref() {
-            let _ = tx.send(focus_event.into());
+            let _ = tx.send(event);
         }
     });
 }
@@ -148,9 +160,7 @@ fn window_title(hwnd: HWND) -> String {
     String::from_utf16_lossy(&buf[..len as usize])
 }
 
-fn app_info_for_window(hwnd: HWND) -> Option<AppInfo> {
-    let mut process_id: u32 = 0;
-    unsafe { GetWindowThreadProcessId(hwnd, &mut process_id) };
+fn app_info(process_id: u32) -> Option<AppInfo> {
     if process_id == 0 {
         return None;
     }

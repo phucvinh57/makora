@@ -13,5 +13,6 @@ pub trait ToplevelProvider {
     where
         Self: Sized;
 
-    fn run(self, emit: &mut dyn FnMut(WindowObservation));
+    /// `emit` gets `None` when focus moves to nothing that can be recorded.
+    fn run(self, emit: &mut dyn FnMut(Option<WindowObservation>));
 }

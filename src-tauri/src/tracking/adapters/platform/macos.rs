@@ -64,11 +64,18 @@ fn run_watcher(tx: Sender<WatchEvent>) {
 
         let block = RcBlock::new(move |notification: *mut AnyObject| {
             autoreleasepool(|_pool| {
-                let event = focus_event_from_notification(notification);
-                if let Some(event) = event {
-                    *active_focus_for_observer.lock().unwrap() = Some(event.clone());
-                    let _ = tx_for_observer.send(event.into());
-                }
+                let event = match activated_from_notification(notification) {
+                    Some(Activated::App(event)) => {
+                        *active_focus_for_observer.lock().unwrap() = Some(event.clone());
+                        event.into()
+                    }
+                    Some(Activated::Makora) => {
+                        *active_focus_for_observer.lock().unwrap() = None;
+                        WatchEvent::Unattributed { timestamp: Utc::now() }
+                    }
+                    None => return,
+                };
+                let _ = tx_for_observer.send(event);
             });
         });
 
@@ -82,7 +89,7 @@ fn run_watcher(tx: Sender<WatchEvent>) {
 
         autoreleasepool(|_pool| {
             let current_app: *mut AnyObject = msg_send![workspace, frontmostApplication];
-            if let Some(event) = focus_event_from_application(current_app) {
+            if let Some(Activated::App(event)) = activated_application(current_app) {
                 *active_focus.lock().unwrap() = Some(event.clone());
                 let _ = tx.send(event.into());
             }
@@ -138,7 +145,12 @@ fn frontmost_process_id() -> Option<i32> {
     }
 }
 
-unsafe fn focus_event_from_notification(notification: *mut AnyObject) -> Option<FocusEvent> {
+enum Activated {
+    App(FocusEvent),
+    Makora,
+}
+
+unsafe fn activated_from_notification(notification: *mut AnyObject) -> Option<Activated> {
     if notification.is_null() {
         return None;
     }
@@ -150,10 +162,10 @@ unsafe fn focus_event_from_notification(notification: *mut AnyObject) -> Option<
 
     let key = ns_string("NSWorkspaceApplicationKey");
     let app: *mut AnyObject = msg_send![user_info, objectForKey: key];
-    focus_event_from_application(app)
+    activated_application(app)
 }
 
-unsafe fn focus_event_from_application(app: *mut AnyObject) -> Option<FocusEvent> {
+unsafe fn activated_application(app: *mut AnyObject) -> Option<Activated> {
     if app.is_null() {
         return None;
     }
@@ -164,7 +176,7 @@ unsafe fn focus_event_from_application(app: *mut AnyObject) -> Option<FocusEvent
     }
 
     if pid == std::process::id() as i32 {
-        return None;
+        return Some(Activated::Makora);
     }
 
     let exe_url: *mut AnyObject = msg_send![app, executableURL];
@@ -174,7 +186,7 @@ unsafe fn focus_event_from_application(app: *mut AnyObject) -> Option<FocusEvent
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| exe_path.clone());
 
-    Some(FocusEvent {
+    Some(Activated::App(FocusEvent {
         app: AppInfo {
             process_id: pid as u32,
             exe_path,
@@ -182,7 +194,7 @@ unsafe fn focus_event_from_application(app: *mut AnyObject) -> Option<FocusEvent
         },
         window_title: focused_window_title(pid).unwrap_or_default(),
         timestamp: Utc::now(),
-    })
+    }))
 }
 
 unsafe fn ns_url_path(url: *mut AnyObject) -> Option<String> {
