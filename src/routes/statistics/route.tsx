@@ -31,9 +31,11 @@ function ErrorBanner({ message }: { message: string }) {
 function StatisticsBody({
   stats,
   categories,
+  categoriesLoading,
 }: {
   stats: ActivityStats;
   categories: Category[];
+  categoriesLoading: boolean;
 }) {
   if (stats.session_count === 0) {
     return (
@@ -47,7 +49,11 @@ function StatisticsBody({
     <>
       <SummaryTiles stats={stats} />
       <div className="grid gap-6 @4xl/main:grid-cols-2">
-        <CategoryBreakdown stats={stats} categories={categories} />
+        <CategoryBreakdown
+          stats={stats}
+          categories={categories}
+          categoriesLoading={categoriesLoading}
+        />
         <TopAppsBreakdown stats={stats} />
       </div>
       <DailyTrend stats={stats} />
@@ -68,7 +74,11 @@ function StatisticsPage() {
     },
     placeholderData: keepPreviousData,
   });
-  const { categories, error: categoriesError } = useCategories();
+  const {
+    categories,
+    isLoading: categoriesLoading,
+    error: categoriesError,
+  } = useCategories();
 
   const stats = statsQuery.data;
   const loading = statsQuery.isFetching;
@@ -126,7 +136,11 @@ function StatisticsPage() {
             statsQuery.isPlaceholderData && "opacity-60",
           )}
         >
-          <StatisticsBody stats={stats} categories={categories} />
+          <StatisticsBody
+            stats={stats}
+            categories={categories}
+            categoriesLoading={categoriesLoading}
+          />
         </div>
       ) : statsQuery.isPending ? (
         <StatisticsSkeleton />

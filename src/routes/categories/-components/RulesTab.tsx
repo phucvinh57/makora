@@ -6,6 +6,7 @@ import { useCategoryPicker } from "@/components/CategoryOptions";
 import { Badge } from "@/components/ui/badge";
 import type { RuleDialogData } from "@/components/dialogs/RuleDialog";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { formatSeconds } from "@/duration";
 import { useCategories } from "@/hooks/useCategories";
 import { openDialog } from "@/hooks/useDialog";
@@ -44,10 +45,11 @@ function HowItWorks() {
 
 export function RulesTab() {
   const queryClient = useQueryClient();
-  const { categories } = useCategories();
+  const { categories, isLoading: categoriesLoading } = useCategories();
   const picker = useCategoryPicker(categories);
   const rulesQuery = useQuery(categoryRulesQueryOptions);
   const rules = rulesQuery.data ?? [];
+  const loading = categoriesLoading || rulesQuery.isPending;
   const colorById = new Map(categories.map((c) => [c.id, c.color]));
 
   const deleteMutation = useMutation({
@@ -72,20 +74,27 @@ export function RulesTab() {
       <div className="flex justify-end">
         <Button
           size="sm"
-          disabled={categories.length === 0}
+          disabled={loading || categories.length === 0}
           onClick={() => openDialog<RuleDialogData>("rule", { rule: null })}
         >
           Add rules
         </Button>
       </div>
 
-      {categories.length === 0 && (
+      {loading && (
+        <div className="flex flex-col gap-2">
+          {Array.from({ length: 3 }, (_, i) => (
+            <Skeleton key={i} className="h-10 rounded-lg" />
+          ))}
+        </div>
+      )}
+      {!categoriesLoading && categories.length === 0 && (
         <p className="m-0 text-sm text-muted-foreground">
           Add a category on the Taxonomy tab first; a rule files activity under
           one.
         </p>
       )}
-      {!rulesQuery.isLoading && rules.length === 0 && categories.length > 0 && (
+      {!loading && rules.length === 0 && categories.length > 0 && (
         <p className="m-0 text-sm text-muted-foreground">
           No rules yet. Use “Add rules” above to begin.
         </p>
