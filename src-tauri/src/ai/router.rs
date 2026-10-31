@@ -10,7 +10,7 @@ use crate::categorization::domain::retrieval::RelatedActivity;
 use crate::categorization::ports::{ActivityText, Classifier, LlmSpec};
 use crate::domain::types::Category;
 use crate::settings::SettingsStore;
-use crate::shared::ids::CategoryId;
+use crate::shared::ids::{CategoryId, ProviderId};
 
 use super::llm::LlamaClassifier;
 use super::remote;
@@ -37,7 +37,7 @@ impl Classifier for LlmRouter {
         related: &dyn Fn(usize) -> Vec<RelatedActivity>,
         on_answer: &mut dyn FnMut(usize, Option<CategoryId>) -> bool,
     ) -> Result<()> {
-        let Some(id) = llm.provider.as_deref() else {
+        let Some(id) = llm.provider.as_ref().map(ProviderId::as_str) else {
             return self.local.classify(llm, taxonomy, activities, related, on_answer);
         };
         let provider = self

@@ -47,6 +47,29 @@ id_type!(
     RuleId
 );
 
+/// The id of a remote LLM provider: the key of its entry in the settings and of its API key in the
+/// keychain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderId(String);
+
+impl ProviderId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for ProviderId {
+    fn from(id: String) -> Self {
+        Self(id)
+    }
+}
+
+impl fmt::Display for ProviderId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 pub fn raw<T: Copy + Into<i64>>(ids: &[T]) -> Vec<i64> {
     ids.iter().map(|&id| id.into()).collect()
 }
