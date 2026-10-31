@@ -10,6 +10,7 @@ use tracing::{error, info, warn};
 use url::Url;
 
 use super::bridge_wire::{read_frame, socket_name, Frame};
+use crate::shared::sync::lock;
 use crate::tracking::domain::events::{BrowserKind, TabChange};
 use crate::tracking::ports::SessionTracker;
 
@@ -106,7 +107,7 @@ fn handle(payload: &[u8], tracker: &Mutex<Box<dyn SessionTracker>>) {
             return;
         }
     };
-    if let Err(err) = tracker.lock().unwrap().handle_tab(change) {
+    if let Err(err) = lock(tracker).handle_tab(change) {
         error!(error = format!("{err:#}"), "failed to record tab event");
     }
 }
