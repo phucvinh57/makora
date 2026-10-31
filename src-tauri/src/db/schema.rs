@@ -38,6 +38,7 @@ diesel::table! {
         activity_id -> BigInt,
         start_time -> Text,
         end_time -> Nullable<Text>,
+        last_seen -> Nullable<Text>,
     }
 }
 

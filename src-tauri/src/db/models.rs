@@ -74,6 +74,7 @@ pub struct SessionRow {
     pub activity_id: i64,
     pub start_time: String,
     pub end_time: Option<String>,
+    pub last_seen: Option<String>,
 }
 
 #[derive(Debug, Clone, Insertable)]
@@ -81,6 +82,7 @@ pub struct SessionRow {
 pub struct NewSessionRow<'a> {
     pub activity_id: i64,
     pub start_time: &'a str,
+    pub last_seen: &'a str,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable, Identifiable)]

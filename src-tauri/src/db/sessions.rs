@@ -31,9 +31,16 @@ impl SessionsRepo for SqliteConnection {
             .get_result(self)
     }
 
-    fn reopen(&mut self, id: i64) -> QueryResult<()> {
+    fn reopen(&mut self, id: i64, at: &str) -> QueryResult<()> {
         diesel::update(sessions::table.find(id))
-            .set(sessions::end_time.eq(None::<String>))
+            .set((sessions::end_time.eq(None::<String>), sessions::last_seen.eq(at)))
+            .execute(self)?;
+        Ok(())
+    }
+
+    fn touch(&mut self, id: i64, at: &str) -> QueryResult<()> {
+        diesel::update(sessions::table.find(id).filter(sessions::end_time.is_null()))
+            .set(sessions::last_seen.eq(at))
             .execute(self)?;
         Ok(())
     }
@@ -65,16 +72,10 @@ impl SessionsRepo for SqliteConnection {
             .load(self)
     }
 
-    fn get_open_activity_ids(&mut self) -> QueryResult<Vec<i64>> {
+    fn get_open(&mut self) -> QueryResult<Vec<SessionRow>> {
         sessions::table
             .filter(sessions::end_time.is_null())
-            .select(sessions::activity_id)
-            .distinct()
+            .select(SessionRow::as_select())
             .load(self)
-    }
-
-    fn delete_open(&mut self) -> QueryResult<()> {
-        diesel::delete(sessions::table.filter(sessions::end_time.is_null())).execute(self)?;
-        Ok(())
     }
 }

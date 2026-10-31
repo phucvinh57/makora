@@ -14,7 +14,7 @@ use crate::shared::time;
 
 use super::domain::events::FocusedApp;
 use super::domain::exclusion::ExclusionSet;
-use super::domain::session_policy::{is_noise, should_merge};
+use super::domain::session_policy::{is_noise, settle_dangling, should_merge, DanglingRow};
 use super::domain::source_key::{url_path, SourceKey};
 use super::domain::title::canonical_title;
 use super::ports::{ExclusionPolicy, SessionRecorder};
@@ -33,10 +33,11 @@ impl SqliteSessionRecorder {
 }
 
 impl SessionRecorder for SqliteSessionRecorder {
-    fn start(&self, app: &FocusedApp, window_title: &str, url: Option<&str>, at: DateTime<Utc>) -> Result<SessionId> {
+    fn start(&self, app: &FocusedApp, window_title: &str, url: Option<&str>, at_time: DateTime<Utc>) -> Result<SessionId> {
         let source = SourceKey::of(&app.exe_path, url);
         let path = url.map(url_path).unwrap_or_default();
         let canonical = canonical_title(window_title, &app.app_name, url);
+        let at = time::to_db(at_time);
         let mut conn = self.db.write();
         let (session_id, created) = conn.transaction(|conn| -> QueryResult<(i64, bool)> {
             let source_id = ensure_source(conn, &source, &source.display_name(&app.app_name))?;
@@ -45,8 +46,8 @@ impl SessionRecorder for SqliteSessionRecorder {
             if let Some(last) = db::sessions::SessionsRepo::get_last(conn)? {
                 if last.activity_id == activity.id {
                     if let Some(end_time) = &last.end_time {
-                        if time::parse_db(end_time).is_some_and(|closed_at| should_merge(closed_at, at)) {
-                            db::sessions::SessionsRepo::reopen(conn, last.id)?;
+                        if time::parse_db(end_time).is_some_and(|closed_at| should_merge(closed_at, at_time)) {
+                            db::sessions::SessionsRepo::reopen(conn, last.id, &at)?;
                             return Ok((last.id, created));
                         }
                     }
@@ -57,7 +58,8 @@ impl SessionRecorder for SqliteSessionRecorder {
                 conn,
                 &NewSessionRow {
                     activity_id: activity.id,
-                    start_time: &time::to_db(at),
+                    start_time: &at,
+                    last_seen: &at,
                 },
             )?;
             Ok((session.id, created))
@@ -132,13 +134,34 @@ impl SessionRecorder for SqliteSessionRecorder {
         Ok(())
     }
 
+    fn touch(&self, id: SessionId, at: DateTime<Utc>) -> Result<()> {
+        db::sessions::SessionsRepo::touch(&mut *self.db.write(), id.into(), &time::to_db(at))?;
+        Ok(())
+    }
+
     fn close_dangling(&self) -> Result<()> {
+        let min_seconds = self.settings.get().tracking.min_session_seconds;
         let mut conn = self.db.write();
         conn.transaction(|conn| -> QueryResult<()> {
-            let activity_ids = db::sessions::SessionsRepo::get_open_activity_ids(conn)?;
-            db::sessions::SessionsRepo::delete_open(conn)?;
-            prune_orphans(conn, &activity_ids)?;
-            Ok(())
+            let mut dropped = Vec::new();
+            for session in db::sessions::SessionsRepo::get_open(conn)? {
+                let last_seen = session.last_seen.as_deref();
+                // A start time that is unreadable is a reason to keep the row, not to throw it away.
+                let Some(started_at) = time::parse_db(&session.start_time) else {
+                    db::sessions::SessionsRepo::set_end(conn, session.id, last_seen.unwrap_or(&session.start_time))?;
+                    continue;
+                };
+                match settle_dangling(started_at, last_seen.and_then(time::parse_db), min_seconds) {
+                    DanglingRow::Close { ended_at } => {
+                        db::sessions::SessionsRepo::set_end(conn, session.id, &time::to_db(ended_at))?;
+                    }
+                    DanglingRow::Drop => {
+                        db::sessions::SessionsRepo::delete(conn, session.id)?;
+                        dropped.push(session.activity_id);
+                    }
+                }
+            }
+            prune_orphans(conn, &dropped)
         })
         .map_err(Into::into)
     }

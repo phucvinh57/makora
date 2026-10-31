@@ -37,3 +37,51 @@ pub fn is_ignored_app(exe_path: &str) -> bool {
         .iter()
         .any(|ignored| ignored.eq_ignore_ascii_case(file_name))
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DanglingRow {
+    Close { ended_at: DateTime<Utc> },
+    Drop,
+}
+
+/// A row left open by a crash or a forced quit ends when the tracker last saw it running, and
+/// is dropped if that makes it noise.
+pub fn settle_dangling(started_at: DateTime<Utc>, last_seen: Option<DateTime<Utc>>, min_seconds: i64) -> DanglingRow {
+    let ended_at = last_seen.map_or(started_at, |seen| seen.max(started_at));
+    if is_noise(started_at, ended_at, min_seconds) {
+        DanglingRow::Drop
+    } else {
+        DanglingRow::Close { ended_at }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{Duration, TimeZone};
+
+    use super::*;
+
+    fn at(seconds: i64) -> DateTime<Utc> {
+        Utc.timestamp_opt(1_800_000_000, 0).unwrap() + Duration::seconds(seconds)
+    }
+
+    #[test]
+    fn dangling_row_ends_at_last_seen() {
+        assert_eq!(settle_dangling(at(0), Some(at(120)), 5), DanglingRow::Close { ended_at: at(120) });
+    }
+
+    #[test]
+    fn dangling_row_seen_too_briefly_is_dropped() {
+        assert_eq!(settle_dangling(at(0), Some(at(3)), 5), DanglingRow::Drop);
+    }
+
+    #[test]
+    fn dangling_row_never_seen_is_dropped() {
+        assert_eq!(settle_dangling(at(0), None, 5), DanglingRow::Drop);
+    }
+
+    #[test]
+    fn dangling_row_seen_before_it_started_is_dropped() {
+        assert_eq!(settle_dangling(at(60), Some(at(0)), 5), DanglingRow::Drop);
+    }
+}

@@ -188,6 +188,13 @@ impl SessionTracker for FocusStateMachine {
         }
     }
 
+    fn heartbeat(&mut self, at: DateTime<Utc>) -> Result<()> {
+        match self.current.as_ref().and_then(|current| current.id) {
+            Some(id) => self.recorder.touch(id, at),
+            None => Ok(()),
+        }
+    }
+
     fn close_current(&mut self, at: DateTime<Utc>) -> Result<()> {
         self.end_current_row(at)?;
         self.current = None;
