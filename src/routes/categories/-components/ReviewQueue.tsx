@@ -29,7 +29,7 @@ import {
 import { useCategories } from "@/hooks/useCategories";
 import { formatSeconds } from "@/duration";
 import { invalidateCategorizationQueries, queryKeys } from "@/queries";
-import { UNCATEGORIZED } from "@/routes/history/-components/constants";
+import { UNCATEGORIZED } from "@/categories";
 import type { ReviewFilter } from "@/types";
 import { GroupMembers } from "./GroupMembers";
 import {

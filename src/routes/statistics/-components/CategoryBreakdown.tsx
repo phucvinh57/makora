@@ -14,10 +14,15 @@ import {
   ChartTooltipContent,
 } from "@/components/ui/chart";
 import { Skeleton } from "@/components/ui/skeleton";
-import { buildCategoryTree, type CategoryNode } from "@/categories";
+import {
+  buildCategoryTree,
+  type CategoryNode,
+  UNCATEGORIZED,
+  UNCATEGORIZED_COLOR,
+  UNCATEGORIZED_LABEL,
+} from "@/categories";
 import { formatSeconds } from "@/duration";
 import type { ActivityStats, Category } from "@/types";
-import { UNCATEGORIZED_COLOR } from "./constants";
 
 interface Slice {
   key: string;
@@ -77,8 +82,8 @@ export function CategoryBreakdown({
     const untracked: Slice[] = uncategorized
       ? [
           {
-            key: "uncategorized",
-            name: "Uncategorized",
+            key: UNCATEGORIZED,
+            name: UNCATEGORIZED_LABEL,
             value: uncategorized.total_seconds,
             color: UNCATEGORIZED_COLOR,
             depth: 0,

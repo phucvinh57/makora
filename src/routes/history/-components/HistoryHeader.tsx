@@ -13,7 +13,8 @@ import type {
   CategoryChoice,
   CategoryPicker,
 } from "@/components/CategoryOptions";
-import { ALL_CATEGORIES, ALL_SOURCES, UNCATEGORIZED } from "./constants";
+import { UNCATEGORIZED, UNCATEGORIZED_LABEL } from "@/categories";
+import { ALL_CATEGORIES, ALL_SOURCES } from "./constants";
 import {
   type HistoryFilters,
   parseSourceFilter,
@@ -23,7 +24,7 @@ import { TimeRangeFilter } from "./TimeRangeFilter";
 
 const CATEGORY_FILTER_CHOICES: CategoryChoice[] = [
   { value: ALL_CATEGORIES, label: "All categories" },
-  { value: UNCATEGORIZED, label: "Uncategorized" },
+  { value: UNCATEGORIZED, label: UNCATEGORIZED_LABEL },
 ];
 
 export function HistoryHeader({

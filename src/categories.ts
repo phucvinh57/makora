@@ -1,5 +1,10 @@
 import type { Category } from "./types";
 
+/** The filter and select value for activity with no category. */
+export const UNCATEGORIZED = "uncategorized";
+export const UNCATEGORIZED_LABEL = "Uncategorized";
+export const UNCATEGORIZED_COLOR = "#9ca3af";
+
 export interface CategoryNode {
   category: Category;
   depth: number;
