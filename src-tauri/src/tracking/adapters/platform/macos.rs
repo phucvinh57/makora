@@ -1,11 +1,11 @@
 use std::ffi::{c_char, CStr, CString};
 use std::path::Path;
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use block2::RcBlock;
 use chrono::Utc;
 use core_foundation_sys::base::{kCFAllocatorDefault, CFIndex, CFRelease, CFTypeRef};
@@ -18,6 +18,7 @@ use objc2::runtime::AnyObject;
 use objc2::{class, msg_send};
 
 use crate::tracking::adapters::model::{AppInfo, FocusEvent, WatchEvent};
+use crate::tracking::adapters::presence::PresenceState;
 use crate::tracking::adapters::watcher::FocusWatcher;
 
 #[link(name = "Cocoa", kind = "framework")]
@@ -45,9 +46,36 @@ impl FocusWatcher for MacFocusWatcher {
     }
 }
 
+/// A registered notification observer. The center keeps its own references, but holding these
+/// for as long as the observing thread lives keeps that from depending on it.
+struct Observer {
+    _block: RcBlock<dyn Fn(*mut AnyObject)>,
+    _token: *mut AnyObject,
+}
+
+unsafe fn observe(
+    center: *mut AnyObject,
+    name: &str,
+    queue: *mut AnyObject,
+    handler: impl Fn(*mut AnyObject) + 'static,
+) -> Observer {
+    let block: RcBlock<dyn Fn(*mut AnyObject)> = RcBlock::new(handler);
+    let token: *mut AnyObject = msg_send![
+        center,
+        addObserverForName: ns_string(name),
+        object: std::ptr::null_mut::<AnyObject>(),
+        queue: queue,
+        usingBlock: &*block,
+    ];
+    Observer {
+        _block: block,
+        _token: token,
+    }
+}
+
 fn run_watcher(tx: Sender<WatchEvent>) {
     let active_focus = Arc::new(Mutex::new(None::<FocusEvent>));
-    unsafe {
+    let _activation = unsafe {
         if ax::AXIsProcessTrusted() == 0 {
             tracing::warn!(
                 "macOS Accessibility permission is not granted; tracking will continue, but window titles will remain empty until Makora is allowed in System Settings → Privacy & Security → Accessibility"
@@ -58,47 +86,42 @@ fn run_watcher(tx: Sender<WatchEvent>) {
         let center: *mut AnyObject = msg_send![workspace, notificationCenter];
 
         let queue: *mut AnyObject = msg_send![class!(NSOperationQueue), new];
-        let name = ns_string("NSWorkspaceDidActivateApplicationNotification");
         let active_focus_for_observer = Arc::clone(&active_focus);
         let tx_for_observer = tx.clone();
 
-        let block = RcBlock::new(move |notification: *mut AnyObject| {
-            autoreleasepool(|_pool| {
-                let event = match activated_from_notification(notification) {
-                    Some(Activated::App(event)) => {
-                        *active_focus_for_observer.lock().unwrap() = Some(event.clone());
-                        event.into()
-                    }
-                    Some(Activated::Makora) => {
-                        *active_focus_for_observer.lock().unwrap() = None;
-                        WatchEvent::Unattributed { timestamp: Utc::now() }
-                    }
-                    None => return,
-                };
-                let _ = tx_for_observer.send(event);
-            });
+        let observer = autoreleasepool(|_pool| {
+            observe(center, "NSWorkspaceDidActivateApplicationNotification", queue, move |notification| {
+                autoreleasepool(|_pool| {
+                    let mut active_focus = active_focus_for_observer.lock().unwrap_or_else(PoisonError::into_inner);
+                    let event = match activated_from_notification(notification) {
+                        Some(Activated::App(event)) => {
+                            *active_focus = Some(event.clone());
+                            event.into()
+                        }
+                        Some(Activated::Makora) => {
+                            *active_focus = None;
+                            WatchEvent::Unattributed { timestamp: Utc::now() }
+                        }
+                        None => return,
+                    };
+                    let _ = tx_for_observer.send(event);
+                });
+            })
         });
-
-        let _observer: *mut AnyObject = msg_send![
-            center,
-            addObserverForName: name,
-            object: std::ptr::null_mut::<AnyObject>(),
-            queue: queue,
-            usingBlock: &*block,
-        ];
 
         autoreleasepool(|_pool| {
             let current_app: *mut AnyObject = msg_send![workspace, frontmostApplication];
             if let Some(Activated::App(event)) = activated_application(current_app) {
-                *active_focus.lock().unwrap() = Some(event.clone());
+                *active_focus.lock().unwrap_or_else(PoisonError::into_inner) = Some(event.clone());
                 let _ = tx.send(event.into());
             }
         });
-    }
+        observer
+    };
 
     loop {
         thread::park_timeout(Duration::from_millis(500));
-        let Some(event) = active_focus.lock().unwrap().clone() else {
+        let Some(event) = active_focus.lock().unwrap_or_else(PoisonError::into_inner).clone() else {
             continue;
         };
         if frontmost_process_id() != Some(event.app.process_id as i32) {
@@ -112,7 +135,7 @@ fn run_watcher(tx: Sender<WatchEvent>) {
         }
 
         let updated = {
-            let mut active_focus = active_focus.lock().unwrap();
+            let mut active_focus = active_focus.lock().unwrap_or_else(PoisonError::into_inner);
             match active_focus.as_mut() {
                 Some(current)
                     if current.app.process_id == event.app.process_id
@@ -128,6 +151,59 @@ fn run_watcher(tx: Sender<WatchEvent>) {
         if let Some(updated) = updated {
             let _ = tx.send(updated.into());
         }
+    }
+}
+
+type PresenceChange = fn(&mut PresenceState, &Sender<WatchEvent>) -> bool;
+
+const PRESENCE_NOTIFICATIONS: [(bool, &str, PresenceChange); 6] = [
+    (false, "NSWorkspaceWillSleepNotification", |state, tx| state.set_sleeping(true, tx)),
+    (false, "NSWorkspaceDidWakeNotification", |state, tx| state.set_sleeping(false, tx)),
+    (false, "NSWorkspaceScreensDidSleepNotification", |state, tx| state.set_screens_off(true, tx)),
+    (false, "NSWorkspaceScreensDidWakeNotification", |state, tx| state.set_screens_off(false, tx)),
+    (true, "com.apple.screenIsLocked", |state, tx| state.set_locked(true, tx)),
+    (true, "com.apple.screenIsUnlocked", |state, tx| state.set_locked(false, tx)),
+];
+
+/// Sleep and screen sleep come from the workspace notification center, lock and unlock from the
+/// distributed one. The thread only keeps the observers alive; the blocks run on their queue.
+pub fn start_presence_watcher(tx: Sender<WatchEvent>) -> Result<()> {
+    thread::Builder::new()
+        .name("makora-presence-watcher".into())
+        .spawn(move || run_presence_watcher(tx))
+        .context("spawning presence-watcher thread")?;
+    Ok(())
+}
+
+fn run_presence_watcher(tx: Sender<WatchEvent>) {
+    let mut state = PresenceState::default();
+    if !state.apply_snapshot(false, false, &tx) {
+        return;
+    }
+    let presence = Arc::new(Mutex::new((state, tx)));
+    let _observers: Vec<Observer> = unsafe {
+        autoreleasepool(|_pool| {
+            let workspace: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
+            let workspace_center: *mut AnyObject = msg_send![workspace, notificationCenter];
+            let distributed_center: *mut AnyObject =
+                msg_send![class!(NSDistributedNotificationCenter), defaultCenter];
+            let queue: *mut AnyObject = msg_send![class!(NSOperationQueue), new];
+            PRESENCE_NOTIFICATIONS
+                .into_iter()
+                .map(|(distributed, name, change)| {
+                    let center = if distributed { distributed_center } else { workspace_center };
+                    let presence = Arc::clone(&presence);
+                    observe(center, name, queue, move |_notification| {
+                        let mut presence = presence.lock().unwrap_or_else(PoisonError::into_inner);
+                        let (state, tx) = &mut *presence;
+                        change(state, tx);
+                    })
+                })
+                .collect()
+        })
+    };
+    loop {
+        thread::park();
     }
 }
 
