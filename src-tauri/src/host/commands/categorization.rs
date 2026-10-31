@@ -12,7 +12,7 @@ use crate::categorization::application::rules::{
 };
 use crate::categorization::domain::rules::{PatternField, RuleKind};
 use crate::categorization::ports::{Classifier, Embedder, LlmSpec};
-use crate::categorization::{ClassificationSvc, EmbeddingSvc, RuleSvc};
+use crate::categorization::{ClassificationSvc, EmbedSkips, EmbeddingSvc, RuleSvc};
 use crate::domain::LabelingSvc;
 use crate::host::auto_categorize::{next_run, ScheduleAnchor};
 use crate::host::error::IpcError;
@@ -102,6 +102,7 @@ pub fn run_categorization(app: &AppHandle, recheck: bool) -> Result<AiRunOutcome
     let classifier = app.state::<Box<dyn Classifier>>();
     let embedder = app.state::<Arc<dyn Embedder>>();
     let embeddings = app.state::<Arc<dyn EmbeddingSvc>>();
+    let embed_skips = app.state::<Arc<EmbedSkips>>();
     let settings = app.state::<Arc<dyn SettingsStore>>().get();
     let deps = AiRunDeps {
         categories: &**categories,
@@ -110,6 +111,7 @@ pub fn run_categorization(app: &AppHandle, recheck: bool) -> Result<AiRunOutcome
         classifier: &**classifier,
         embedder: &**embedder,
         embeddings: &**embeddings,
+        embed_skips: &embed_skips,
     };
     let models = AiModels {
         llm: LlmSpec {
