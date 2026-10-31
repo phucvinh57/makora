@@ -141,6 +141,7 @@ mod tests {
     use diesel::connection::SimpleConnection;
 
     use super::*;
+    use crate::reporting::window::assert_seconds;
 
     #[test]
     fn rule_and_source_totals_count_open_sessions_up_to_now() {
@@ -161,9 +162,9 @@ mod tests {
 
         let rules = conn.get_rule_stats(&window).unwrap();
         assert_eq!((rules[0].rule_id, rules[0].activity_count), (1, 1));
-        assert_eq!(rules[0].total_seconds.round() as i64, 2400);
-        assert_eq!(conn.get_source_suggestions(&window).unwrap()[0].total_seconds.round() as i64, 2400);
-        assert_eq!(conn.get_paths_of("github.com", &window).unwrap()[0].total_seconds.round() as i64, 2400);
-        assert_eq!(conn.get_activities_for_preview(&window).unwrap()[0].total_seconds.round() as i64, 2400);
+        assert_seconds(rules[0].total_seconds, 2400.0);
+        assert_seconds(conn.get_source_suggestions(&window).unwrap()[0].total_seconds, 2400.0);
+        assert_seconds(conn.get_paths_of("github.com", &window).unwrap()[0].total_seconds, 2400.0);
+        assert_seconds(conn.get_activities_for_preview(&window).unwrap()[0].total_seconds, 2400.0);
     }
 }

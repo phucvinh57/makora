@@ -278,6 +278,7 @@ mod tests {
     use diesel::connection::SimpleConnection;
 
     use super::*;
+    use crate::reporting::window::assert_seconds;
     use crate::shared::time::TimeRange;
 
     fn utc(at: &str) -> DateTime<Utc> {
@@ -360,7 +361,7 @@ mod tests {
         ]);
         let totals = conn.get_totals(&window(FROM, TO, LATER)).unwrap();
         assert_eq!(totals.session_count, 3);
-        assert!((totals.total_seconds - 7200.0).abs() < 0.01, "{}", totals.total_seconds);
+        assert_seconds(totals.total_seconds, 7200.0);
     }
 
     #[test]
@@ -368,10 +369,10 @@ mod tests {
         let mut conn = conn_with(&[("2026-03-01T10:00:00Z", None)]);
         let totals = conn.get_totals(&window(FROM, TO, "2026-03-01T10:20:00Z")).unwrap();
         assert_eq!(totals.session_count, 1);
-        assert!((totals.total_seconds - 1200.0).abs() < 0.01, "{}", totals.total_seconds);
+        assert_seconds(totals.total_seconds, 1200.0);
 
         let past = conn.get_totals(&window(FROM, TO, LATER)).unwrap();
-        assert!((past.total_seconds - 50400.0).abs() < 0.01, "{}", past.total_seconds);
+        assert_seconds(past.total_seconds, 50400.0);
     }
 
     #[test]
@@ -392,9 +393,9 @@ mod tests {
         let total = conn.get_totals(&window).unwrap().total_seconds;
         let by_category: f64 = conn.get_category_stats(&window).unwrap().iter().map(|r| r.total_seconds).sum();
         let by_app: f64 = conn.get_app_stats(&window).unwrap().iter().map(|r| r.total_seconds).sum();
-        assert!((total - 5400.0).abs() < 0.01, "{total}");
-        assert!((by_category - total).abs() < 0.01);
-        assert!((by_app - total).abs() < 0.01);
+        assert_seconds(total, 5400.0);
+        assert_seconds(by_category, total);
+        assert_seconds(by_app, total);
 
         let intervals: Vec<(String, String)> = conn
             .get_intervals(&window)

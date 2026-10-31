@@ -71,3 +71,9 @@ pub(super) fn clipped_seconds(s: &str) -> String {
 pub(super) fn sum_seconds(s: &str) -> String {
     format!("COALESCE(SUM({}), 0.0)", clipped_seconds(s))
 }
+
+/// julianday arithmetic is only exact to the millisecond.
+#[cfg(test)]
+pub(super) fn assert_seconds(actual: f64, expected: f64) {
+    assert!((actual - expected).abs() < 0.01, "{actual} s, expected {expected} s");
+}
