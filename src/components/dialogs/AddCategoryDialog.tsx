@@ -1,36 +1,14 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
 import { category } from "@/api";
-import { CategoryCombobox } from "@/components/CategoryCombobox";
-import {
-  type CategoryChoice,
-  useCategoryPicker,
-} from "@/components/CategoryOptions";
-import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { useCategories } from "@/hooks/useCategories";
 import { useDialog } from "@/hooks/useDialog";
 import { invalidateCategorizationQueries } from "@/queries";
 import type { Category } from "@/types";
+import { CategoryForm } from "./CategoryForm";
 
 const DEFAULT_COLOR = "#6366f1";
-const NO_PARENT = "none";
-const NO_PARENT_CHOICES: CategoryChoice[] = [
-  { value: NO_PARENT, label: "No parent (top level)" },
-];
 
-/**
- * The form is its own component because the dialog unmounts its content on close: the fields
- * and the mutation's error start fresh every time it opens, with nothing to reset by hand.
- */
 function AddCategoryForm({
   parent,
   onCreated,
@@ -42,11 +20,6 @@ function AddCategoryForm({
 }) {
   const queryClient = useQueryClient();
   const { categories } = useCategories();
-  const picker = useCategoryPicker(categories);
-  const [name, setName] = useState("");
-  const [color, setColor] = useState(parent?.color ?? DEFAULT_COLOR);
-  const [description, setDescription] = useState("");
-  const [parentId, setParentId] = useState<number | null>(parent?.id ?? null);
 
   const createMutation = useMutation({
     mutationFn: category.create,
@@ -58,89 +31,24 @@ function AddCategoryForm({
     },
   });
 
-  const trimmedName = name.trim();
-  const chosenParent =
-    parentId !== null
-      ? picker.categories.find((c) => c.id === parentId)
-      : undefined;
-
   return (
-    <form
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (!trimmedName) return;
-        createMutation.mutate({
-          name: trimmedName,
-          color,
-          description: description.trim() || null,
-          parentId,
-        });
+    <CategoryForm
+      initial={{
+        name: "",
+        color: parent?.color ?? DEFAULT_COLOR,
+        description: null,
+        parentId: parent?.id ?? null,
       }}
-      className="flex flex-col gap-4"
-    >
-      <DialogHeader>
-        <DialogTitle>
-          {chosenParent
-            ? `Add subcategory of ${picker.pathById.get(chosenParent.id)}`
-            : "Add category"}
-        </DialogTitle>
-      </DialogHeader>
-      <div className="flex items-center gap-2">
-        <input
-          type="color"
-          value={color}
-          onChange={(e) => setColor(e.target.value)}
-          className="h-8 w-10 shrink-0 cursor-pointer rounded-md border bg-transparent p-0.5"
-          aria-label="New category color"
-        />
-        <Input
-          type="text"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="New category name"
-          className="flex-1"
-          autoFocus
-        />
-      </div>
-      <Textarea
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-        placeholder="Description (optional)"
-        aria-describedby="category-description-help"
-      />
-      <p
-        id="category-description-help"
-        className="text-xs text-muted-foreground"
-      >
-        Describe what belongs here.
-      </p>
-      <CategoryCombobox
-        picker={picker}
-        extraChoices={NO_PARENT_CHOICES}
-        value={parentId === null ? NO_PARENT : String(parentId)}
-        onValueChange={(value) =>
-          setParentId(value === NO_PARENT ? null : Number(value))
-        }
-        ariaLabel="Parent category"
-        className="w-full"
-      />
-      {createMutation.isError && (
-        <p className="text-xs text-destructive">
-          {String(createMutation.error)}
-        </p>
-      )}
-      <DialogFooter>
-        <Button type="button" variant="outline" onClick={onClose}>
-          Cancel
-        </Button>
-        <Button
-          type="submit"
-          disabled={!trimmedName || createMutation.isPending}
-        >
-          Add category
-        </Button>
-      </DialogFooter>
-    </form>
+      parentChoices={categories}
+      title={(parentPath) =>
+        parentPath ? `Add subcategory of ${parentPath}` : "Add category"
+      }
+      submitLabel="Add category"
+      pending={createMutation.isPending}
+      error={createMutation.error}
+      onSubmit={(draft) => createMutation.mutate(draft)}
+      onClose={onClose}
+    />
   );
 }
 
