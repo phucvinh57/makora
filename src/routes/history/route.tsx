@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { aiReview, session } from "@/api";
 import { useCategoryPicker } from "@/components/CategoryOptions";
+import { UNCATEGORIZED } from "@/categories";
 import { PaginationControls } from "@/components/PaginationControls";
 import { useCategories } from "@/hooks/useCategories";
 import { useDebouncedCallback } from "@/hooks/useDebouncedCallback";
@@ -22,7 +23,6 @@ import {
   ALL_SOURCES,
   PAGE_SIZE,
   SEARCH_DEBOUNCE_MS,
-  UNCATEGORIZED,
 } from "./-components/constants";
 import { type HistoryFilters, parseSourceFilter } from "./-components/filters";
 import { HistoryHeader } from "./-components/HistoryHeader";

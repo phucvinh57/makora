@@ -1,4 +1,5 @@
-import { format, parseISO, startOfDay, subDays } from "date-fns";
+import { format, parseISO } from "date-fns";
+import { type DateBounds, daysUpToToday } from "@/dateRange";
 
 export type RangePreset = "today" | "7d" | "30d";
 
@@ -8,18 +9,8 @@ const RANGE_DAYS_BACK: Record<RangePreset, number> = {
   "30d": 29,
 };
 
-function localMidnight(daysAgo: number): Date {
-  return subDays(startOfDay(new Date()), daysAgo);
-}
-
-export function computeRange(preset: RangePreset): {
-  start: string;
-  end: string;
-} {
-  return {
-    start: localMidnight(RANGE_DAYS_BACK[preset]).toISOString(),
-    end: localMidnight(-1).toISOString(),
-  };
+export function computeRange(preset: RangePreset): DateBounds {
+  return daysUpToToday(RANGE_DAYS_BACK[preset]);
 }
 
 export function formatDay(day: string): string {

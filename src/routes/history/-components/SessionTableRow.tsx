@@ -16,11 +16,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { formatDuration, formatTimestamp } from "@/duration";
+import { UNCATEGORIZED, UNCATEGORIZED_LABEL } from "@/categories";
 import type { SessionRow } from "@/types";
-import { UNCATEGORIZED } from "./constants";
 
 const UNCATEGORIZED_CHOICES: CategoryChoice[] = [
-  { value: UNCATEGORIZED, label: "Uncategorized" },
+  { value: UNCATEGORIZED, label: UNCATEGORIZED_LABEL },
 ];
 
 function openSite(url: string) {
@@ -51,7 +51,7 @@ export const SessionTableRow = memo(function SessionTableRow({
 }) {
   const path =
     (row.category_id !== null && picker.pathById.get(row.category_id)) ||
-    "Uncategorized";
+    UNCATEGORIZED_LABEL;
   const siteUrl = row.url;
 
   return (
@@ -102,7 +102,7 @@ export const SessionTableRow = memo(function SessionTableRow({
                 }}
               />
               <span className="truncate">
-                {row.category_name ?? "Uncategorized"}
+                {row.category_name ?? UNCATEGORIZED_LABEL}
               </span>
             </span>
           </CreatableCategoryCombobox>

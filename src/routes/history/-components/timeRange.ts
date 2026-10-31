@@ -1,4 +1,5 @@
-import { addDays, format, startOfDay } from "date-fns";
+import { format } from "date-fns";
+import { daysUpToToday, yesterday } from "@/dateRange";
 
 export type TimeRangeKind =
   | "all"
@@ -34,22 +35,15 @@ export function resolveRange(range: TimeRange): {
   start?: string;
   end?: string;
 } {
-  const today = startOfDay(new Date());
   switch (range.kind) {
     case "all":
       return {};
     case "today":
     case "3d":
     case "7d":
-      return {
-        start: addDays(today, -PRESET_DAYS_BACK[range.kind]).toISOString(),
-        end: addDays(today, 1).toISOString(),
-      };
+      return daysUpToToday(PRESET_DAYS_BACK[range.kind]);
     case "yesterday":
-      return {
-        start: addDays(today, -1).toISOString(),
-        end: today.toISOString(),
-      };
+      return yesterday();
     case "custom":
       return { start: range.from, end: range.to };
   }

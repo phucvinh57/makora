@@ -5,5 +5,3 @@ export const RANGE_PRESETS: { value: RangePreset; label: string }[] = [
   { value: "7d", label: "7 days" },
   { value: "30d", label: "30 days" },
 ];
-
-export const UNCATEGORIZED_COLOR = "#9ca3af";

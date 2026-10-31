@@ -7,7 +7,7 @@ import {
 } from "@/components/ui/card";
 import { formatSeconds } from "@/duration";
 import type { ActivityStats } from "@/types";
-import { UNCATEGORIZED_COLOR } from "./constants";
+import { UNCATEGORIZED_COLOR } from "@/categories";
 
 export function TopAppsBreakdown({ stats }: { stats: ActivityStats }) {
   const apps = stats.apps;
