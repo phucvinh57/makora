@@ -26,6 +26,7 @@ const TOP_APPS_LIMIT: i64 = 15;
 pub enum SourceScope {
     Any,
     Manual,
+    Rule,
     Ai,
 }
 
@@ -62,6 +63,7 @@ fn where_clause(query: &SessionQuery) -> (String, Vec<Param>) {
     match query.source {
         SourceScope::Any => {}
         SourceScope::Manual => clauses.push("ac.source = 'manual'".to_string()),
+        SourceScope::Rule => clauses.push("ac.source = 'rule'".to_string()),
         SourceScope::Ai => clauses.push("ac.source = 'ai'".to_string()),
     }
 
