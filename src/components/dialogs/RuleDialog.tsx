@@ -36,7 +36,7 @@ import {
   RULE_KINDS,
   RULE_VALUE_PLACEHOLDERS,
 } from "@/rules";
-import type { CategoryRule } from "@/types";
+import type { CategoryRuleView } from "@/types";
 import {
   fieldOf,
   matchValue,
@@ -279,7 +279,7 @@ function RuleForm({
   rule,
   onClose,
 }: {
-  rule: CategoryRule | null;
+  rule: CategoryRuleView | null;
   onClose: () => void;
 }) {
   const { categories } = useCategories();
@@ -373,7 +373,7 @@ function RuleForm({
 }
 
 export interface RuleDialogData {
-  rule: CategoryRule | null;
+  rule: CategoryRuleView | null;
 }
 
 export function RuleDialog() {

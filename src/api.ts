@@ -7,13 +7,13 @@ import {
 } from "@tauri-apps/plugin-autostart";
 import type {
   ActivityStats,
-  AiCategorizeOutcome,
-  AiCategorizeStatus,
+  AiRunOutcome,
+  AiRunStatus,
   AiReviewGroupPage,
   AiReviewPage,
   Category,
   CategorizationResetOutcome,
-  CategoryRule,
+  CategoryRuleView,
   Exclusion,
   FeedbackStats,
   HistorySourceFilter,
@@ -158,7 +158,7 @@ export const category = {
 };
 
 export const categoryRule = {
-  list(): Promise<CategoryRule[]> {
+  list(): Promise<CategoryRuleView[]> {
     return call("category_rule_list");
   },
 
@@ -198,11 +198,11 @@ export const categorization = {
     return call("categorization_reset");
   },
 
-  run(recheck = false): Promise<AiCategorizeOutcome> {
+  run(recheck = false): Promise<AiRunOutcome> {
     return call("categorization_run", { recheck });
   },
 
-  status(): Promise<AiCategorizeStatus> {
+  status(): Promise<AiRunStatus> {
     return call("categorization_status");
   },
 

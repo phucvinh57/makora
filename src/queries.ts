@@ -9,7 +9,7 @@ import {
   settings,
   suggestion,
 } from "./api";
-import type { AiCategorizeStatus, ModelDownloadStatus } from "./types";
+import type { AiRunStatus, ModelDownloadStatus } from "./types";
 
 export const queryKeys = {
   categories: ["categories"],
@@ -135,7 +135,7 @@ export async function markCategorizeStarted(
   recheck: boolean,
 ) {
   await queryClient.cancelQueries({ queryKey: queryKeys.aiCategorizeStatus });
-  queryClient.setQueryData<AiCategorizeStatus>(queryKeys.aiCategorizeStatus, {
+  queryClient.setQueryData<AiRunStatus>(queryKeys.aiCategorizeStatus, {
     running: true,
     recheck,
     done: 0,

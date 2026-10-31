@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { categoryRule } from "@/api";
 import { invalidateCategorizationQueries } from "@/queries";
-import type { CategoryRule, PatternField, RuleKind } from "@/types";
+import type { CategoryRuleView, PatternField, RuleKind } from "@/types";
 
 export interface RuleFormValues {
   kind: RuleKind;
@@ -31,7 +31,7 @@ function emptyForm(like?: RuleFormValues): RuleFormValues {
   };
 }
 
-function formOf(rule: CategoryRule): RuleFormValues {
+function formOf(rule: CategoryRuleView): RuleFormValues {
   const slash = rule.value.indexOf("/");
   const isPage = rule.kind === "page" && slash >= 0;
   return {
@@ -58,7 +58,10 @@ export function fieldOf(form: RuleFormValues): PatternField | null {
  * The rows of the rule dialog and saving them. Editing has one row; adding can have many, all
  * filed under one category.
  */
-export function useRuleForm(rule: CategoryRule | null, onClose: () => void) {
+export function useRuleForm(
+  rule: CategoryRuleView | null,
+  onClose: () => void,
+) {
   const queryClient = useQueryClient();
   const [categoryId, setCategoryId] = useState<number | null>(
     rule?.category_id ?? null,
