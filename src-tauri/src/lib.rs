@@ -203,8 +203,8 @@ pub fn run() {
                 })
                 .context("spawning activity-tracker thread")?;
 
-            tracking::adapters::ingest::spawn(tracker).context("starting tab-ingest server")?;
-            info!(port = tracking::adapters::ingest::PORT, "listening for tab events");
+            tracking::adapters::native_host::register(&data_dir);
+            tracking::adapters::ingest::spawn(tracker);
 
             host::auto_categorize::spawn(app.handle().clone()).context("spawning AI scheduler thread")?;
 

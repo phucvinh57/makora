@@ -1,91 +1,208 @@
+use std::io;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use anyhow::{anyhow, Result};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+use interprocess::local_socket::prelude::*;
+use interprocess::local_socket::{Listener, ListenerOptions, Stream};
 use serde::Deserialize;
-use tiny_http::{Method, Response, Server};
+use tracing::{error, info, warn};
+use url::Url;
 
+use super::bridge_wire::{read_frame, socket_name, Frame};
 use crate::tracking::domain::events::{BrowserKind, TabChange};
-use crate::tracking::domain::source_key::strip_query_and_fragment;
 use crate::tracking::ports::SessionTracker;
 
-pub const PORT: u16 = 47632;
+const MAX_TITLE_CHARS: usize = 1024;
+
+#[derive(Debug, PartialEq, Eq)]
+enum InvalidTabEvent {
+    Malformed(String),
+    UnknownBrowser(String),
+}
+
+/// Listens for the `makora-bridge` native-messaging host. Without the listener the app keeps
+/// running and browsers are tracked as plain apps.
+pub fn spawn(tracker: Arc<Mutex<Box<dyn SessionTracker>>>) {
+    let listener = match bind() {
+        Ok(listener) => listener,
+        Err(err) => {
+            warn!(error = %err, "browser tab tracking disabled: cannot listen for the browser bridge");
+            return;
+        }
+    };
+    let spawned = thread::Builder::new()
+        .name("makora-tab-ingest".into())
+        .spawn(move || accept(listener, tracker));
+    match spawned {
+        Ok(_) => info!("listening for browser tab events"),
+        Err(err) => warn!(error = %err, "browser tab tracking disabled: cannot spawn the listener thread"),
+    }
+}
+
+#[cfg(unix)]
+fn bind() -> io::Result<Listener> {
+    use std::fs::{self, DirBuilder, Permissions};
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+    let dir = super::bridge_wire::socket_dir()?;
+    DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
+    fs::set_permissions(&dir, Permissions::from_mode(0o700))?;
+    ListenerOptions::new().name(socket_name()?).try_overwrite(true).create_sync()
+}
+
+#[cfg(windows)]
+fn bind() -> io::Result<Listener> {
+    use interprocess::os::windows::local_socket::ListenerOptionsExt;
+    use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+    use widestring::U16CString;
+
+    let sddl = U16CString::from_str(format!("D:P(A;;GA;;;{})", super::bridge_wire::user_sid()?))
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+    ListenerOptions::new()
+        .name(socket_name()?)
+        .security_descriptor(SecurityDescriptor::deserialize(&sddl)?)
+        .create_sync()
+}
+
+fn accept(listener: Listener, tracker: Arc<Mutex<Box<dyn SessionTracker>>>) {
+    for connection in listener.incoming() {
+        let stream = match connection {
+            Ok(stream) => stream,
+            Err(err) => {
+                warn!(error = %err, "failed to accept a browser bridge connection");
+                continue;
+            }
+        };
+        let tracker = tracker.clone();
+        let spawned = thread::Builder::new()
+            .name("makora-tab-bridge".into())
+            .spawn(move || serve(stream, &tracker));
+        if let Err(err) = spawned {
+            warn!(error = %err, "failed to spawn a browser bridge thread");
+        }
+    }
+}
+
+fn serve(mut stream: Stream, tracker: &Mutex<Box<dyn SessionTracker>>) {
+    loop {
+        match read_frame(&mut stream) {
+            Ok(Some(Frame::Message(payload))) => handle(&payload, tracker),
+            Ok(Some(Frame::Oversized)) => warn!("dropped an oversized browser tab event"),
+            Ok(None) => return,
+            Err(err) => {
+                warn!(error = %err, "browser bridge connection broke");
+                return;
+            }
+        }
+    }
+}
+
+fn handle(payload: &[u8], tracker: &Mutex<Box<dyn SessionTracker>>) {
+    let change = match parse_tab_event(payload, Utc::now()) {
+        Ok(change) => change,
+        Err(err) => {
+            warn!(?err, "dropped an invalid browser tab event");
+            return;
+        }
+    };
+    if let Err(err) = tracker.lock().unwrap().handle_tab(change) {
+        error!(error = format!("{err:#}"), "failed to record tab event");
+    }
+}
 
 #[derive(Deserialize)]
 struct TabEventDto {
     browser: String,
-    url: String,
+    url: Option<String>,
     title: String,
 }
 
-pub fn spawn(tracker: Arc<Mutex<Box<dyn SessionTracker>>>) -> Result<thread::JoinHandle<()>> {
-    let server = Server::http(("127.0.0.1", PORT))
-        .map_err(|e| anyhow!("binding tab-ingest server to 127.0.0.1:{PORT}: {e}"))?;
-
-    thread::Builder::new()
-        .name("makora-tab-ingest".into())
-        .spawn(move || run(server, tracker))
-        .map_err(|e| anyhow!("spawning tab-ingest server thread: {e}"))
-}
-
-fn run(server: Server, tracker: Arc<Mutex<Box<dyn SessionTracker>>>) {
-    for mut request in server.incoming_requests() {
-        let status = handle_request(&mut request, &tracker);
-        let _ = request.respond(Response::empty(status));
-    }
-}
-
-fn handle_request(request: &mut tiny_http::Request, tracker: &Arc<Mutex<Box<dyn SessionTracker>>>) -> u16 {
-    if *request.method() != Method::Post || request.url() != "/event" {
-        return 404;
-    }
-    if !has_allowed_extension_origin(request) {
-        return 403;
-    }
-
-    let mut body = String::new();
-    if request.as_reader().read_to_string(&mut body).is_err() {
-        return 400;
-    }
-
-    let dto: TabEventDto = match serde_json::from_str(&body) {
-        Ok(dto) => dto,
-        Err(_) => return 400,
-    };
-
-    let change = TabChange {
-        browser: browser_from_wire(&dto.browser),
-        url: strip_query_and_fragment(&dto.url),
-        title: dto.title,
-        at: Utc::now(),
-    };
-
-    if let Err(err) = tracker.lock().unwrap().handle_tab(change) {
-        tracing::error!(error = format!("{err:#}"), "failed to record tab event");
-        return 500;
-    }
-    204
-}
-
-fn browser_from_wire(value: &str) -> BrowserKind {
-    match value {
+/// `at` is when the app received the event: the extension's clock and queueing are not trusted.
+fn parse_tab_event(payload: &[u8], at: DateTime<Utc>) -> Result<TabChange, InvalidTabEvent> {
+    let dto: TabEventDto =
+        serde_json::from_slice(payload).map_err(|err| InvalidTabEvent::Malformed(err.to_string()))?;
+    let browser = match dto.browser.as_str() {
         "chrome" => BrowserKind::Chrome,
         "edge" => BrowserKind::Edge,
         "firefox" => BrowserKind::Firefox,
         "brave" => BrowserKind::Brave,
-        _ => BrowserKind::Other,
-    }
+        _ => return Err(InvalidTabEvent::UnknownBrowser(dto.browser)),
+    };
+    let url = dto
+        .url
+        .filter(|url| Url::parse(url).is_ok_and(|parsed| matches!(parsed.scheme(), "http" | "https")));
+    Ok(TabChange {
+        browser,
+        url,
+        title: dto.title.chars().take(MAX_TITLE_CHARS).collect(),
+        at,
+    })
 }
 
-fn has_allowed_extension_origin(request: &tiny_http::Request) -> bool {
-    request
-        .headers()
-        .iter()
-        .find(|h| h.field.as_str().as_str().eq_ignore_ascii_case("origin"))
-        .map(|h| {
-            let origin = h.value.as_str();
-            origin.starts_with("chrome-extension://") || origin.starts_with("moz-extension://")
-        })
-        .unwrap_or(false)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at() -> DateTime<Utc> {
+        DateTime::from_timestamp(1_700_000_000, 0).unwrap()
+    }
+
+    fn parse(json: &str) -> Result<TabChange, InvalidTabEvent> {
+        parse_tab_event(json.as_bytes(), at())
+    }
+
+    #[test]
+    fn keeps_the_raw_http_url_with_query_and_fragment() {
+        let change = parse(r#"{"browser":"chrome","url":"https://example.com/a?b=1#c","title":"A"}"#).unwrap();
+
+        assert_eq!(change.browser, BrowserKind::Chrome);
+        assert_eq!(change.url.as_deref(), Some("https://example.com/a?b=1#c"));
+        assert_eq!(change.title, "A");
+        assert_eq!(change.at, at());
+    }
+
+    #[test]
+    fn maps_every_known_browser() {
+        for (wire, kind) in [
+            ("chrome", BrowserKind::Chrome),
+            ("edge", BrowserKind::Edge),
+            ("firefox", BrowserKind::Firefox),
+            ("brave", BrowserKind::Brave),
+        ] {
+            let change = parse(&format!(r#"{{"browser":"{wire}","url":null,"title":""}}"#)).unwrap();
+            assert_eq!(change.browser, kind);
+        }
+    }
+
+    #[test]
+    fn rejects_an_unknown_browser() {
+        assert_eq!(
+            parse(r#"{"browser":"vivaldi","url":null,"title":""}"#).unwrap_err(),
+            InvalidTabEvent::UnknownBrowser("vivaldi".into())
+        );
+    }
+
+    #[test]
+    fn non_web_pages_have_no_url() {
+        for url in ["null", r#""chrome://newtab/""#, r#""file:///etc/hosts""#, r#""not a url""#] {
+            let change = parse(&format!(r#"{{"browser":"firefox","url":{url},"title":"New Tab"}}"#)).unwrap();
+            assert_eq!(change.url, None, "{url}");
+        }
+    }
+
+    #[test]
+    fn caps_the_title() {
+        let title = "é".repeat(MAX_TITLE_CHARS + 10);
+        let change = parse(&format!(r#"{{"browser":"edge","url":null,"title":"{title}"}}"#)).unwrap();
+
+        assert_eq!(change.title.chars().count(), MAX_TITLE_CHARS);
+    }
+
+    #[test]
+    fn rejects_malformed_payloads() {
+        for payload in ["", "{}", "not json", r#"{"browser":"chrome","url":1,"title":""}"#] {
+            assert!(matches!(parse(payload), Err(InvalidTabEvent::Malformed(_))), "{payload}");
+        }
+    }
 }

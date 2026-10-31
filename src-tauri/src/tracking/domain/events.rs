@@ -16,7 +16,8 @@ pub struct FocusChange {
 #[derive(Debug, Clone)]
 pub struct TabChange {
     pub browser: BrowserKind,
-    pub url: String,
+    /// `None` when the active tab is not a web page.
+    pub url: Option<String>,
     pub title: String,
     pub at: DateTime<Utc>,
 }
@@ -33,7 +34,6 @@ pub enum BrowserKind {
     Edge,
     Firefox,
     Brave,
-    Other,
 }
 
 impl BrowserKind {

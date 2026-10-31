@@ -68,7 +68,7 @@ enum Step {
 }
 
 struct LastTab {
-    url: String,
+    url: Option<String>,
     title: String,
 }
 
@@ -216,7 +216,7 @@ impl SessionTracker for FocusStateMachine {
                 let browser = BrowserKind::from_app_name(&change.app.app_name);
                 let tab = browser.and_then(|kind| self.last_tabs.get(&kind));
                 let (url, window_title) = match tab {
-                    Some(tab) => (Some(tab.url.clone()), tab.title.clone()),
+                    Some(tab) => (tab.url.clone(), tab.title.clone()),
                     None => (None, change.window_title),
                 };
                 self.current = Some(Current {
@@ -232,7 +232,7 @@ impl SessionTracker for FocusStateMachine {
 
     fn handle_tab(&mut self, change: TabChange) -> Result<()> {
         let at = self.clock(change.at);
-        let url = canonical_tab_url(&change.url);
+        let url = change.url.as_deref().map(canonical_tab_url);
         self.last_tabs.insert(
             change.browser,
             LastTab {
@@ -242,7 +242,7 @@ impl SessionTracker for FocusStateMachine {
         );
         match &mut self.current {
             Some(current) if current.browser == Some(change.browser) => {
-                current.url = Some(url);
+                current.url = url;
                 current.window_title = change.title;
             }
             _ => return Ok(()),
@@ -394,7 +394,7 @@ mod tests {
     fn tab(url: &str, title: &str, seconds: i64) -> TabChange {
         TabChange {
             browser: BrowserKind::Chrome,
-            url: url.into(),
+            url: Some(url.into()),
             title: title.into(),
             at: at(seconds),
         }
@@ -430,6 +430,29 @@ mod tests {
                 start("Public", Some("https://a.com/x"), 0),
                 Call::End { id: 2, at: 60 },
                 start("Public", Some("https://a.com/x"), 120),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_tab_without_a_web_url_credits_the_browser() {
+        let (mut machine, log) = machine(vec![]);
+        machine.handle_focus(focus("chrome", "Chrome", 0)).unwrap();
+        machine.handle_tab(tab("https://a.com/x", "Public", 0)).unwrap();
+        machine
+            .handle_tab(TabChange {
+                url: None,
+                ..tab("", "New Tab", 60)
+            })
+            .unwrap();
+        assert_eq!(
+            log.take(),
+            [
+                start("Chrome", None, 0),
+                Call::End { id: 1, at: 0 },
+                start("Public", Some("https://a.com/x"), 0),
+                Call::End { id: 2, at: 60 },
+                start("New Tab", None, 60),
             ]
         );
     }
