@@ -98,6 +98,7 @@ pub fn run() {
             host::commands::providers::ai_provider_has_key,
             host::commands::providers::ai_provider_list_models,
             host::commands::settings::settings_get,
+            host::commands::settings::settings_take_load_issue,
             host::commands::settings::settings_set_min_session_seconds,
             host::commands::settings::settings_add_exclusion,
             host::commands::settings::settings_remove_exclusion,

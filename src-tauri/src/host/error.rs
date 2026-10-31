@@ -6,6 +6,7 @@ use serde::Serialize;
 use crate::ai::model_download::ModelDownloadError;
 use crate::categorization::application::ai_run::AiRunError;
 use crate::categorization::application::rules::RuleError;
+use crate::settings::SettingsError;
 use crate::taxonomy::TaxonomyError;
 
 #[derive(Debug, Serialize)]
@@ -73,6 +74,15 @@ impl From<AiRunError> for IpcError {
             AiRunError::AlreadyRunning => Self::new("already_running", err.to_string()),
             AiRunError::NoCategories => Self::new("no_categories", err.to_string()),
             AiRunError::Failed(cause) => Self::internal(format!("{cause:#}")),
+        }
+    }
+}
+
+impl From<SettingsError> for IpcError {
+    fn from(err: SettingsError) -> Self {
+        match err {
+            SettingsError::Invalid(message) => Self::invalid_input(message),
+            SettingsError::Failed(cause) => Self::internal(format!("{cause:#}")),
         }
     }
 }

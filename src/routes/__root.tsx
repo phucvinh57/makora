@@ -23,6 +23,7 @@ import {
 import { useBackgroundTaskSync } from "@/hooks/useBackgroundTasks";
 import { useNavigationRequests } from "@/hooks/useNavigationRequests";
 import { FLAG_CODEC, usePersistentState } from "@/hooks/usePersistentState";
+import { useSettingsLoadIssue } from "@/hooks/useSettingsLoadIssue";
 import { cn } from "@/lib/utils";
 
 type NavItem = {
@@ -87,6 +88,7 @@ function RootLayout() {
   );
   useBackgroundTaskSync();
   useNavigationRequests();
+  useSettingsLoadIssue();
 
   return (
     <div className="flex h-screen box-border">
