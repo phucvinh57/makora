@@ -15,12 +15,20 @@ impl KeyKind {
             Self::Domain => "domain",
         }
     }
+}
 
-    /// Reads a `sources.kind` value; the column's `CHECK` allows nothing but these two.
-    pub fn from_db(value: &str) -> Self {
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown source kind {0:?}")]
+pub struct UnknownKeyKind(pub String);
+
+impl TryFrom<&str> for KeyKind {
+    type Error = UnknownKeyKind;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value {
-            "domain" => Self::Domain,
-            _ => Self::Exe,
+            "exe" => Ok(Self::Exe),
+            "domain" => Ok(Self::Domain),
+            _ => Err(UnknownKeyKind(value.to_string())),
         }
     }
 }
@@ -179,5 +187,18 @@ pub(crate) fn domain_of(url: &str) -> Option<String> {
         None
     } else {
         Some(host)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_key_kind_reads_back_what_it_writes_and_nothing_else() {
+        for kind in [KeyKind::Exe, KeyKind::Domain] {
+            assert_eq!(KeyKind::try_from(kind.as_str()), Ok(kind));
+        }
+        assert_eq!(KeyKind::try_from("Exe"), Err(UnknownKeyKind("Exe".to_string())));
     }
 }

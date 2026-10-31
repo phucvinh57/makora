@@ -35,14 +35,18 @@ impl RuleKind {
             Self::Pattern => "pattern",
         }
     }
+}
 
-    pub fn from_db(value: &str) -> Option<Self> {
+impl TryFrom<&str> for RuleKind {
+    type Error = UnknownValue;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value {
-            "app" => Some(Self::App),
-            "site" => Some(Self::Site),
-            "page" => Some(Self::Page),
-            "pattern" => Some(Self::Pattern),
-            _ => None,
+            "app" => Ok(Self::App),
+            "site" => Ok(Self::Site),
+            "page" => Ok(Self::Page),
+            "pattern" => Ok(Self::Pattern),
+            _ => Err(UnknownValue::new("rule kind", value)),
         }
     }
 }
@@ -63,13 +67,33 @@ impl PatternField {
             Self::App => "app",
         }
     }
+}
 
-    pub fn from_db(value: &str) -> Option<Self> {
+impl TryFrom<&str> for PatternField {
+    type Error = UnknownValue;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value {
-            "url" => Some(Self::Url),
-            "title" => Some(Self::Title),
-            "app" => Some(Self::App),
-            _ => None,
+            "url" => Ok(Self::Url),
+            "title" => Ok(Self::Title),
+            "app" => Ok(Self::App),
+            _ => Err(UnknownValue::new("pattern field", value)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown {what} {value:?}")]
+pub struct UnknownValue {
+    what: &'static str,
+    value: String,
+}
+
+impl UnknownValue {
+    fn new(what: &'static str, value: &str) -> Self {
+        Self {
+            what,
+            value: value.to_string(),
         }
     }
 }

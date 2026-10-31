@@ -12,6 +12,7 @@ use diesel::sqlite::SqliteConnection;
 use diesel::{sql_query, QueryResult, QueryableByName, RunQueryDsl};
 
 use crate::db::sql::{bind_all, count, in_clause, Param};
+use crate::tracking::domain::source_key::KeyKind;
 
 use super::window::{overlaps, sum_seconds, WITH_WINDOW};
 use super::{CategoryScope, Window};
@@ -80,7 +81,7 @@ pub struct ReviewRow {
 #[derive(QueryableByName)]
 pub struct ReviewGroupRow {
     #[diesel(sql_type = Text)]
-    pub key_kind: String,
+    pub key_kind: KeyKind,
     #[diesel(sql_type = Text)]
     pub key: String,
     #[diesel(sql_type = Text)]

@@ -8,24 +8,21 @@ use diesel::QueryResult;
 use crate::db::models::{ActivityIdentityRow, CategoryRuleRow};
 use crate::db::{self};
 use crate::shared::ids::RuleId;
-use crate::tracking::domain::source_key::KeyKind;
 
-use super::domain::rules::{ActivityFacts, CategoryRule, PatternField, RuleKind, RuleMatcher, RuleSet};
+use super::domain::rules::{ActivityFacts, CategoryRule, RuleMatcher, RuleSet};
 
-/// A stored rule as a domain one. `None` for a row the current code cannot read, which is left
+/// A stored rule as a domain one. `None` for a value the current matcher rejects, which is left
 /// alone rather than failing every write that needs the rules.
 pub fn rule_from_row(row: CategoryRuleRow) -> Option<CategoryRule> {
-    let kind = RuleKind::from_db(&row.kind)?;
-    let field = PatternField::from_db(&row.field);
     Some(CategoryRule {
         id: RuleId::from(row.id),
-        matcher: RuleMatcher::parse(kind, field, &row.value).ok()?,
+        matcher: RuleMatcher::parse(row.kind, row.field, &row.value).ok()?,
     })
 }
 
 pub fn facts_of(row: &ActivityIdentityRow) -> ActivityFacts {
     ActivityFacts::new(
-        KeyKind::from_db(&row.source_kind),
+        row.source_kind,
         &row.source_key,
         &row.source_name,
         &row.path,

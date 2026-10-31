@@ -15,6 +15,7 @@ pub mod schema;
 pub mod sessions;
 pub(crate) mod sql;
 pub mod sources;
+mod text_enums;
 mod traits;
 
 use std::path::Path;

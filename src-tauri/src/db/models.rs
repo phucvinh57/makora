@@ -1,6 +1,9 @@
 use diesel::prelude::*;
 
 use super::schema::{activities, ai_labels, categories, category_rules, sessions, sources};
+use super::text_enums::PatternFieldColumn;
+use crate::categorization::domain::rules::{PatternField, RuleKind};
+use crate::tracking::domain::source_key::KeyKind;
 
 #[derive(Debug, Clone, Queryable, Selectable, Identifiable)]
 #[diesel(table_name = categories)]
@@ -36,7 +39,7 @@ pub struct CategoryChanges<'a> {
 #[diesel(table_name = sources)]
 pub struct SourceRow {
     pub id: i64,
-    pub kind: String,
+    pub kind: KeyKind,
     pub key: String,
     pub name: String,
 }
@@ -98,8 +101,9 @@ pub struct AiLabelRow {
 pub struct CategoryRuleRow {
     pub id: i64,
     pub category_id: i64,
-    pub kind: String,
-    pub field: String,
+    pub kind: RuleKind,
+    #[diesel(deserialize_as = PatternFieldColumn)]
+    pub field: Option<PatternField>,
     pub value: String,
 }
 
@@ -115,7 +119,7 @@ pub struct CategoryRuleValues<'a> {
 #[derive(Debug, Clone, Queryable)]
 pub struct ActivityIdentityRow {
     pub id: i64,
-    pub source_kind: String,
+    pub source_kind: KeyKind,
     pub source_key: String,
     pub source_name: String,
     pub path: String,
@@ -129,7 +133,7 @@ pub struct CategorizedEmbeddingRow {
     #[diesel(sql_type = diesel::sql_types::BigInt)]
     pub activity_id: i64,
     #[diesel(sql_type = diesel::sql_types::Text)]
-    pub source_kind: String,
+    pub source_kind: KeyKind,
     #[diesel(sql_type = diesel::sql_types::Text)]
     pub source_key: String,
     #[diesel(sql_type = diesel::sql_types::Text)]

@@ -13,7 +13,7 @@ use crate::taxonomy::store::load_tree;
 use crate::tracking::domain::source_key::{source_url, KeyKind};
 
 use super::types::{
-    ActivityStats, AppStat, CategoryFilter, CategorySource, CategorySourceFilter, CategoryStat, DailyStat,
+    ActivityStats, AppStat, CategoryFilter, CategorySourceFilter, CategoryStat, DailyStat,
     Paging, SessionFilter, SessionRow, SessionsPage,
 };
 
@@ -93,7 +93,7 @@ fn to_session_query(conn: &mut SqliteConnection, filter: &SessionFilter) -> Resu
 }
 
 fn to_session_row(row: reporting::history::SessionListRow) -> SessionRow {
-    let source_kind = KeyKind::from_db(&row.source_kind);
+    let source_kind = row.source_kind;
     let url = (source_kind == KeyKind::Domain).then(|| source_url(&row.source_key, &row.path));
     SessionRow {
         id: row.id.into(),
@@ -109,7 +109,7 @@ fn to_session_row(row: reporting::history::SessionListRow) -> SessionRow {
         category_name: row.category_name,
         category_color: row.category_color,
         category_is_pinned: row.category_is_pinned,
-        category_source: row.category_source.as_deref().and_then(CategorySource::from_db),
+        category_source: row.category_source,
     }
 }
 
@@ -126,7 +126,7 @@ fn to_category_stat(row: reporting::history::CategoryStatRow) -> CategoryStat {
 fn to_app_stat(row: reporting::history::AppStatRow) -> AppStat {
     AppStat {
         label: row.label,
-        kind: KeyKind::from_db(&row.kind),
+        kind: row.kind,
         category_color: row.category_color,
         total_seconds: row.total_seconds,
         session_count: row.session_count,

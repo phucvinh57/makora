@@ -131,17 +131,17 @@ impl RuleSvc for SqliteRules {
             .collect();
         let mut views: Vec<CategoryRuleView> = db::category_rules::CategoryRulesRepo::get_list(&mut *conn)?
             .into_iter()
-            .filter_map(|row| {
+            .map(|row| {
                 let (activity_count, total_seconds) = stats.get(&row.id).copied().unwrap_or((0, 0.0));
-                Some(CategoryRuleView {
+                CategoryRuleView {
                     id: RuleId::from(row.id),
-                    kind: RuleKind::from_db(&row.kind)?,
-                    field: PatternField::from_db(&row.field),
+                    kind: row.kind,
+                    field: row.field,
                     value: row.value,
                     category_id: CategoryId::from(row.category_id),
                     activity_count,
                     total_seconds,
-                })
+                }
             })
             .collect();
         views.reverse();
@@ -189,7 +189,7 @@ impl RuleSvc for SqliteRules {
             .into_iter()
             .filter_map(|row| {
                 let facts = ActivityFacts::new(
-                    KeyKind::from_db(&row.source_kind),
+                    row.source_kind,
                     &row.source_key,
                     &row.source_name,
                     &row.path,
@@ -224,7 +224,7 @@ impl RuleSvc for SqliteRules {
         Ok(RulesReportRepo::get_source_suggestions(&mut *conn, &Window::until(Utc::now()))?
             .into_iter()
             .map(|row| SourceSuggestion {
-                kind: KeyKind::from_db(&row.kind),
+                kind: row.kind,
                 key: row.key,
                 name: row.name,
                 total_seconds: row.total_seconds,
@@ -243,7 +243,7 @@ fn sample_label(row: &crate::reporting::rules::ActivityPreviewRow) -> String {
     if !row.title.is_empty() {
         return row.title.clone();
     }
-    match KeyKind::from_db(&row.source_kind) {
+    match row.source_kind {
         KeyKind::Domain => format!("{}{}", row.source_key, row.path),
         KeyKind::Exe => row.source_name.clone(),
     }

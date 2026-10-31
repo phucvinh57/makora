@@ -44,13 +44,19 @@ pub enum CategorySource {
     Ai,
 }
 
-impl CategorySource {
-    pub fn from_db(value: &str) -> Option<Self> {
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown category source {0:?}")]
+pub struct UnknownCategorySource(pub String);
+
+impl TryFrom<&str> for CategorySource {
+    type Error = UnknownCategorySource;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
         match value {
-            "manual" => Some(Self::Manual),
-            "rule" => Some(Self::Rule),
-            "ai" => Some(Self::Ai),
-            _ => None,
+            "manual" => Ok(Self::Manual),
+            "rule" => Ok(Self::Rule),
+            "ai" => Ok(Self::Ai),
+            _ => Err(UnknownCategorySource(value.to_string())),
         }
     }
 }

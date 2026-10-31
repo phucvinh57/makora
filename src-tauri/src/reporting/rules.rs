@@ -3,6 +3,7 @@ use diesel::sqlite::SqliteConnection;
 use diesel::{sql_query, QueryResult, QueryableByName, RunQueryDsl};
 
 use crate::db::sql::{bind_all, Param};
+use crate::tracking::domain::source_key::KeyKind;
 
 use super::window::{overlaps, sum_seconds, WITH_WINDOW};
 use super::Window;
@@ -22,7 +23,7 @@ pub struct RuleStatRow {
 #[derive(QueryableByName)]
 pub struct SourceSuggestionRow {
     #[diesel(sql_type = Text)]
-    pub kind: String,
+    pub kind: KeyKind,
     #[diesel(sql_type = Text)]
     pub key: String,
     #[diesel(sql_type = Text)]
@@ -42,7 +43,7 @@ pub struct PathSecondsRow {
 #[derive(QueryableByName)]
 pub struct ActivityPreviewRow {
     #[diesel(sql_type = Text)]
-    pub source_kind: String,
+    pub source_kind: KeyKind,
     #[diesel(sql_type = Text)]
     pub source_key: String,
     #[diesel(sql_type = Text)]
