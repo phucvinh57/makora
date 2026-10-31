@@ -3,24 +3,31 @@ use std::path::Path;
 use std::sync::mpsc::Sender;
 use std::thread;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HWND};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::RemoteDesktop::{WTSRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION};
 use windows_sys::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows_sys::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetForegroundWindow, GetMessageW, GetWindowTextW, GetWindowThreadProcessId, CHILDID_SELF,
-    EVENT_OBJECT_NAMECHANGE, EVENT_SYSTEM_FOREGROUND, MSG, OBJID_WINDOW, WINEVENT_OUTOFCONTEXT,
+    CreateWindowExW, DefWindowProcW, DispatchMessageW, GetForegroundWindow, GetMessageW, GetWindowTextW,
+    GetWindowThreadProcessId, RegisterClassW, TranslateMessage, CHILDID_SELF, EVENT_OBJECT_NAMECHANGE,
+    EVENT_SYSTEM_FOREGROUND, MSG, OBJID_WINDOW, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND, PBT_APMSUSPEND,
+    WINEVENT_OUTOFCONTEXT, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WNDCLASSW, WTS_SESSION_LOCK,
+    WTS_SESSION_UNLOCK,
 };
 
 use crate::tracking::adapters::model::{AppInfo, FocusEvent, WatchEvent};
+use crate::tracking::adapters::presence::PresenceState;
 use crate::tracking::adapters::watcher::FocusWatcher;
 
 thread_local! {
-    static EVENT_TX: RefCell<Option<Sender<WatchEvent>>> = RefCell::new(None);
+    static EVENT_TX: RefCell<Option<Sender<WatchEvent>>> = const { RefCell::new(None) };
+    static PRESENCE: RefCell<Option<(PresenceState, Sender<WatchEvent>)>> = const { RefCell::new(None) };
 }
 
 #[derive(Default)]
@@ -195,4 +202,84 @@ fn process_exe_path(process_id: u32) -> Option<String> {
         }
         Some(String::from_utf16_lossy(&buf[..size as usize]))
     }
+}
+
+/// Lock/unlock and suspend/resume arrive as window messages, so a hidden top-level window (a
+/// message-only one misses the power broadcast) pumps them on a thread of its own.
+pub fn start_presence_watcher(tx: Sender<WatchEvent>) -> Result<()> {
+    thread::Builder::new()
+        .name("makora-presence-watcher".into())
+        .spawn(move || run_presence_loop(tx))
+        .context("spawning presence-watcher thread")?;
+    Ok(())
+}
+
+fn run_presence_loop(tx: Sender<WatchEvent>) {
+    let mut state = PresenceState::default();
+    if !state.apply_snapshot(false, false, &tx) {
+        return;
+    }
+    PRESENCE.with(|cell| *cell.borrow_mut() = Some((state, tx)));
+
+    let class_name: Vec<u16> = "MakoraPresenceWatcher\0".encode_utf16().collect();
+    unsafe {
+        let instance = GetModuleHandleW(std::ptr::null());
+        let class = WNDCLASSW {
+            lpfnWndProc: Some(presence_window_proc),
+            hInstance: instance,
+            lpszClassName: class_name.as_ptr(),
+            ..std::mem::zeroed()
+        };
+        if RegisterClassW(&class) == 0 {
+            tracing::error!("RegisterClassW failed; lock and sleep are not tracked");
+            return;
+        }
+        let window = CreateWindowExW(
+            0,
+            class_name.as_ptr(),
+            std::ptr::null(),
+            0,
+            0,
+            0,
+            0,
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            instance,
+            std::ptr::null(),
+        );
+        if window.is_null() {
+            tracing::error!("CreateWindowExW failed; lock and sleep are not tracked");
+            return;
+        }
+        if WTSRegisterSessionNotification(window, NOTIFY_FOR_THIS_SESSION) == 0 {
+            tracing::warn!("WTSRegisterSessionNotification failed; screen lock is not tracked");
+        }
+
+        let mut msg: MSG = std::mem::zeroed();
+        while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+}
+
+unsafe extern "system" fn presence_window_proc(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let change: Option<fn(&mut PresenceState, &Sender<WatchEvent>) -> bool> = match (message, wparam as u32) {
+        (WM_WTSSESSION_CHANGE, WTS_SESSION_LOCK) => Some(|state, tx| state.set_locked(true, tx)),
+        (WM_WTSSESSION_CHANGE, WTS_SESSION_UNLOCK) => Some(|state, tx| state.set_locked(false, tx)),
+        (WM_POWERBROADCAST, PBT_APMSUSPEND) => Some(|state, tx| state.set_sleeping(true, tx)),
+        (WM_POWERBROADCAST, PBT_APMRESUMEAUTOMATIC | PBT_APMRESUMESUSPEND) => {
+            Some(|state, tx| state.set_sleeping(false, tx))
+        }
+        _ => None,
+    };
+    if let Some(change) = change {
+        PRESENCE.with(|cell| {
+            if let Some((state, tx)) = cell.borrow_mut().as_mut() {
+                change(state, tx);
+            }
+        });
+    }
+    DefWindowProcW(window, message, wparam, lparam)
 }

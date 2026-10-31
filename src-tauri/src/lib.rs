@@ -161,7 +161,6 @@ pub fn run() {
             app.manage(tracker.clone());
             let (tx, rx) = mpsc::channel::<WatchEvent>();
 
-            #[cfg(target_os = "linux")]
             crate::tracking::adapters::platform::start_presence_watcher(tx.clone())
                 .context("starting presence watcher")?;
 

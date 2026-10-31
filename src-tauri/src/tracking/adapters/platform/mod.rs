@@ -1,13 +1,13 @@
 #[cfg(target_os = "windows")]
 mod windows;
 #[cfg(target_os = "windows")]
-pub use windows::WindowsFocusWatcher as PlatformFocusWatcher;
+pub use windows::{start_presence_watcher, WindowsFocusWatcher as PlatformFocusWatcher};
 
 #[cfg(target_os = "macos")]
 mod macos;
 
 #[cfg(target_os = "macos")]
-pub use macos::MacFocusWatcher as PlatformFocusWatcher;
+pub use macos::{start_presence_watcher, MacFocusWatcher as PlatformFocusWatcher};
 
 #[cfg(target_os = "linux")]
 mod linux;

@@ -4,14 +4,14 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
-use chrono::Utc;
 use tracing::{info, warn};
 use zbus::blocking::{fdo::DBusProxy, Connection, MessageIterator, Proxy};
 use zbus::message::Type as MessageType;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 use zbus::MatchRule;
 
-use crate::tracking::adapters::model::{PresenceEvent, WatchEvent};
+use crate::tracking::adapters::model::WatchEvent;
+use crate::tracking::adapters::presence::PresenceState;
 
 const LOGIN_SERVICE: &str = "org.freedesktop.login1";
 const MANAGER_PATH: &str = "/org/freedesktop/login1";
@@ -244,52 +244,4 @@ fn prepare_for_sleep_rule() -> Result<MatchRule<'static>> {
         .member("PrepareForSleep")?
         .build()
         .to_owned())
-}
-
-#[derive(Default)]
-struct PresenceState {
-    locked: bool,
-    sleeping: bool,
-    last_present: Option<bool>,
-}
-
-impl PresenceState {
-    fn apply_snapshot(&mut self, locked: bool, sleeping: bool, tx: &Sender<WatchEvent>) -> bool {
-        self.locked = locked;
-        self.sleeping = sleeping;
-        self.publish_if_changed(tx)
-    }
-
-    fn set_locked(&mut self, locked: bool, tx: &Sender<WatchEvent>) -> bool {
-        self.locked = locked;
-        self.publish_if_changed(tx)
-    }
-
-    fn set_sleeping(&mut self, sleeping: bool, tx: &Sender<WatchEvent>) -> bool {
-        self.sleeping = sleeping;
-        self.publish_if_changed(tx)
-    }
-
-    fn transition(&mut self) -> Option<bool> {
-        let present = !self.locked && !self.sleeping;
-        if self.last_present == Some(present) {
-            return None;
-        }
-        self.last_present = Some(present);
-        Some(present)
-    }
-
-    fn publish_if_changed(&mut self, tx: &Sender<WatchEvent>) -> bool {
-        let Some(present) = self.transition() else {
-            return true;
-        };
-        tx.send(
-            PresenceEvent {
-                present,
-                timestamp: Utc::now(),
-            }
-            .into(),
-        )
-        .is_ok()
-    }
 }
