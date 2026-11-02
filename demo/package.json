@@ -11,16 +11,16 @@
     "poster": "remotion still src/index.ts MakoraDemo out/poster.png --frame=1215"
   },
   "dependencies": {
-    "@remotion/cli": "4.0.534",
-    "react": "19.3.0",
-    "react-dom": "19.3.0",
-    "remotion": "4.0.534"
+    "@remotion/cli": "4.0.539",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "remotion": "4.0.539"
   },
   "devDependencies": {
-    "@types/node": "^26.6.4",
+    "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "playwright-core": "^1.64.0",
+    "playwright-core": "^1.64.1",
     "typescript": "^7.0.2"
   }
 }
