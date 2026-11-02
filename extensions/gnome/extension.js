@@ -112,7 +112,7 @@ class FocusReporter {
 
     return [
       true,
-      pid > 0 ? pid : 0,
+      Math.max(pid, 0),
       app ? app.get_id() : "",
       win.get_wm_class() ?? "",
       win.get_title() ?? "",
