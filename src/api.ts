@@ -140,7 +140,11 @@ export const activity = {
     return call("activity_stats", { start, end });
   },
 
-  setCategory(activityIds: number[], categoryId: number | null): Promise<void> {
+  /** Resolves to the prior classifications, for {@link session.undoCategory}. */
+  setCategory(
+    activityIds: number[],
+    categoryId: number | null,
+  ): Promise<ActivityClassification[]> {
     return call("activity_set_category", { activityIds, categoryId });
   },
 };
@@ -239,7 +243,8 @@ export const aiReview = {
     return call("ai_review_list_groups", { page, pageSize, filter });
   },
 
-  accept(activityIds: number[]): Promise<void> {
+  /** Resolves to the prior classifications, for {@link session.undoCategory}. */
+  accept(activityIds: number[]): Promise<ActivityClassification[]> {
     return call("ai_review_accept", { activityIds });
   },
 

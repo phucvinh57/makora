@@ -13,13 +13,10 @@ import { UNCATEGORIZED } from "@/categories";
 import { PaginationControls } from "@/components/PaginationControls";
 import { useCategories } from "@/hooks/useCategories";
 import { useDebouncedCallback } from "@/hooks/useDebouncedCallback";
+import { useUndoCategorization } from "@/hooks/useUndoCategorization";
 import { parseOneOf } from "@/lib/utils";
 import { invalidateCategorizationQueries, queryKeys } from "@/queries";
-import type {
-  ActivityClassification,
-  HistorySourceFilter,
-  SessionRow,
-} from "@/types";
+import type { HistorySourceFilter, SessionRow } from "@/types";
 import { BulkActionsBar } from "./-components/BulkActionsBar";
 import {
   ALL_CATEGORIES,
@@ -195,19 +192,7 @@ function HistoryPage() {
     }
   }, [settled, page, pageCount, navigate]);
 
-  const { mutate: undoCategory } = useMutation({
-    mutationFn: session.undoCategory,
-    onSuccess: () => {
-      toast.success("Undone");
-      return invalidateCategorizationQueries(queryClient);
-    },
-    onError: (err) => toast.error(String(err)),
-  });
-
-  const undoAction = (prior: ActivityClassification[]) => ({
-    label: "Undo",
-    onClick: () => undoCategory(prior),
-  });
+  const undoAction = useUndoCategorization();
 
   const { mutate: changeRowCategory } = useMutation({
     mutationFn: async ({ row, value }: { row: SessionRow; value: string }) => {
@@ -248,7 +233,12 @@ function HistoryPage() {
 
   const { mutate: acceptAiLabel } = useMutation({
     mutationFn: (row: SessionRow) => aiReview.accept([row.activity_id]),
-    onSuccess: () => invalidateCategorizationQueries(queryClient),
+    onSuccess: (prior) => {
+      toast.success("Accepted the AI suggestion", {
+        action: undoAction(prior),
+      });
+      return invalidateCategorizationQueries(queryClient);
+    },
     onError: (err) => toast.error(String(err)),
   });
 

@@ -17,9 +17,8 @@ function Toaster(props: React.ComponentProps<typeof SonnerToaster>) {
       }
       toastOptions={{
         classNames: {
-          toast: "flex-wrap! items-start!",
           content: "flex-1! min-w-0!",
-          actionButton: "basis-full! mt-2!",
+          actionButton: "shrink-0!",
         },
       }}
       {...props}

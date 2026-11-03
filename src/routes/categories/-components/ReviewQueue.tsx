@@ -27,6 +27,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useCategories } from "@/hooks/useCategories";
+import { useUndoCategorization } from "@/hooks/useUndoCategorization";
 import { formatSeconds } from "@/duration";
 import { invalidateCategorizationQueries, queryKeys } from "@/queries";
 import { UNCATEGORIZED } from "@/categories";
@@ -99,10 +100,17 @@ export function ReviewQueue() {
     setExpanded(new Set());
   }
 
+  const undoAction = useUndoCategorization();
   const acceptMutation = useMutation({
     mutationFn: (ids: number[]) => aiReview.accept(ids),
-    onSuccess: () => {
+    onSuccess: (prior, ids) => {
       setSelected(new Set());
+      toast.success(
+        ids.length === 1
+          ? "Accepted the AI suggestion"
+          : `Accepted ${ids.length} AI suggestions`,
+        { action: undoAction(prior) },
+      );
       return invalidateCategorizationQueries(queryClient);
     },
     onError: (err) => toast.error(String(err)),
@@ -115,8 +123,16 @@ export function ReviewQueue() {
       ids: number[];
       categoryId: number | null;
     }) => activity.setCategory(ids, categoryId),
-    onSuccess: () => {
+    onSuccess: (prior, { ids, categoryId }) => {
       setSelected(new Set());
+      const count =
+        ids.length === 1 ? "1 activity" : `${ids.length} activities`;
+      toast.success(
+        categoryId === null
+          ? `Rejected the AI suggestion for ${count}`
+          : `Set ${count} to ${picker.pathById.get(categoryId) ?? "category"}`,
+        { action: undoAction(prior) },
+      );
       return invalidateCategorizationQueries(queryClient);
     },
     onError: (err) => toast.error(String(err)),
