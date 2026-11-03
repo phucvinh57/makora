@@ -25,7 +25,6 @@ pub fn start_presence_watcher(tx: Sender<WatchEvent>) -> Result<()> {
     let mut state = PresenceState::default();
     let initial = match WatchConnection::connect() {
         Ok(watch) => {
-            info!("presence watcher using systemd-logind");
             if !state.apply_snapshot(watch.locked, watch.sleeping, &tx) {
                 return Ok(());
             }

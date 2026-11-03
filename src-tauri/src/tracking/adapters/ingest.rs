@@ -35,9 +35,8 @@ pub fn spawn(tracker: Arc<Mutex<Box<dyn SessionTracker>>>) {
     let spawned = thread::Builder::new()
         .name("makora-tab-ingest".into())
         .spawn(move || accept(listener, tracker));
-    match spawned {
-        Ok(_) => info!("listening for browser tab events"),
-        Err(err) => warn!(error = %err, "browser tab tracking disabled: cannot spawn the listener thread"),
+    if let Err(err) = spawned {
+        warn!(error = %err, "browser tab tracking disabled: cannot spawn the listener thread");
     }
 }
 

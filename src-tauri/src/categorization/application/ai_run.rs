@@ -212,8 +212,7 @@ impl AiRunState {
             }
             Err(err) => warn!(error = format!("{err:#}"), model = %models.embedding, "embedding activities failed; labeling without related examples"),
         }
-        let embed_ms = started.elapsed().as_millis();
-        tally.embed_ms = u64::try_from(embed_ms).unwrap_or(u64::MAX);
+        tally.embed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         if cancelled() {
             return Ok(AiRunOutcome {
                 labeled: 0,
@@ -241,13 +240,6 @@ impl AiRunState {
                 .map(|query| top_related(query, &candidates, id, RELATED_COUNT))
                 .unwrap_or_default()
         };
-        info!(
-            embed_ms,
-            candidates = candidates.len(),
-            pending = total,
-            "run prepared"
-        );
-
         let (mut changed, mut stopped) = (0, false);
         let mut save_error = None;
         let labeling = Instant::now();
