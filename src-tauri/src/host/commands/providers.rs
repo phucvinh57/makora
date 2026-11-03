@@ -183,7 +183,7 @@ mod tests {
     use anyhow::{anyhow, Result};
 
     use super::*;
-    use crate::settings::{AiSettings, SettingsError, SettingsResult};
+    use crate::settings::{AiSettings, ModelPrice, SettingsError, SettingsResult};
     use crate::shared::sync::lock;
     use crate::tracking::domain::exclusion::Exclusion;
 
@@ -233,6 +233,12 @@ mod tests {
             unreachable!()
         }
         fn remove_provider(&self, _: &str) -> SettingsResult {
+            unreachable!()
+        }
+        fn set_model_price(&self, _: ModelPrice) -> SettingsResult {
+            unreachable!()
+        }
+        fn remove_model_price(&self, _: &str, _: &str) -> SettingsResult {
             unreachable!()
         }
         fn take_load_issue(&self) -> Option<String> {

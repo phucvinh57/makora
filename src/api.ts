@@ -24,6 +24,7 @@ import type {
   LogPage,
   LogQuery,
   ModelDownloadStatus,
+  ModelPrice,
   PathSuggestion,
   PatternField,
   ProviderDraft,
@@ -345,6 +346,14 @@ export const settings = {
 
   setAutoCategorizeHours(hours: number): Promise<Settings> {
     return call("settings_set_auto_categorize_hours", { hours });
+  },
+
+  setModelPrice(price: ModelPrice): Promise<Settings> {
+    return call("settings_set_model_price", { price });
+  },
+
+  removeModelPrice(provider: string, model: string): Promise<Settings> {
+    return call("settings_remove_model_price", { provider, model });
   },
 };
 

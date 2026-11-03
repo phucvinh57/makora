@@ -4,7 +4,7 @@ use diesel::sql_types::{Nullable, Text};
 use diesel::sqlite::SqliteConnection;
 use diesel::QueryResult;
 
-use super::models::{AiModelTotalsRow, AiRunRow, NewAiRunRow};
+use super::models::{AiModelTotalsRow, AiRunRow, AiRunTokensRow, NewAiRunRow};
 use super::schema::ai_runs;
 
 pub use super::traits::AiRunsRepo;
@@ -38,6 +38,18 @@ impl AiRunsRepo for SqliteConnection {
         .bind::<Nullable<Text>, _>(since)
         .bind::<Nullable<Text>, _>(since)
         .load(self)
+    }
+
+    fn get_remote_tokens(&mut self, since: Option<&str>) -> QueryResult<Vec<AiRunTokensRow>> {
+        let mut query = ai_runs::table
+            .filter(ai_runs::provider.is_not_null())
+            .order((ai_runs::started_at.asc(), ai_runs::id.asc()))
+            .select(AiRunTokensRow::as_select())
+            .into_boxed();
+        if let Some(since) = since {
+            query = query.filter(ai_runs::started_at.ge(since));
+        }
+        query.load(self)
     }
 }
 
@@ -112,5 +124,19 @@ mod tests {
         let recent = conn.get_totals_by_model(Some("2026-03-02T00:00:00+00:00")).unwrap();
         let summary: Vec<(&str, i64)> = recent.iter().map(|row| (row.model.as_str(), row.runs)).collect();
         assert_eq!(summary, [("qwen", 1), ("gpt", 1)]);
+    }
+
+    #[test]
+    fn remote_tokens_leave_out_the_local_model() {
+        let mut conn = open_in_memory();
+        conn.insert(&run(Some("openai"), "gpt", "2026-03-03T10:00:00+00:00", 20)).unwrap();
+        conn.insert(&run(None, "qwen", "2026-03-02T10:00:00+00:00", 30)).unwrap();
+        conn.insert(&run(Some("openai"), "gpt", "2026-03-01T10:00:00+00:00", 10)).unwrap();
+
+        let all: Vec<i64> = conn.get_remote_tokens(None).unwrap().iter().map(|row| row.output_tokens).collect();
+        assert_eq!(all, [10, 20]);
+        let recent = conn.get_remote_tokens(Some("2026-03-02T00:00:00+00:00")).unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].started_at, "2026-03-03T10:00:00+00:00");
     }
 }

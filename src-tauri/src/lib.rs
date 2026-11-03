@@ -110,6 +110,8 @@ pub fn run() {
             host::commands::settings::settings_set_llm,
             host::commands::settings::settings_set_embedding_model,
             host::commands::settings::settings_set_auto_categorize_hours,
+            host::commands::settings::settings_set_model_price,
+            host::commands::settings::settings_remove_model_price,
             host::commands::logs::logs_query,
             host::commands::logs::logs_network_summary,
             host::commands::logs::logs_dir,

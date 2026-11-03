@@ -6,11 +6,11 @@ import {
 } from "@tanstack/react-router";
 import {
   BarChart3,
+  Gauge,
   History,
   Hourglass,
   PanelLeftClose,
   PanelLeftOpen,
-  ScrollText,
   Settings as SettingsIcon,
   Tags,
 } from "lucide-react";
@@ -37,7 +37,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/statistics", label: "Statistics", icon: BarChart3 },
   { to: "/categories", label: "Categories", icon: Tags },
   { to: "/history", label: "History", icon: History },
-  { to: "/logs", label: "Logs", icon: ScrollText },
+  { to: "/insights", label: "Insights", icon: Gauge },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 

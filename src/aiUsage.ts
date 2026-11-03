@@ -1,5 +1,5 @@
 import { formatSeconds } from "./duration";
-import type { ModelUsage, RunUsage } from "./types";
+import type { ModelPrice, ModelUsage, RunUsage } from "./types";
 
 type Timings = Pick<
   RunUsage,
@@ -104,4 +104,46 @@ export function speedDetail(
   if (!local) return undefined;
   const prompt = promptTokensPerSecond(usage);
   return prompt === null ? undefined : `Prompt: ${formatRate(prompt, "tok/s")}`;
+}
+
+type Tokens = Pick<
+  RunUsage,
+  "input_tokens" | "cached_input_tokens" | "output_tokens"
+>;
+
+/** The price set for `model` on `provider`; the local model never has one. */
+export function findPrice(
+  prices: ModelPrice[],
+  provider: string | null,
+  model: string,
+): ModelPrice | undefined {
+  if (provider === null) return undefined;
+  return prices.find(
+    (price) => price.provider === provider && price.model === model,
+  );
+}
+
+/** US dollars, with cached prompt tokens at the cached price when one is set. */
+export function estimateCost(tokens: Tokens, price: ModelPrice): number {
+  const cached = Math.min(tokens.cached_input_tokens, tokens.input_tokens);
+  const fresh = tokens.input_tokens - cached;
+  return (
+    (fresh * price.input +
+      cached * (price.cached_input ?? price.input) +
+      tokens.output_tokens * price.output) /
+    1_000_000
+  );
+}
+
+export function formatCost(usd: number | null): string {
+  if (usd === null) return "—";
+  if (usd === 0) return "$0.00";
+  if (usd < 0.01) return "<$0.01";
+  if (usd < 100) return `$${usd.toFixed(2)}`;
+  return `$${Math.round(usd).toLocaleString()}`;
+}
+
+/** The exact figure, for a title. */
+export function formatCostExact(usd: number): string {
+  return `$${usd.toFixed(4)}`;
 }
