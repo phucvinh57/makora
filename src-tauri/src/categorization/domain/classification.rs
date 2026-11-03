@@ -13,9 +13,12 @@
 //!   model said, which is how a confirmation is told from a plain pin);
 //! - merging one activity into another carries a pin along unless the two disagree.
 
+use serde::{Deserialize, Serialize};
+
 use crate::shared::ids::{ActivityId, CategoryId};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct AiSuggestion {
     pub category: CategoryId,
     pub rejected: bool,
@@ -24,7 +27,8 @@ pub struct AiSuggestion {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PinConflict;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct ActivityClassification {
     activity_id: ActivityId,
     pin: Option<CategoryId>,
@@ -92,6 +96,17 @@ impl ActivityClassification {
         }
         if self.active_suggestion().is_some() {
             self.suggestion = None;
+        }
+    }
+
+    /// Puts back the pin and rejection `prior` had, undoing a [`Self::pin_to`] or
+    /// [`Self::unpin`]. A suggestion the model has replaced since is left as it is.
+    pub fn undo_assignment(&mut self, prior: &Self) {
+        self.pin = prior.pin;
+        if let (Some(current), Some(prior)) = (&mut self.suggestion, prior.suggestion) {
+            if current.category == prior.category {
+                current.rejected = prior.rejected;
+            }
         }
     }
 

@@ -10,6 +10,7 @@ use crate::categorization::application::ai_run::{
 use crate::categorization::application::rules::{
     CategoryRuleView, PathSuggestion, RuleDraft, RulePreview, SourceSuggestion,
 };
+use crate::categorization::domain::classification::ActivityClassification;
 use crate::categorization::domain::rules::{PatternField, RuleKind};
 use crate::categorization::domain::usage::RunTrigger;
 use crate::categorization::ports::{Classifier, Embedder, LlmSpec};
@@ -27,7 +28,7 @@ pub fn session_set_row_category(
     classification: State<Box<dyn ClassificationSvc>>,
     session_id: SessionId,
     category_id: Option<CategoryId>,
-) -> Result<(), IpcError> {
+) -> Result<Vec<ActivityClassification>, IpcError> {
     Ok(classification.assign_sessions(&[session_id], category_id)?)
 }
 
@@ -36,8 +37,16 @@ pub fn session_set_category(
     classification: State<Box<dyn ClassificationSvc>>,
     session_ids: Vec<SessionId>,
     category_id: CategoryId,
-) -> Result<(), IpcError> {
+) -> Result<Vec<ActivityClassification>, IpcError> {
     Ok(classification.assign_sessions(&session_ids, Some(category_id))?)
+}
+
+#[tauri::command]
+pub fn session_undo_category(
+    classification: State<Box<dyn ClassificationSvc>>,
+    prior: Vec<ActivityClassification>,
+) -> Result<(), IpcError> {
+    Ok(classification.undo_assignment(&prior)?)
 }
 
 #[tauri::command]

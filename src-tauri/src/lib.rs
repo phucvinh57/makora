@@ -76,6 +76,7 @@ pub fn run() {
             host::commands::taxonomy::category_delete,
             host::commands::categorization::session_set_row_category,
             host::commands::categorization::session_set_category,
+            host::commands::categorization::session_undo_category,
             host::commands::categorization::activity_set_category,
             host::commands::categorization::ai_review_accept,
             host::commands::categorization::categorization_reset,

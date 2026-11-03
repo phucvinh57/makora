@@ -3,20 +3,27 @@
 //! all in one transaction; the rules themselves are in
 //! [`crate::categorization::domain::classification`].
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use diesel::sqlite::SqliteConnection;
 use diesel::{Connection, QueryResult};
 
+use crate::categorization::domain::classification::ActivityClassification;
 use crate::categorization::store;
 use crate::db::{self, Db};
 use crate::domain::types::AiVerdict;
 use crate::shared::ids::{raw, ActivityId, CategoryId, SessionId};
 
 pub trait ClassificationSvc: Send + Sync {
-    fn assign_sessions(&self, session_ids: &[SessionId], category_id: Option<CategoryId>) -> Result<()>;
+    /// Returns the classifications as they were before, for [`Self::undo_assignment`].
+    fn assign_sessions(
+        &self,
+        session_ids: &[SessionId],
+        category_id: Option<CategoryId>,
+    ) -> Result<Vec<ActivityClassification>>;
     fn assign_activities(&self, activity_ids: &[ActivityId], category_id: Option<CategoryId>) -> Result<()>;
+    fn undo_assignment(&self, prior: &[ActivityClassification]) -> Result<()>;
     /// Stores the model's verdicts; a verdict without a category forgets an answer the model no
     /// longer stands by. A manual pin made in the meantime is untouched: reads prefer it over
     /// the AI label. Returns how many labels actually changed.
@@ -36,7 +43,11 @@ impl SqliteClassification {
 
 }
 
-fn assign(conn: &mut SqliteConnection, activity_ids: &[ActivityId], category_id: Option<CategoryId>) -> QueryResult<()> {
+fn assign(
+    conn: &mut SqliteConnection,
+    activity_ids: &[ActivityId],
+    category_id: Option<CategoryId>,
+) -> QueryResult<Vec<ActivityClassification>> {
     store::modify_many(conn, activity_ids, |classifications| {
         for classification in classifications {
             match category_id {
@@ -45,13 +56,17 @@ fn assign(conn: &mut SqliteConnection, activity_ids: &[ActivityId], category_id:
             }
         }
     })
-    .map(|_| ())
+    .map(|(before, _)| before)
 }
 
 impl ClassificationSvc for SqliteClassification {
-    fn assign_sessions(&self, session_ids: &[SessionId], category_id: Option<CategoryId>) -> Result<()> {
+    fn assign_sessions(
+        &self,
+        session_ids: &[SessionId],
+        category_id: Option<CategoryId>,
+    ) -> Result<Vec<ActivityClassification>> {
         if session_ids.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let mut conn = self.db.write();
         conn.transaction(|conn| {
@@ -70,8 +85,29 @@ impl ClassificationSvc for SqliteClassification {
             return Ok(());
         }
         let mut conn = self.db.write();
-        conn.transaction(|conn| assign(conn, activity_ids, category_id))
+        conn.transaction(|conn| assign(conn, activity_ids, category_id).map(|_| ()))
             .map_err(Into::into)
+    }
+
+    fn undo_assignment(&self, prior: &[ActivityClassification]) -> Result<()> {
+        if prior.is_empty() {
+            return Ok(());
+        }
+        let prior: HashMap<ActivityId, &ActivityClassification> =
+            prior.iter().map(|classification| (classification.activity_id(), classification)).collect();
+        let activity_ids: Vec<ActivityId> = prior.keys().copied().collect();
+        let mut conn = self.db.write();
+        conn.transaction(|conn| {
+            store::modify_many(conn, &activity_ids, |classifications| {
+                for classification in classifications {
+                    if let Some(prior) = prior.get(&classification.activity_id()) {
+                        classification.undo_assignment(prior);
+                    }
+                }
+            })
+            .map(|_| ())
+        })
+        .map_err(Into::into)
     }
 
     fn assign_ai(&self, verdicts: &[AiVerdict]) -> Result<usize> {
