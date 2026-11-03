@@ -24,6 +24,7 @@ Database: `makora.sqlite` in Tauri's app-data dir (`~/.local/share/dev.phucvinh5
 - **One worktree per independent change.** Start with `claude -w <name>`, or ask to work in a worktree. Worktrees live in `.claude/worktrees/`. A hook runs `scripts/worktree-setup.sh`, which installs JS deps and points cargo at the main checkout's `target/`. Run it yourself for a worktree made with plain `git worktree add`.
 - **Show the result, don't claim it.** `scripts/check.sh` runs the checks that cover the paths changed since `main` (`--all` runs every check). Report its output. For UI changes, also launch `bun tauri dev` in the background and screenshot the affected screen. The pre-push hook runs `scripts/check.sh` too; don't bypass it with `--no-verify`.
 - **Finish with `/pre-pr`.** It checks, reviews against `REVIEW.md`, commits, and opens the PR. Related changes go up as a stack with `gh stack`. There is no AI review in CI.
+- **Run `/pre-pr` without asking.** When a change is done, run it straight away. If checks pass and review findings are resolved, commit, push and open the PR without waiting for confirmation. Stop and ask only when checks keep failing or findings remain after round 3.
 
 ## Rules
 
