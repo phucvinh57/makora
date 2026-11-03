@@ -367,7 +367,6 @@ fn run(
     meter: &UsageMeter,
     mut on_result: impl FnMut(usize, Option<CategoryId>) -> bool,
 ) -> Result<()> {
-    let setup = Instant::now();
     let threads = inference_threads();
     let mut ctx = model
         .new_context(
@@ -399,7 +398,6 @@ fn run(
     let mut grammar = LlamaSampler::grammar(model, &grammar(choices), "root")
         .map_err(|err| anyhow!("building category grammar: {err}"))?;
     let mut batch = LlamaBatch::new(N_BATCH as usize, 1);
-    info!(setup_ms = setup.elapsed().as_millis(), "inference context ready");
     // Prompt tokens currently held in the KV cache; the shared prefix is reused between items.
     let mut cached: Vec<LlamaToken> = Vec::new();
 
@@ -465,12 +463,6 @@ fn run(
             .map_err(|err| anyhow!("trimming KV cache: {err}"))?;
         cached.clear();
         cached.extend_from_slice(&tokens);
-        debug!(
-            prompt_tokens = tokens.len(),
-            reused = keep,
-            "decoding prompt"
-        );
-
         let last = tokens.len() - 1;
         let prefill = Instant::now();
         for (chunk_index, chunk) in tokens[keep..].chunks(N_BATCH as usize).enumerate() {
@@ -485,15 +477,6 @@ fn run(
         }
 
         let prefill = prefill.elapsed();
-        if index == 0 {
-            info!(
-                prefill_ms = prefill.as_millis(),
-                prompt_tokens = tokens.len(),
-                reused = keep,
-                "first prompt decoded"
-            );
-        }
-
         let decode = Instant::now();
         grammar.reset();
         let mut answer = Vec::new();

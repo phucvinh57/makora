@@ -119,29 +119,26 @@ pub fn run() {
         ])
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
-            match logging::init(&data_dir) {
-                Ok(Some(dir)) => info!(directory = %dir.display(), "writing logs"),
-                Ok(None) => {}
-                Err(err) => eprintln!("makora: failed to start logging: {err:#}"),
+            let config_dir = app.path().app_config_dir()?;
+            if let Err(err) = logging::init(&data_dir) {
+                eprintln!("makora: failed to start logging: {err:#}");
             }
             info!(
                 version = env!("CARGO_PKG_VERSION"),
                 os = std::env::consts::OS,
                 arch = std::env::consts::ARCH,
                 data_dir = %data_dir.display(),
+                config_dir = %config_dir.display(),
                 "Makora started"
             );
             app.manage(Box::new(logs::JsonlLogReader::new(logging::log_dir(&data_dir))) as Box<dyn logs::LogReader>);
 
             let db_path = data_dir.join("makora.sqlite");
-            info!(path = %db_path.display(), "writing sessions");
-
             let conn = db::open_sqlite(&db_path).map_err(|err| {
                 anyhow::anyhow!("opening database at {}: {err:#}", db_path.display())
             })?;
 
-            let settings_path = app.path().app_config_dir()?.join("settings.toml");
-            info!(path = %settings_path.display(), "reading settings");
+            let settings_path = config_dir.join("settings.toml");
             let settings: Arc<dyn SettingsStore> = Arc::new(TomlSettings::load(settings_path));
 
             let models = ModelCache::default();

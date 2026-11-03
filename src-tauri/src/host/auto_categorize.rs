@@ -129,7 +129,6 @@ fn check(app: &AppHandle) {
     let _ = app.emit("ai-categorize-started", Started { recheck: false });
     match run_categorization(app, false, RunTrigger::Scheduled) {
         Ok(outcome) => {
-            info!(labeled = outcome.labeled, skipped = outcome.skipped, "scheduled AI categorization finished");
             if outcome.labeled > 0 {
                 notify(app, outcome.labeled);
             }

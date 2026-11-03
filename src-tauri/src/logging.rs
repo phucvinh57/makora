@@ -42,9 +42,8 @@ pub fn log_dir(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join(LOG_DIR_NAME)
 }
 
-/// Installs the global subscriber. Returns the developer log's directory in release builds
-/// and `None` in debug builds, where it goes to stderr instead.
-pub fn init(app_data_dir: &Path) -> Result<Option<PathBuf>> {
+/// Installs the global subscriber.
+pub fn init(app_data_dir: &Path) -> Result<()> {
     let dir = log_dir(app_data_dir);
     let (events, events_guard) = daily_writer(&dir, EVENTS_FILE_PREFIX, EVENTS_FILE_SUFFIX)?;
     let app_log = AppLogLayer::new(events).with_filter(EnvFilter::new(APP_LOG_FILTER));
@@ -60,7 +59,7 @@ pub fn init(app_data_dir: &Path) -> Result<Option<PathBuf>> {
             .with(dev_log)
             .try_init()
             .map_err(|err| anyhow::anyhow!("installing the stderr log subscriber: {err}"))?;
-        return Ok(None);
+        return Ok(());
     }
 
     let (writer, guard) = daily_writer(&dir, LOG_FILE_PREFIX, LOG_FILE_SUFFIX)?;
@@ -74,7 +73,7 @@ pub fn init(app_data_dir: &Path) -> Result<Option<PathBuf>> {
         .try_init()
         .map_err(|err| anyhow::anyhow!("installing the file log subscriber: {err}"))?;
 
-    Ok(Some(dir))
+    Ok(())
 }
 
 /// Writes out every buffered event before the process exits; nothing is logged to a file after.
