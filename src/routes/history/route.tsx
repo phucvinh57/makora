@@ -15,7 +15,11 @@ import { useCategories } from "@/hooks/useCategories";
 import { useDebouncedCallback } from "@/hooks/useDebouncedCallback";
 import { parseOneOf } from "@/lib/utils";
 import { invalidateCategorizationQueries, queryKeys } from "@/queries";
-import type { HistorySourceFilter, SessionRow } from "@/types";
+import type {
+  ActivityClassification,
+  HistorySourceFilter,
+  SessionRow,
+} from "@/types";
 import { BulkActionsBar } from "./-components/BulkActionsBar";
 import {
   ALL_CATEGORIES,
@@ -191,24 +195,41 @@ function HistoryPage() {
     }
   }, [settled, page, pageCount, navigate]);
 
+  const { mutate: undoCategory } = useMutation({
+    mutationFn: session.undoCategory,
+    onSuccess: () => {
+      toast.success("Undone");
+      return invalidateCategorizationQueries(queryClient);
+    },
+    onError: (err) => toast.error(String(err)),
+  });
+
+  const undoAction = (prior: ActivityClassification[]) => ({
+    label: "Undo",
+    onClick: () => undoCategory(prior),
+  });
+
   const { mutate: changeRowCategory } = useMutation({
     mutationFn: async ({ row, value }: { row: SessionRow; value: string }) => {
       const categoryId = value === UNCATEGORIZED ? null : Number(value);
-      await session.setRowCategory(row.id, categoryId);
-      return { row, categoryId };
+      const prior = await session.setRowCategory(row.id, categoryId);
+      return { row, categoryId, prior };
     },
-    onSuccess: ({ row, categoryId }) => {
+    onSuccess: ({ row, categoryId, prior }) => {
+      const action = undoAction(prior);
       if (categoryId === null) {
         if (row.category_source === "rule") {
           toast.info("This activity matches a rule", {
             description:
               "Pin another category to override it, or edit the rule on the Categories page.",
+            action,
           });
         } else {
           toast.success(
             row.category_source === "ai"
               ? "Rejected the AI suggestion"
               : "Cleared this activity's category",
+            { action },
           );
         }
       } else {
@@ -216,6 +237,7 @@ function HistoryPage() {
           `Set to ${picker.pathById.get(categoryId) ?? "category"}`,
           {
             description: row.title || row.url || row.app_name,
+            action,
           },
         );
       }
@@ -233,9 +255,11 @@ function HistoryPage() {
   const bulkApplyMutation = useMutation({
     mutationFn: ({ ids, categoryId }: { ids: number[]; categoryId: number }) =>
       session.setCategory(ids, categoryId),
-    onSuccess: (_, { ids }) => {
+    onSuccess: (prior, { ids }) => {
       selection.clear();
-      toast.success(`Categorized ${ids.length} activities`);
+      toast.success(`Categorized ${ids.length} activities`, {
+        action: undoAction(prior),
+      });
       return invalidateCategorizationQueries(queryClient);
     },
     onError: (err) => toast.error(String(err)),

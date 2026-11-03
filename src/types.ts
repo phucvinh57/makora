@@ -4,6 +4,7 @@ import type { PatternField } from "./bindings/PatternField";
 import type { RuleKind } from "./bindings/RuleKind";
 import type { SessionListQuery } from "./bindings/SessionListQuery";
 
+export type { ActivityClassification } from "./bindings/ActivityClassification";
 export type { ActivityId } from "./bindings/ActivityId";
 export type { ActivityStats } from "./bindings/ActivityStats";
 export type { AiReviewGroup } from "./bindings/AiReviewGroup";

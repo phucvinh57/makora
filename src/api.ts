@@ -6,6 +6,7 @@ import {
   isEnabled as checkAutostartEnabled,
 } from "@tauri-apps/plugin-autostart";
 import type {
+  ActivityClassification,
   ActivityStats,
   AiRunOutcome,
   AiRunStatus,
@@ -114,12 +115,23 @@ export const session = {
     return call("session_list", { query });
   },
 
-  setRowCategory(sessionId: number, categoryId: number | null): Promise<void> {
+  /** Resolves to the prior classifications, for {@link session.undoCategory}. */
+  setRowCategory(
+    sessionId: number,
+    categoryId: number | null,
+  ): Promise<ActivityClassification[]> {
     return call("session_set_row_category", { sessionId, categoryId });
   },
 
-  setCategory(sessionIds: number[], categoryId: number): Promise<void> {
+  setCategory(
+    sessionIds: number[],
+    categoryId: number,
+  ): Promise<ActivityClassification[]> {
     return call("session_set_category", { sessionIds, categoryId });
+  },
+
+  undoCategory(prior: ActivityClassification[]): Promise<void> {
+    return call("session_undo_category", { prior });
   },
 };
 
