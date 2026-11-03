@@ -7,6 +7,14 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import type { HostTraffic } from "@/types";
 import { formatRelative, formatSize } from "./format";
 
@@ -38,72 +46,65 @@ export function NetworkCard({
         ) : hosts === undefined ? (
           <Skeleton className="h-10 w-full" />
         ) : hosts.length === 0 ? (
-          <div className="flex items-center gap-2 rounded-md bg-muted/50 px-3 py-2.5 text-sm">
+          <div className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2 text-sm">
             <ShieldCheck className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
             <span>Nothing was sent over the network {periodPhrase}.</span>
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs text-muted-foreground">
-                  <th className="pb-1.5 font-medium">Host</th>
-                  <th className="pb-1.5 font-medium">Why</th>
-                  <th className="pb-1.5 text-right font-medium">Requests</th>
-                  <th className="pb-1.5 text-right font-medium">Sent</th>
-                  <th className="pb-1.5 text-right font-medium">Received</th>
-                  <th className="pb-1.5 text-right font-medium">
-                    Last contact
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {hosts.map((host) => (
-                  <tr
-                    key={host.host}
-                    className="border-t align-top first:border-t-0"
-                  >
-                    <td className="py-1.5 pr-3">
-                      <button
-                        type="button"
-                        onClick={() => onSelectHost(host.host)}
-                        className="font-mono text-xs font-medium hover:underline"
-                        title="Show these requests in the log"
-                      >
-                        {host.host}
-                      </button>
-                    </td>
-                    <td className="py-1.5 pr-3 text-muted-foreground">
-                      {host.purposes.join(", ") || "—"}
-                    </td>
-                    <td className="py-1.5 pr-3 text-right tabular-nums">
-                      {host.requests.toLocaleString()}
-                    </td>
-                    <td className="py-1.5 pr-3 text-right tabular-nums">
-                      <span className="inline-flex items-center gap-1">
-                        <ArrowUp className="size-3 text-muted-foreground" />
-                        {formatSize(host.bytes_sent)}
-                      </span>
-                      {host.activities_sent > 0 && (
-                        <div className="text-xs text-muted-foreground">
-                          {host.activities_sent.toLocaleString()} activities
-                        </div>
-                      )}
-                    </td>
-                    <td className="py-1.5 pr-3 text-right tabular-nums">
-                      <span className="inline-flex items-center gap-1">
-                        <ArrowDown className="size-3 text-muted-foreground" />
-                        {formatSize(host.bytes_received)}
-                      </span>
-                    </td>
-                    <td className="py-1.5 text-right whitespace-nowrap text-muted-foreground tabular-nums">
-                      {formatRelative(host.last_contact)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <Table className="[&_td:first-child]:pl-0 [&_td:last-child]:pr-0 [&_th:first-child]:pl-0 [&_th:last-child]:pr-0">
+            <TableHeader>
+              <TableRow className="hover:bg-transparent">
+                <TableHead>Host</TableHead>
+                <TableHead>Why</TableHead>
+                <TableHead className="text-right">Requests</TableHead>
+                <TableHead className="text-right">Sent</TableHead>
+                <TableHead className="text-right">Received</TableHead>
+                <TableHead className="text-right">Last contact</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {hosts.map((host) => (
+                <TableRow key={host.host} className="hover:bg-transparent">
+                  <TableCell>
+                    <button
+                      type="button"
+                      onClick={() => onSelectHost(host.host)}
+                      className="font-medium hover:underline"
+                      title="Show these requests in the log"
+                    >
+                      {host.host}
+                    </button>
+                  </TableCell>
+                  <TableCell className="whitespace-normal text-muted-foreground">
+                    {host.purposes.join(", ") || "—"}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {host.requests.toLocaleString()}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    <span className="inline-flex items-center gap-1">
+                      <ArrowUp className="size-3 text-muted-foreground" />
+                      {formatSize(host.bytes_sent)}
+                    </span>
+                    {host.activities_sent > 0 && (
+                      <div className="text-xs text-muted-foreground">
+                        {host.activities_sent.toLocaleString()} activities
+                      </div>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    <span className="inline-flex items-center gap-1">
+                      <ArrowDown className="size-3 text-muted-foreground" />
+                      {formatSize(host.bytes_received)}
+                    </span>
+                  </TableCell>
+                  <TableCell className="text-right text-muted-foreground tabular-nums">
+                    {formatRelative(host.last_contact)}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
         )}
       </CardContent>
     </Card>

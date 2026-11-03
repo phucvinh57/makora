@@ -2,6 +2,7 @@ import { format } from "date-fns";
 import { ChevronRight } from "lucide-react";
 import { memo, useCallback, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { LogArea, LogEntry, LogLevel } from "@/types";
 import { AREA_META, AREAS, type GroupBy } from "./constants";
@@ -83,17 +84,17 @@ export function LogList({
 
   if (groups.length === 0) {
     return (
-      <div className="rounded-md border p-8 text-center text-sm text-muted-foreground">
+      <Card className="p-8 text-center text-muted-foreground">
         {emptyMessage}
-      </div>
+      </Card>
     );
   }
 
   return (
-    <div className="rounded-md border">
+    <Card className="gap-0 overflow-clip p-0">
       {groups.map((group) => (
         <section key={group.id} className="border-t first:border-t-0">
-          <h2 className="sticky top-0 z-10 m-0 flex items-baseline gap-2 border-b bg-muted/80 px-3 py-1.5 text-xs font-semibold backdrop-blur">
+          <h2 className="sticky top-0 z-10 m-0 flex h-10 items-center gap-2 border-b bg-card px-3 text-sm font-medium">
             {group.label}
             <span className="font-normal text-muted-foreground tabular-nums">
               {group.rows.length.toLocaleString()}
@@ -113,16 +114,16 @@ export function LogList({
           </ul>
         </section>
       ))}
-    </div>
+    </Card>
   );
 }
 
 const LEVEL_BADGE: Record<LogLevel, string> = {
   error: "bg-destructive/10 text-destructive dark:bg-destructive/20",
   warn: "bg-amber-500/15 text-amber-700 dark:text-amber-400",
-  info: "bg-muted text-muted-foreground",
-  debug: "bg-muted text-muted-foreground",
-  trace: "bg-muted text-muted-foreground",
+  info: "bg-secondary text-secondary-foreground",
+  debug: "bg-secondary text-muted-foreground",
+  trace: "bg-secondary text-muted-foreground",
 };
 
 const LogRow = memo(function LogRow({
@@ -148,7 +149,7 @@ const LogRow = memo(function LogRow({
         type="button"
         onClick={() => onToggle(rowKey)}
         aria-expanded={expanded}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-muted/50"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-muted/50 aria-expanded:bg-muted/50"
       >
         <ChevronRight
           className={cn(
@@ -158,21 +159,16 @@ const LogRow = memo(function LogRow({
         />
         <time
           dateTime={entry.ts}
-          className="shrink-0 font-mono text-xs text-muted-foreground tabular-nums"
+          className="shrink-0 text-muted-foreground tabular-nums"
         >
           {format(date, showDate ? "MMM d HH:mm:ss" : "HH:mm:ss")}
         </time>
-        <Badge
-          className={cn(
-            "h-4.5 w-12 rounded-sm px-1 text-[10px] uppercase",
-            LEVEL_BADGE[entry.level],
-          )}
-        >
+        <Badge className={cn("w-14 capitalize", LEVEL_BADGE[entry.level])}>
           {entry.level}
         </Badge>
         <Badge
           variant="outline"
-          className="h-4.5 w-22 justify-start rounded-sm px-1.5 text-[11px] text-muted-foreground"
+          className="w-24 justify-start text-muted-foreground"
         >
           <AreaIcon />
           {areaLabel}
@@ -188,7 +184,7 @@ const LogRow = memo(function LogRow({
         </span>
       </button>
       {expanded && (
-        <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 bg-muted/30 py-2 pr-3 pl-9 font-mono text-xs">
+        <dl className="m-0 grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 border-t bg-muted/30 py-3 pr-3 pl-8.5 font-mono text-xs">
           <dt className="text-muted-foreground">time</dt>
           <dd className="m-0">{date.toLocaleString()}</dd>
           <dt className="text-muted-foreground">target</dt>

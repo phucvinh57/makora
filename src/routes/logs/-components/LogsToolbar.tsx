@@ -10,7 +10,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { cn, parseOneOf } from "@/lib/utils";
+import { parseOneOf } from "@/lib/utils";
 import type { LogArea, LogPage } from "@/types";
 import {
   AREA_META,
@@ -18,8 +18,6 @@ import {
   type GroupBy,
   MIN_LEVEL_LABELS,
   type MinLevel,
-  type Period,
-  PERIODS,
 } from "./constants";
 
 const MIN_LEVELS = Object.keys(MIN_LEVEL_LABELS) as MinLevel[];
@@ -28,8 +26,6 @@ const GROUPS: readonly GroupBy[] = ["day", "area"];
 export function LogsToolbar({
   searchInput,
   onSearchInputChange,
-  period,
-  onPeriodChange,
   minLevel,
   onMinLevelChange,
   groupBy,
@@ -40,8 +36,6 @@ export function LogsToolbar({
 }: {
   searchInput: string;
   onSearchInputChange: (value: string) => void;
-  period: Period;
-  onPeriodChange: (period: Period) => void;
   minLevel: MinLevel;
   onMinLevelChange: (level: MinLevel) => void;
   groupBy: GroupBy;
@@ -71,19 +65,6 @@ export function LogsToolbar({
             className="h-8 pl-8"
             aria-label="Search logs"
           />
-        </div>
-        <div className="flex items-center gap-1 rounded-md border p-0.5">
-          {PERIODS.map((preset) => (
-            <Button
-              key={preset.value}
-              type="button"
-              variant={period === preset.value ? "secondary" : "ghost"}
-              size="sm"
-              onClick={() => onPeriodChange(preset.value)}
-            >
-              {preset.label}
-            </Button>
-          ))}
         </div>
         <Select
           value={minLevel}
@@ -118,7 +99,7 @@ export function LogsToolbar({
           </TabsList>
         </Tabs>
       </div>
-      <div className="flex flex-wrap items-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-1">
         <AreaChip
           label="All"
           count={total}
@@ -131,7 +112,7 @@ export function LogsToolbar({
             <AreaChip
               key={area}
               label={label}
-              icon={<Icon className="size-3" />}
+              icon={<Icon />}
               count={areaCounts?.[area] ?? 0}
               active={areas.includes(area)}
               onClick={() => toggleArea(area)}
@@ -157,21 +138,19 @@ function AreaChip({
   onClick: () => void;
 }) {
   return (
-    <button
+    <Button
       type="button"
+      variant={active ? "secondary" : "ghost"}
+      size="xs"
       onClick={onClick}
       aria-pressed={active}
-      className={cn(
-        "inline-flex h-6 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium transition-colors",
-        active
-          ? "border-primary/40 bg-primary/10 text-primary"
-          : "text-muted-foreground hover:bg-muted hover:text-foreground",
-        count === 0 && !active && "opacity-60",
-      )}
+      className={count === 0 && !active ? "text-muted-foreground" : undefined}
     >
       {icon}
       {label}
-      <span className="tabular-nums opacity-70">{count.toLocaleString()}</span>
-    </button>
+      <span className="text-muted-foreground tabular-nums">
+        {count.toLocaleString()}
+      </span>
+    </Button>
   );
 }

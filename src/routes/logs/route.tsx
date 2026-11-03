@@ -79,13 +79,26 @@ function LogsPage() {
   }
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-6">
       <header className="flex flex-wrap items-center gap-2">
         <div className="mr-auto">
           <h1 className="m-0 text-lg font-semibold">Logs</h1>
           <p className="m-0 text-sm text-muted-foreground">
             What Makora has been doing on this device
           </p>
+        </div>
+        <div className="flex items-center gap-1 rounded-md border p-0.5">
+          {PERIODS.map((preset) => (
+            <Button
+              key={preset.value}
+              type="button"
+              variant={period === preset.value ? "secondary" : "ghost"}
+              size="sm"
+              onClick={() => setPeriod(preset.value)}
+            >
+              {preset.label}
+            </Button>
+          ))}
         </div>
         <Button variant="outline" size="sm" onClick={openFolder} title={logDir}>
           <FolderOpen />
@@ -112,50 +125,50 @@ function LogsPage() {
         onSelectHost={showHost}
       />
 
-      <LogsToolbar
-        searchInput={searchInput}
-        onSearchInputChange={(text) => changeSearch(text)}
-        period={period}
-        onPeriodChange={setPeriod}
-        minLevel={minLevel}
-        onMinLevelChange={setMinLevel}
-        groupBy={groupBy}
-        onGroupByChange={setGroupBy}
-        areas={areas}
-        onAreasChange={setAreas}
-        areaCounts={page?.area_counts}
-      />
+      <section className="flex flex-col gap-3">
+        <LogsToolbar
+          searchInput={searchInput}
+          onSearchInputChange={(text) => changeSearch(text)}
+          minLevel={minLevel}
+          onMinLevelChange={setMinLevel}
+          groupBy={groupBy}
+          onGroupByChange={setGroupBy}
+          areas={areas}
+          onAreasChange={setAreas}
+          areaCounts={page?.area_counts}
+        />
 
-      {logsQuery.error && (
-        <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          Failed to load logs: {String(logsQuery.error)}
-        </div>
-      )}
+        {logsQuery.error && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            Failed to load logs: {String(logsQuery.error)}
+          </div>
+        )}
 
-      {page && (
-        <div
-          className={cn(
-            "flex flex-col gap-2 transition-opacity",
-            logsQuery.isPlaceholderData && "opacity-60",
-          )}
-        >
-          {page.truncated && (
-            <p className="m-0 text-xs text-muted-foreground">
-              Showing the newest {page.entries.length.toLocaleString()} matching
-              entries. Narrow the search or period to see older ones.
-            </p>
-          )}
-          <LogList
-            entries={page.entries}
-            groupBy={groupBy}
-            emptyMessage={
-              filtered
-                ? `No log entries match these filters ${periodPhrase}.`
-                : `Nothing was logged ${periodPhrase}.`
-            }
-          />
-        </div>
-      )}
+        {page && (
+          <div
+            className={cn(
+              "flex flex-col gap-2 transition-opacity",
+              logsQuery.isPlaceholderData && "opacity-60",
+            )}
+          >
+            {page.truncated && (
+              <p className="m-0 text-xs text-muted-foreground">
+                Showing the newest {page.entries.length.toLocaleString()}{" "}
+                matching entries. Narrow the search or period to see older ones.
+              </p>
+            )}
+            <LogList
+              entries={page.entries}
+              groupBy={groupBy}
+              emptyMessage={
+                filtered
+                  ? `No log entries match these filters ${periodPhrase}.`
+                  : `Nothing was logged ${periodPhrase}.`
+              }
+            />
+          </div>
+        )}
+      </section>
     </div>
   );
 }
