@@ -59,6 +59,20 @@ pub struct AiSettings {
     /// Hours between background runs; `0` turns them off.
     pub auto_categorize_hours: u32,
     pub providers: Vec<ProviderConfig>,
+    /// What remote models charge, for the cost estimate on the usage page.
+    pub prices: Vec<ModelPrice>,
+}
+
+/// What a remote model charges, in US dollars per million tokens. `cached_input` is the price of
+/// prompt tokens read from the provider's cache; when it is not set they cost the same as the rest.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct ModelPrice {
+    pub provider: String,
+    pub model: String,
+    pub input: f64,
+    pub cached_input: Option<f64>,
+    pub output: f64,
 }
 
 /// How a remote provider is spoken to: the OpenAI chat-completions API, which most providers and
@@ -96,6 +110,7 @@ impl Default for AiSettings {
             embedding_model: embedding::DEFAULT_MODEL.to_string(),
             auto_categorize_hours: DEFAULT_AUTO_CATEGORIZE_HOURS,
             providers: Vec::new(),
+            prices: Vec::new(),
         }
     }
 }
@@ -117,6 +132,30 @@ macro_rules! invalid {
 
 pub type SettingsResult<T = Settings> = std::result::Result<T, SettingsError>;
 
+impl ModelPrice {
+    fn validated(self) -> SettingsResult<Self> {
+        let provider = self.provider.trim();
+        if provider.is_empty() {
+            invalid!("a price needs a provider");
+        }
+        let model = model_name(&self.model)?;
+        for (label, value) in [("input", Some(self.input)), ("cached input", self.cached_input), ("output", Some(self.output))] {
+            if value.is_some_and(|value| !value.is_finite() || value < 0.0) {
+                invalid!("the {label} price must be zero or more");
+            }
+        }
+        Ok(Self {
+            provider: provider.to_string(),
+            model,
+            ..self
+        })
+    }
+
+    fn is_for(&self, provider: &str, model: &str) -> bool {
+        self.provider == provider && self.model == model
+    }
+}
+
 pub trait SettingsStore: Send + Sync {
     fn get(&self) -> Settings;
     fn set_min_session_seconds(&self, seconds: i64) -> SettingsResult;
@@ -130,6 +169,9 @@ pub trait SettingsStore: Send + Sync {
     fn save_provider(&self, provider: ProviderConfig) -> SettingsResult;
     /// Removes the provider with `id`. If the LLM was on it, it goes back to the local default.
     fn remove_provider(&self, id: &str) -> SettingsResult;
+    /// Sets the price of `price.model` on `price.provider`, replacing the one it had.
+    fn set_model_price(&self, price: ModelPrice) -> SettingsResult;
+    fn remove_model_price(&self, provider: &str, model: &str) -> SettingsResult;
     /// What went wrong reading the settings file at startup, once: later calls get `None`.
     fn take_load_issue(&self) -> Option<String>;
 }
@@ -207,6 +249,8 @@ impl TomlSettings {
                 settings.ai.llm_model = llm::DEFAULT_MODEL.to_string();
             }
         }
+
+        settings.ai.prices = normalized_prices(std::mem::take(&mut settings.ai.prices));
 
         let defaults = AiSettings::default();
         if settings.ai.llm_model.trim().is_empty() {
@@ -293,6 +337,19 @@ fn normalized_providers(entries: Vec<ProviderConfig>) -> Vec<ProviderConfig> {
             Ok(provider) if kept.iter().all(|other| other.id != provider.id) => kept.push(provider),
             Ok(provider) => warn!(id = %provider.id, "ai.providers repeats an id; ignoring"),
             Err(err) => warn!(error = %err, "ai.providers entry is not valid; ignoring"),
+        }
+    }
+    kept
+}
+
+/// Drops the prices that cannot be used or repeat an earlier model.
+fn normalized_prices(entries: Vec<ModelPrice>) -> Vec<ModelPrice> {
+    let mut kept: Vec<ModelPrice> = Vec::with_capacity(entries.len());
+    for entry in entries {
+        match entry.validated() {
+            Ok(price) if kept.iter().all(|other| !other.is_for(&price.provider, &price.model)) => kept.push(price),
+            Ok(price) => warn!(provider = %price.provider, model = %price.model, "ai.prices repeats a model; ignoring"),
+            Err(err) => warn!(error = %err, "ai.prices entry is not valid; ignoring"),
         }
     }
     kept
@@ -442,6 +499,20 @@ impl SettingsStore for TomlSettings {
         })
     }
 
+    fn set_model_price(&self, price: ModelPrice) -> SettingsResult {
+        let price = price.validated()?;
+        self.update(|settings| {
+            match settings.ai.prices.iter_mut().find(|other| other.is_for(&price.provider, &price.model)) {
+                Some(existing) => *existing = price,
+                None => settings.ai.prices.push(price),
+            }
+        })
+    }
+
+    fn remove_model_price(&self, provider: &str, model: &str) -> SettingsResult {
+        self.update(|settings| settings.ai.prices.retain(|price| !price.is_for(provider, model)))
+    }
+
     fn take_load_issue(&self) -> Option<String> {
         sync::lock(&self.load_issue).take()
     }
@@ -518,6 +589,46 @@ mod tests {
         let store = TomlSettings::load(dir.join("settings.toml"));
         assert!(matches!(store.set_llm(Some("nope"), "gpt"), Err(SettingsError::Invalid(_))));
         assert_eq!(store.get().ai.llm_provider, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn price(model: &str, cached_input: Option<f64>) -> ModelPrice {
+        ModelPrice {
+            provider: "openai".into(),
+            model: model.into(),
+            input: 2.5,
+            cached_input,
+            output: 10.0,
+        }
+    }
+
+    #[test]
+    fn a_model_price_is_replaced_saved_and_removed() {
+        let dir = scratch_dir("prices");
+        let path = dir.join("settings.toml");
+        let store = TomlSettings::load(path.clone());
+        store.set_model_price(price("gpt", None)).unwrap();
+        store.set_model_price(price(" gpt ", Some(1.25))).unwrap();
+        store.set_model_price(price("mini", None)).unwrap();
+        assert_eq!(store.get().ai.prices, [price("gpt", Some(1.25)), price("mini", None)]);
+
+        let reloaded = TomlSettings::load(path);
+        assert_eq!(reloaded.get().ai.prices, [price("gpt", Some(1.25)), price("mini", None)]);
+        reloaded.remove_model_price("openai", "gpt").unwrap();
+        assert_eq!(reloaded.get().ai.prices, [price("mini", None)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_negative_or_missing_price_is_refused() {
+        let dir = scratch_dir("bad-prices");
+        let store = TomlSettings::load(dir.join("settings.toml"));
+        let mut negative = price("gpt", None);
+        negative.output = -1.0;
+        assert!(matches!(store.set_model_price(negative), Err(SettingsError::Invalid(_))));
+        assert!(matches!(store.set_model_price(price("gpt", Some(f64::NAN))), Err(SettingsError::Invalid(_))));
+        assert!(matches!(store.set_model_price(price(" ", None)), Err(SettingsError::Invalid(_))));
+        assert!(store.get().ai.prices.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

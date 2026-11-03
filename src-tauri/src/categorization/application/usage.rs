@@ -1,14 +1,16 @@
 //! The record of every AI run that had something to label: tokens, timings and how it ended, kept
 //! so the settings page can show what categorization costs and how fast each model is.
 
+use std::collections::BTreeMap;
+
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, NaiveDate, TimeZone, Utc};
 use serde::Serialize;
 
 use crate::categorization::domain::usage::{AiRunRecord, RunStatus, RunTrigger};
 use crate::categorization::ports::RunUsage;
 use crate::db::ai_runs::AiRunsRepo;
-use crate::db::models::{AiModelTotalsRow, AiRunRow, NewAiRunRow};
+use crate::db::models::{AiModelTotalsRow, AiRunRow, AiRunTokensRow, NewAiRunRow};
 use crate::db::Db;
 use crate::shared::time;
 
@@ -57,12 +59,27 @@ pub struct ModelUsage {
     pub totals: UsageTotals,
 }
 
+/// The tokens one remote model used on one local calendar day.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct DailyModelTokens {
+    /// `YYYY-MM-DD`.
+    pub day: String,
+    pub provider: String,
+    pub model: String,
+    pub input_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub output_tokens: u64,
+}
+
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 #[ts(export)]
 pub struct AiUsageSummary {
     pub totals: UsageTotals,
     /// The most recently used first.
     pub models: Vec<ModelUsage>,
+    /// Remote models only, oldest day first; days without remote runs are left out.
+    pub daily: Vec<DailyModelTokens>,
 }
 
 pub trait AiUsageSvc: Send + Sync {
@@ -123,6 +140,7 @@ impl AiUsageSvc for SqliteAiUsage {
         let since = since.map(time::to_db);
         let mut conn = self.db.read()?;
         let rows = AiRunsRepo::get_totals_by_model(&mut *conn, since.as_deref())?;
+        let daily = daily_tokens(AiRunsRepo::get_remote_tokens(&mut *conn, since.as_deref())?, &Local);
         let models: Vec<ModelUsage> = rows
             .into_iter()
             .map(|row| ModelUsage {
@@ -132,8 +150,33 @@ impl AiUsageSvc for SqliteAiUsage {
             })
             .collect();
         let totals = models.iter().fold(UsageTotals::default(), |sum, model| add(sum, &model.totals));
-        Ok(AiUsageSummary { totals, models })
+        Ok(AiUsageSummary { totals, models, daily })
     }
+}
+
+/// Each run counts towards the day it started on in `tz`.
+fn daily_tokens<Tz: TimeZone>(rows: Vec<AiRunTokensRow>, tz: &Tz) -> Vec<DailyModelTokens> {
+    let mut days: BTreeMap<(NaiveDate, String, String), (u64, u64, u64)> = BTreeMap::new();
+    for row in rows {
+        let (Some(provider), Some(started_at)) = (row.provider, time::parse_db(&row.started_at)) else {
+            continue;
+        };
+        let day = started_at.with_timezone(tz).date_naive();
+        let sum = days.entry((day, provider, row.model)).or_default();
+        sum.0 += unsigned(row.input_tokens);
+        sum.1 += unsigned(row.cached_input_tokens);
+        sum.2 += unsigned(row.output_tokens);
+    }
+    days.into_iter()
+        .map(|((day, provider, model), (input_tokens, cached_input_tokens, output_tokens))| DailyModelTokens {
+            day: day.format("%Y-%m-%d").to_string(),
+            provider,
+            model,
+            input_tokens,
+            cached_input_tokens,
+            output_tokens,
+        })
+        .collect()
 }
 
 fn run_view(row: AiRunRow) -> AiRunView {
@@ -204,4 +247,44 @@ fn signed(value: u64) -> i64 {
 
 fn unsigned(value: i64) -> u64 {
     u64::try_from(value).unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::FixedOffset;
+
+    use super::*;
+
+    fn tokens(provider: &str, model: &str, started_at: &str, output_tokens: i64) -> AiRunTokensRow {
+        AiRunTokensRow {
+            provider: Some(provider.into()),
+            model: model.into(),
+            started_at: started_at.into(),
+            input_tokens: 100,
+            cached_input_tokens: 40,
+            output_tokens,
+        }
+    }
+
+    #[test]
+    fn runs_are_summed_per_local_day_and_model() {
+        let tz = FixedOffset::east_opt(7 * 3600).unwrap();
+        let daily = daily_tokens(
+            vec![
+                tokens("openai", "gpt", "2026-03-01T10:00:00+00:00", 5),
+                tokens("openai", "gpt", "2026-03-01T18:00:00+00:00", 7),
+                tokens("openai", "gpt", "2026-03-02T01:00:00+00:00", 11),
+                tokens("anthropic", "claude", "2026-03-01T12:00:00+00:00", 3),
+            ],
+            &tz,
+        );
+        let summary: Vec<(&str, &str, u64, u64)> = daily
+            .iter()
+            .map(|d| (d.day.as_str(), d.model.as_str(), d.input_tokens, d.output_tokens))
+            .collect();
+        assert_eq!(
+            summary,
+            [("2026-03-01", "claude", 100, 3), ("2026-03-01", "gpt", 100, 5), ("2026-03-02", "gpt", 200, 18)]
+        );
+    }
 }

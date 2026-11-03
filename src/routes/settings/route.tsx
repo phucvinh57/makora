@@ -1,6 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { AiProvidersSection } from "./-components/AiProvidersSection";
-import { AiUsageSection } from "./-components/AiUsageSection";
 import { GeneralSection } from "./-components/GeneralSection";
 import { ExclusionsSection } from "./-components/ExclusionsSection";
 import { TrackingSection } from "./-components/TrackingSection";
@@ -15,14 +14,13 @@ function SettingsPage() {
       <header>
         <h1 className="m-0 text-lg font-semibold">Settings</h1>
         <p className="m-0 text-sm text-muted-foreground">
-          App preferences, tracking exclusions, AI providers and usage
+          App preferences, tracking exclusions and AI providers
         </p>
       </header>
       <GeneralSection />
       <TrackingSection />
       <ExclusionsSection />
       <AiProvidersSection />
-      <AiUsageSection />
     </div>
   );
 }

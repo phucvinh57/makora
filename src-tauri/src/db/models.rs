@@ -175,6 +175,17 @@ pub struct AiRunRow {
     pub embed_ms: i64,
 }
 
+#[derive(Debug, Clone, Queryable, Selectable)]
+#[diesel(table_name = ai_runs)]
+pub struct AiRunTokensRow {
+    pub provider: Option<String>,
+    pub model: String,
+    pub started_at: String,
+    pub input_tokens: i64,
+    pub cached_input_tokens: i64,
+    pub output_tokens: i64,
+}
+
 #[derive(Debug, Clone, Insertable)]
 #[diesel(table_name = ai_runs)]
 pub struct NewAiRunRow<'a> {

@@ -1,7 +1,7 @@
 use diesel::QueryResult;
 
 use super::models::{
-    ActivityIdentityRow, ActivityRow, AiLabelRow, AiModelTotalsRow, AiRunRow, NewAiRunRow, CategorizedEmbeddingRow, CategoryChanges, CategoryRow,
+    ActivityIdentityRow, ActivityRow, AiLabelRow, AiModelTotalsRow, AiRunRow, AiRunTokensRow, NewAiRunRow, CategorizedEmbeddingRow, CategoryChanges, CategoryRow,
     CategoryRuleRow, CategoryRuleValues, NewActivityRow, NewCategoryRow, NewSessionRow, NewSourceRow, SessionRow,
     SourceRow,
 };
@@ -112,4 +112,7 @@ pub trait AiRunsRepo {
     /// The runs started at or after `since` (every run when `None`), summed per provider and
     /// model, the most recently used first.
     fn get_totals_by_model(&mut self, since: Option<&str>) -> QueryResult<Vec<AiModelTotalsRow>>;
+    /// The tokens of each run on a remote provider started at or after `since` (every one when
+    /// `None`), oldest first.
+    fn get_remote_tokens(&mut self, since: Option<&str>) -> QueryResult<Vec<AiRunTokensRow>>;
 }

@@ -8,7 +8,7 @@ use crate::categorization::domain::rules::{PatternField, RuleKind};
 use crate::categorization::ActivityIndexer;
 use crate::host::auto_categorize::ScheduleAnchor;
 use crate::host::error::IpcError;
-use crate::settings::{Settings, SettingsStore};
+use crate::settings::{ModelPrice, Settings, SettingsStore};
 use crate::tracking::domain::exclusion::Exclusion;
 
 #[tauri::command]
@@ -100,5 +100,23 @@ pub fn settings_set_auto_categorize_hours(
     let saved = settings.set_auto_categorize_hours(hours)?;
     info!(setting = "auto_categorize_hours", value = hours, "setting changed");
     anchor.set(Utc::now());
+    Ok(saved)
+}
+
+#[tauri::command]
+pub fn settings_set_model_price(settings: State<Arc<dyn SettingsStore>>, price: ModelPrice) -> Result<Settings, IpcError> {
+    let saved = settings.set_model_price(price.clone())?;
+    info!(setting = "model_price", provider = price.provider.as_str(), model = price.model.as_str(), "setting changed");
+    Ok(saved)
+}
+
+#[tauri::command]
+pub fn settings_remove_model_price(
+    settings: State<Arc<dyn SettingsStore>>,
+    provider: String,
+    model: String,
+) -> Result<Settings, IpcError> {
+    let saved = settings.remove_model_price(&provider, &model)?;
+    info!(setting = "model_price", provider = provider.as_str(), model = model.as_str(), "price removed");
     Ok(saved)
 }

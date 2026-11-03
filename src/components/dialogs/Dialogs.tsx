@@ -2,6 +2,7 @@ import { AddCategoryDialog } from "./AddCategoryDialog";
 import { AddModelDialog } from "./AddModelDialog";
 import { DeleteCategoryDialog } from "./DeleteCategoryDialog";
 import { EditCategoryDialog } from "./EditCategoryDialog";
+import { ModelPriceDialog } from "./ModelPriceDialog";
 import { ProviderDialog } from "./ProviderDialog";
 import { RemoveProviderDialog } from "./RemoveProviderDialog";
 import { ResetCategorizationDialog } from "./ResetCategorizationDialog";
@@ -14,6 +15,7 @@ export function Dialogs() {
       <AddModelDialog />
       <DeleteCategoryDialog />
       <EditCategoryDialog />
+      <ModelPriceDialog />
       <ProviderDialog />
       <RemoveProviderDialog />
       <ResetCategorizationDialog />

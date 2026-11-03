@@ -3,6 +3,7 @@ import type { AddCategoryDialogData } from "@/components/dialogs/AddCategoryDial
 import type { AddModelDialogData } from "@/components/dialogs/AddModelDialog";
 import type { DeleteCategoryDialogData } from "@/components/dialogs/DeleteCategoryDialog";
 import type { EditCategoryDialogData } from "@/components/dialogs/EditCategoryDialog";
+import type { ModelPriceDialogData } from "@/components/dialogs/ModelPriceDialog";
 import type { ProviderDialogData } from "@/components/dialogs/ProviderDialog";
 import type { RemoveProviderDialogData } from "@/components/dialogs/RemoveProviderDialog";
 import type { RuleDialogData } from "@/components/dialogs/RuleDialog";
@@ -15,6 +16,7 @@ export interface DialogDataMap {
   "add-model": AddModelDialogData;
   "delete-category": DeleteCategoryDialogData;
   "edit-category": EditCategoryDialogData;
+  "model-price": ModelPriceDialogData;
   provider: ProviderDialogData;
   "remove-provider": RemoveProviderDialogData;
   "reset-categorization": undefined;

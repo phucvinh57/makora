@@ -1,5 +1,4 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { createFileRoute } from "@tanstack/react-router";
 import { FolderOpen, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -20,16 +19,12 @@ import {
   PERIODS,
   type Period,
   SEARCH_DEBOUNCE_MS,
-} from "./-components/constants";
-import { LogList } from "./-components/LogList";
-import { LogsToolbar } from "./-components/LogsToolbar";
-import { NetworkCard } from "./-components/NetworkCard";
+} from "./constants";
+import { LogList } from "./LogList";
+import { LogsToolbar } from "./LogsToolbar";
+import { NetworkCard } from "./NetworkCard";
 
-export const Route = createFileRoute("/logs")({
-  component: LogsPage,
-});
-
-function LogsPage() {
+export function LogsTab() {
   const [period, setPeriod] = useState<Period>("7d");
   const [minLevel, setMinLevel] = useState<MinLevel>("info");
   const [areas, setAreas] = useState<LogArea[]>([]);
@@ -80,13 +75,10 @@ function LogsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <header className="flex flex-wrap items-center gap-2">
-        <div className="mr-auto">
-          <h1 className="m-0 text-lg font-semibold">Logs</h1>
-          <p className="m-0 text-sm text-muted-foreground">
-            What Makora has been doing on this device
-          </p>
-        </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="m-0 mr-auto text-sm text-muted-foreground">
+          What Makora has been doing on this device
+        </p>
         <div className="flex items-center gap-1 rounded-md border p-0.5">
           {PERIODS.map((preset) => (
             <Button
@@ -116,7 +108,7 @@ function LogsPage() {
         >
           <RefreshCw className={loading ? "animate-spin" : undefined} />
         </Button>
-      </header>
+      </div>
 
       <NetworkCard
         hosts={networkQuery.data}
