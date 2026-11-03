@@ -18,3 +18,5 @@
 
 /demo/node_modules
 /demo/out/*.png
+.claude/worktrees
+/.cargo/
