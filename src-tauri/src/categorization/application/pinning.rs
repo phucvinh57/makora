@@ -22,13 +22,17 @@ pub trait ClassificationSvc: Send + Sync {
         session_ids: &[SessionId],
         category_id: Option<CategoryId>,
     ) -> Result<Vec<ActivityClassification>>;
-    fn assign_activities(&self, activity_ids: &[ActivityId], category_id: Option<CategoryId>) -> Result<()>;
+    fn assign_activities(
+        &self,
+        activity_ids: &[ActivityId],
+        category_id: Option<CategoryId>,
+    ) -> Result<Vec<ActivityClassification>>;
     fn undo_assignment(&self, prior: &[ActivityClassification]) -> Result<()>;
     /// Stores the model's verdicts; a verdict without a category forgets an answer the model no
     /// longer stands by. A manual pin made in the meantime is untouched: reads prefer it over
     /// the AI label. Returns how many labels actually changed.
     fn assign_ai(&self, verdicts: &[AiVerdict]) -> Result<usize>;
-    fn accept_ai_labels(&self, activity_ids: &[ActivityId]) -> Result<()>;
+    fn accept_ai_labels(&self, activity_ids: &[ActivityId]) -> Result<Vec<ActivityClassification>>;
     fn reset(&self) -> Result<usize>;
 }
 
@@ -80,12 +84,16 @@ impl ClassificationSvc for SqliteClassification {
         .map_err(Into::into)
     }
 
-    fn assign_activities(&self, activity_ids: &[ActivityId], category_id: Option<CategoryId>) -> Result<()> {
+    fn assign_activities(
+        &self,
+        activity_ids: &[ActivityId],
+        category_id: Option<CategoryId>,
+    ) -> Result<Vec<ActivityClassification>> {
         if activity_ids.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let mut conn = self.db.write();
-        conn.transaction(|conn| assign(conn, activity_ids, category_id).map(|_| ()))
+        conn.transaction(|conn| assign(conn, activity_ids, category_id))
             .map_err(Into::into)
     }
 
@@ -156,9 +164,9 @@ impl ClassificationSvc for SqliteClassification {
         .map_err(|err: diesel::result::Error| err.into())
     }
 
-    fn accept_ai_labels(&self, activity_ids: &[ActivityId]) -> Result<()> {
+    fn accept_ai_labels(&self, activity_ids: &[ActivityId]) -> Result<Vec<ActivityClassification>> {
         if activity_ids.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
         let mut conn = self.db.write();
         conn.transaction(|conn| {
@@ -167,7 +175,7 @@ impl ClassificationSvc for SqliteClassification {
                     classification.accept_suggestion();
                 }
             })
-            .map(|_| ())
+            .map(|(before, _)| before)
         })
         .map_err(Into::into)
     }

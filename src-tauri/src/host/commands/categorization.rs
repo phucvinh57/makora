@@ -54,7 +54,7 @@ pub fn activity_set_category(
     classification: State<Box<dyn ClassificationSvc>>,
     activity_ids: Vec<ActivityId>,
     category_id: Option<CategoryId>,
-) -> Result<(), IpcError> {
+) -> Result<Vec<ActivityClassification>, IpcError> {
     Ok(classification.assign_activities(&activity_ids, category_id)?)
 }
 
@@ -62,7 +62,7 @@ pub fn activity_set_category(
 pub fn ai_review_accept(
     classification: State<Box<dyn ClassificationSvc>>,
     activity_ids: Vec<ActivityId>,
-) -> Result<(), IpcError> {
+) -> Result<Vec<ActivityClassification>, IpcError> {
     Ok(classification.accept_ai_labels(&activity_ids)?)
 }
 
