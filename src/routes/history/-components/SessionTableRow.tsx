@@ -106,7 +106,7 @@ export const SessionTableRow = memo(function SessionTableRow({
               </span>
             </span>
           </CreatableCategoryCombobox>
-          {row.category_source === "ai" && (
+          {row.category_source === "ai" ? (
             <Button
               size="icon-xs"
               variant="ghost"
@@ -116,6 +116,8 @@ export const SessionTableRow = memo(function SessionTableRow({
             >
               <Check />
             </Button>
+          ) : (
+            <span className="size-6 shrink-0" />
           )}
         </div>
       </TableCell>
