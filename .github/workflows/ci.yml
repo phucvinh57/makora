@@ -10,10 +10,51 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+      extension: ${{ steps.filter.outputs.extension }}
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            ci: &ci
+              - .github/workflows/ci.yml
+            frontend:
+              - *ci
+              - 'src/**'
+              - 'scripts/**'
+              - 'extensions/**'
+              - index.html
+              - package.json
+              - bun.lock
+              - tsconfig*.json
+              - vite.config.ts
+              - biome.json
+              - components.json
+            extension:
+              - *ci
+              - 'extensions/browser/**'
+              - package.json
+              - bun.lock
+            rust:
+              - *ci
+              - 'src-tauri/**'
+
   frontend:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.extension == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -21,22 +62,37 @@ jobs:
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
 
+      - name: Cache Bun packages
+        uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
       - name: Biome
+        if: needs.changes.outputs.frontend == 'true'
         run: bunx biome ci src extensions scripts
 
       - name: Typecheck and build
+        if: needs.changes.outputs.frontend == 'true'
         run: bun run build
 
       - name: Browser extension typecheck
+        if: needs.changes.outputs.extension == 'true'
         run: bun run ext:check
 
   rust:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
+
+      - name: Fetch app icons from LFS
+        run: git lfs pull --include="src-tauri/icons/*"
 
       - name: Install Linux build dependencies
         run: |
@@ -57,19 +113,22 @@ jobs:
         with:
           components: clippy
 
-      - name: Cache Cargo registry and build artifacts
-        uses: actions/cache@v6
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            src-tauri/target
-          key: ci-${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
-          restore-keys: |
-            ci-${{ runner.os }}-cargo-
+          workspaces: src-tauri
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
+
+      - name: Cache Bun packages
+        uses: actions/cache@v6
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
 
       - name: Build frontend for Tauri context
         run: |

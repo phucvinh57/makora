@@ -78,6 +78,17 @@ gh pr edit claude/<topic>-<layerN> --title "<title>" --body-file <bodyN.md>   # 
 
 To fix a layer after review: check it out (`gh stack checkout <branch>`, or `gh stack down`/`up`), commit, then `gh stack rebase --upstack` and `gh stack push`. Once lower PRs merge, `gh stack sync --prune` rebases the rest onto `main`.
 
-## 5. Report
+## 5. Watch CI until it passes
 
-List the PR URLs, each with its risk tier and check results.
+A PR isn't done while its checks are red. For each PR (every layer of a stack):
+
+1. Wait in the background: `gh pr checks <pr> --watch --fail-fast`. Don't poll in the foreground.
+2. If a check fails, read why: `gh run view <run-id> --log-failed | tail -80` (the run id is in the check's link from `gh pr checks <pr> --json name,state,link`).
+3. Reproduce locally when you can (`scripts/check.sh`), fix it on the PR's branch, commit (`fix(ci): …` or `fix(<scope>): …`), and push. For a stack, fix the failing layer, then `gh stack rebase --upstack` and `gh stack push`.
+4. Repeat from 1 until every check passes. Skipped checks (paths filter) count as passing.
+
+If the failure has nothing to do with the PR (it fails on `main` too, or it's CI setup), fix it in its own PR or on `main` when the user allows it, then merge `main` into the PR branch. Stop and ask after 3 failed rounds on the same check, or when the failure is flaky or infrastructure (runner outage, rate limits) rather than code.
+
+## 6. Report
+
+List the PR URLs, each with its risk tier and final check results.
