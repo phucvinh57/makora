@@ -4,6 +4,7 @@ pub mod background_tasks;
 pub mod card;
 pub mod category_combobox;
 pub mod category_dot;
+pub mod choice;
 pub mod feedback;
 pub mod page_header;
 pub mod pagination;

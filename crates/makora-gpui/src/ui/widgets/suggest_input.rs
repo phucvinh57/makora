@@ -138,6 +138,18 @@ impl SuggestInput {
         self.refilter(cx);
     }
 
+    pub fn set_placeholder(
+        &mut self,
+        placeholder: impl Into<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let placeholder = placeholder.into();
+        self.input.update(cx, |input, cx| {
+            input.set_placeholder(placeholder, window, cx)
+        });
+    }
+
     pub fn set_suggestions(&mut self, suggestions: Vec<Suggestion>, cx: &mut Context<Self>) {
         self.suggestions = suggestions;
         self.refilter(cx);

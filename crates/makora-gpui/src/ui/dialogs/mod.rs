@@ -8,6 +8,8 @@
 //! module and its `pub mod` line below, and nothing else shared.
 
 pub mod confirm;
+pub mod provider;
+pub mod remove_provider;
 
 use gpui_kit::{App, Window};
 

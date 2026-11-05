@@ -40,6 +40,8 @@ pub struct Revisions {
     pub sessions: u64,
     pub ai_usage: u64,
     pub installed_models: u64,
+    /// AI providers saved or removed: their keys and model lists.
+    pub providers: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +51,7 @@ pub enum Revision {
     Sessions,
     AiUsage,
     InstalledModels,
+    Providers,
 }
 
 impl Revisions {
@@ -59,6 +62,7 @@ impl Revisions {
             Revision::Sessions => &mut self.sessions,
             Revision::AiUsage => &mut self.ai_usage,
             Revision::InstalledModels => &mut self.installed_models,
+            Revision::Providers => &mut self.providers,
         };
         *counter += 1;
     }

@@ -30,6 +30,7 @@ type ToastAction = Rc<dyn Fn(&mut Window, &mut App)>;
 pub struct Toast {
     kind: ToastKind,
     message: SharedString,
+    description: Option<SharedString>,
     action: Option<(SharedString, ToastAction)>,
     persistent: bool,
 }
@@ -39,6 +40,7 @@ impl Toast {
         Self {
             kind,
             message: message.into(),
+            description: None,
             action: None,
             persistent: false,
         }
@@ -58,6 +60,12 @@ impl Toast {
 
     pub fn warning(message: impl Into<SharedString>) -> Self {
         Self::new(ToastKind::Warning, message)
+    }
+
+    /// A second, muted line under the message.
+    pub fn description(mut self, description: impl Into<SharedString>) -> Self {
+        self.description = Some(description.into());
+        self
     }
 
     /// A button on the toast, such as Undo; clicking it runs `on_click` and closes the toast.
@@ -92,7 +100,11 @@ impl Toast {
             ToastKind::Info => NotificationType::Info,
             ToastKind::Warning => NotificationType::Warning,
         };
-        let mut notification = Notification::new().message(self.message).with_type(kind);
+        let mut notification = match self.description {
+            Some(description) => Notification::new().title(self.message).message(description),
+            None => Notification::new().message(self.message),
+        }
+        .with_type(kind);
         if let Some((label, on_click)) = self.action {
             notification = notification.action(move |_, _, cx| {
                 let on_click = on_click.clone();
