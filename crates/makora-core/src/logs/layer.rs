@@ -5,6 +5,7 @@ use chrono::{SecondsFormat, Utc};
 use serde_json::{Map, Value};
 use tracing::field::{Field, Visit};
 use tracing::{Event, Subscriber};
+use tracing_log::NormalizeEvent;
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::{Context, Layer};
 
@@ -12,6 +13,9 @@ use super::{area_for, LogEntry, LogLevel};
 
 /// Writes every event it is given as one [`LogEntry`] JSON line. Failures to write are dropped
 /// silently: reporting them would mean logging from inside the logger.
+///
+/// Records bridged from the `log` crate are left out. Makora logs through `tracing`, so they come
+/// from dependencies, mostly GPUI's renderer and font loading, and stay in the developer log.
 pub struct AppLogLayer<W> {
     make_writer: W,
 }
@@ -28,6 +32,9 @@ where
     W: for<'writer> MakeWriter<'writer> + 'static,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+        if event.is_log() {
+            return;
+        }
         let metadata = event.metadata();
         let mut visitor = FieldVisitor::default();
         event.record(&mut visitor);
@@ -55,9 +62,6 @@ struct FieldVisitor {
 
 impl FieldVisitor {
     fn insert(&mut self, field: &Field, value: Value) {
-        if field.name().starts_with("log.") {
-            return;
-        }
         match (field.name(), value) {
             ("message", Value::String(text)) => self.message = text,
             (name, value) => {
@@ -164,5 +168,16 @@ pub(crate) mod tests {
         assert_eq!(lines[1].level, LogLevel::Warn);
         assert_eq!(lines[1].fields["error"], "\"boom\"");
         assert!(lines[1].target.starts_with("makora_lib::logs"));
+    }
+
+    #[test]
+    fn leaves_out_records_bridged_from_the_log_crate() {
+        let _ = tracing_log::LogTracer::init();
+        let text = capture(|| {
+            log::warn!(target: "gpui::text_system", "failed to load font .SystemUIFont");
+            tracing::warn!(target: "makora_lib::app_core", "kept");
+        });
+        assert!(text.contains("kept"));
+        assert!(!text.contains("failed to load font"));
     }
 }

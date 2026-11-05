@@ -24,7 +24,7 @@ use crate::ui::format::providers::{
     CUSTOM_PRESET, CUSTOM_PRESET_LABEL, PROVIDER_KINDS, PROVIDER_PRESETS, ProviderPreset,
     parse_provider_kind, preset_by_id, preset_of, provider_kind_id, provider_kind_label,
 };
-use crate::ui::widgets::choice::Choice;
+use crate::ui::widgets::select_item::SelectItem;
 use crate::ui::widgets::toast::Toast;
 
 const DIALOG_WIDTH: f32 = 448.;
@@ -111,8 +111,8 @@ impl AppDialog for ProviderDialog {
 
 struct ProviderForm {
     provider: Option<ProviderConfig>,
-    preset_select: Entity<SelectState<Vec<Choice>>>,
-    kind_select: Entity<SelectState<Vec<Choice>>>,
+    preset_select: Entity<SelectState<Vec<SelectItem>>>,
+    kind_select: Entity<SelectState<Vec<SelectItem>>>,
     name: Entity<InputState>,
     base_url: Entity<InputState>,
     api_key: Entity<InputState>,
@@ -144,15 +144,15 @@ impl ProviderForm {
                 provider.base_url.clone()
             });
 
-        let presets: Vec<Choice> = PROVIDER_PRESETS
+        let presets: Vec<SelectItem> = PROVIDER_PRESETS
             .iter()
-            .map(|preset| Choice::new(preset.id, preset.label))
-            .chain([Choice::new(CUSTOM_PRESET, CUSTOM_PRESET_LABEL)])
+            .map(|preset| SelectItem::new(preset.id, preset.label))
+            .chain([SelectItem::new(CUSTOM_PRESET, CUSTOM_PRESET_LABEL)])
             .collect();
         let preset_ix = presets.iter().position(|choice| choice.value == preset_id);
-        let kinds: Vec<Choice> = PROVIDER_KINDS
+        let kinds: Vec<SelectItem> = PROVIDER_KINDS
             .into_iter()
-            .map(|kind| Choice::new(provider_kind_id(kind), provider_kind_label(kind)))
+            .map(|kind| SelectItem::new(provider_kind_id(kind), provider_kind_label(kind)))
             .collect();
         let kind_ix = PROVIDER_KINDS.iter().position(|item| *item == kind);
 
@@ -263,19 +263,20 @@ impl ProviderForm {
 
     fn on_preset_selected(
         &mut self,
-        _: &Entity<SelectState<Vec<Choice>>>,
-        event: &SelectEvent<Vec<Choice>>,
+        _: &Entity<SelectState<Vec<SelectItem>>>,
+        event: &SelectEvent<Vec<SelectItem>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let SelectEvent::Confirm(Some(preset_id)) = event else {
             return;
         };
+        let preset_id = preset_by_id(preset_id).map_or(CUSTOM_PRESET, |preset| preset.id);
         self.preset_id = preset_id;
         let (kind, base_url, name) = preset_fields(preset_id);
         self.kind = kind;
         self.kind_select.update(cx, |select, cx| {
-            select.set_selected_value(&provider_kind_id(kind), window, cx)
+            select.set_selected_value(&provider_kind_id(kind).into(), window, cx)
         });
         self.base_url
             .update(cx, |input, cx| input.set_value(base_url, window, cx));

@@ -11,7 +11,7 @@ use gpui_kit::{
 use makora_lib::paths::APP_ID;
 use tracing::{error, warn};
 
-use crate::ui::route::{Route, Section};
+use crate::ui::route::Route;
 use crate::ui::shell::Shell;
 
 pub const TITLE: &str = "Makora";
@@ -82,12 +82,6 @@ pub fn with_main_window(cx: &mut App, f: impl FnOnce(&mut gpui_kit::Window, &mut
     {
         let _ = cx.update_window(main.handle.into(), |_, window, cx| f(window, cx));
     }
-}
-
-/// The screen the main window shows, `None` while it is closed.
-pub fn main_section(cx: &App) -> Option<Section> {
-    let main = cx.try_global::<MainWindowSlot>()?.0.as_ref()?;
-    Some(main.shell.read(cx).section())
 }
 
 fn open(route: Option<Route>, cx: &mut App) {

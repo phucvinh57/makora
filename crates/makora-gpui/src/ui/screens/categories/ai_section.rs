@@ -407,6 +407,13 @@ impl AiSection {
         section
     }
 
+    pub fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.installed_revision = None;
+        self.next_run_inputs = None;
+        self.load_models_loaded(cx);
+        self.on_app_state(window, cx);
+    }
+
     pub fn set_pending_review(&mut self, pending: Option<i64>, cx: &mut Context<Self>) {
         self.pending_review = pending;
         cx.notify();

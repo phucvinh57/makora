@@ -43,35 +43,30 @@ use crate::ui::dialogs::add_category::{AddCategoryData, AddCategoryDialog};
 use crate::ui::dialogs::{self};
 use crate::ui::error::UiError;
 use crate::ui::format::categories::{UNCATEGORIZED, UNCATEGORIZED_LABEL, category_paths};
-use crate::ui::prefs::Prefs;
 use crate::ui::route::HistoryFilters;
 use crate::ui::screens::Screen;
 use crate::ui::screens::categories::review::undo;
-use crate::ui::shell::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
+use crate::ui::shell::content_size;
 use crate::ui::widgets::category_combobox::{
     CategoryChoice, CategoryCombobox, CategoryComboboxEvent,
 };
-use crate::ui::widgets::choice::Choice;
 use crate::ui::widgets::feedback::ErrorBanner;
 use crate::ui::widgets::pagination::Pagination;
+use crate::ui::widgets::select_item::SelectItem;
 use crate::ui::widgets::toast::Toast;
 
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(300);
-/// The shell's padding around a screen, which this one fills to keep its header and pagination
-/// in view while the rows scroll.
-const CONTENT_PADDING: f32 = 52.;
-const CONTENT_SIDE_PADDING: f32 = 48.;
 
 /// The revisions the rows are built from.
 fn watched(revisions: &Revisions) -> (u64, u64, u64) {
     (revisions.sessions, revisions.labels, revisions.categories)
 }
 
-fn source_choices() -> Vec<Choice> {
+fn source_choices() -> Vec<SelectItem> {
     vec![
-        Choice::new(filters::ALL_SOURCES, "All sources"),
-        Choice::new("manual", "Manual"),
-        Choice::new("rule", "Rule"),
+        SelectItem::new(filters::ALL_SOURCES, "All sources"),
+        SelectItem::new("manual", "Manual"),
+        SelectItem::new("rule", "Rule"),
     ]
 }
 
@@ -104,7 +99,7 @@ pub struct HistoryScreen {
     filters: HistoryFilters,
     search: Entity<InputState>,
     category_filter: Entity<CategoryCombobox>,
-    source_select: Entity<SelectState<Vec<Choice>>>,
+    source_select: Entity<SelectState<Vec<SelectItem>>>,
     time_range: Entity<TimeRangeFilter>,
     bulk_picker: Entity<CategoryCombobox>,
     /// The last page loaded and the filters it was loaded for; it stays on screen while the
@@ -180,7 +175,7 @@ impl Screen for HistoryScreen {
             cx.subscribe_in(
                 &source_select,
                 window,
-                |this, _, event: &SelectEvent<Vec<Choice>>, window, cx| {
+                |this, _, event: &SelectEvent<Vec<SelectItem>>, window, cx| {
                     if let SelectEvent::Confirm(Some(value)) = event {
                         let next = with_source(&this.filters, parse_source(value));
                         this.set_filters(next, window, cx);
@@ -255,6 +250,10 @@ impl Screen for HistoryScreen {
             self.set_filters(filters, window, cx);
         }
     }
+
+    fn shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.reload(window, cx);
+    }
 }
 
 impl HistoryScreen {
@@ -322,7 +321,7 @@ impl HistoryScreen {
         self.category_filter.update(cx, |picker, cx| {
             picker.set_value(Some(category.into()), window, cx)
         });
-        let source = source_value(self.filters.source);
+        let source = SharedString::from(source_value(self.filters.source));
         self.source_select.update(cx, |select, cx| {
             select.set_selected_value(&source, window, cx)
         });
@@ -663,13 +662,7 @@ impl HistoryScreen {
 
 impl Render for HistoryScreen {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let viewport = window.viewport_size();
-        let sidebar = if Prefs::get(cx).sidebar_collapsed {
-            SIDEBAR_COLLAPSED_WIDTH
-        } else {
-            SIDEBAR_WIDTH
-        };
-        let width = f32::from(viewport.width) - sidebar - CONTENT_SIDE_PADDING;
+        let content = content_size(window, cx);
         let error = match (&self.error, &AppState::read(cx).categories_error) {
             (Some(err), _) => Some(format!("Failed to load sessions: {err}")),
             (None, Some(err)) => Some(format!("Failed to load categories: {err}")),
@@ -681,13 +674,13 @@ impl Render for HistoryScreen {
         let page = self.filters.page;
         let view = cx.entity().downgrade();
         v_flex()
-            .h(viewport.height - px(CONTENT_PADDING))
+            .h(content.height)
             .child(div().pb_4().child(self.render_header(cx)))
             .when_some(error, |this, error| this.child(div().pb_3().child(error)))
             .when(selected > 0, |this| {
                 this.child(div().pb_3().child(self.render_bulk_bar(selected, cx)))
             })
-            .child(self.render_table(width, cx))
+            .child(self.render_table(content.width.as_f32(), cx))
             .child(
                 div().pt_3().child(
                     Pagination::new(

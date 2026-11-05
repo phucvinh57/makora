@@ -25,7 +25,7 @@ use crate::ui::format::rules::{
     pattern_field_label, rule_kind_label, rule_value_placeholder,
 };
 use crate::ui::widgets::card::Card;
-use crate::ui::widgets::choice::Choice;
+use crate::ui::widgets::select_item::SelectItem;
 use crate::ui::widgets::suggest_input::{SuggestInput, SuggestInputEvent, Suggestion};
 
 const SOURCES_STALE_AFTER: Duration = Duration::from_secs(60);
@@ -67,8 +67,8 @@ fn suggests(kind: RuleKind) -> bool {
 }
 
 pub struct ExclusionsSection {
-    kind_select: Entity<SelectState<Vec<Choice>>>,
-    field_select: Entity<SelectState<Vec<Choice>>>,
+    kind_select: Entity<SelectState<Vec<SelectItem>>>,
+    field_select: Entity<SelectState<Vec<SelectItem>>>,
     suggest: Entity<SuggestInput>,
     plain: Entity<InputState>,
     kind: RuleKind,
@@ -90,13 +90,13 @@ impl ExclusionsSection {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let kind = RuleKind::App;
         let field = PatternField::Url;
-        let kinds: Vec<Choice> = RULE_KINDS
+        let kinds: Vec<SelectItem> = RULE_KINDS
             .into_iter()
-            .map(|kind| Choice::new(kind.as_str(), rule_kind_label(kind)))
+            .map(|kind| SelectItem::new(kind.as_str(), rule_kind_label(kind)))
             .collect();
-        let fields: Vec<Choice> = PATTERN_FIELDS
+        let fields: Vec<SelectItem> = PATTERN_FIELDS
             .into_iter()
-            .map(|field| Choice::new(field.as_str(), pattern_field_label(field)))
+            .map(|field| SelectItem::new(field.as_str(), pattern_field_label(field)))
             .collect();
         let kind_select =
             cx.new(|cx| SelectState::new(kinds, Some(IndexPath::default()), window, cx));
@@ -173,8 +173,8 @@ impl ExclusionsSection {
 
     fn on_kind_selected(
         &mut self,
-        _: &Entity<SelectState<Vec<Choice>>>,
-        event: &SelectEvent<Vec<Choice>>,
+        _: &Entity<SelectState<Vec<SelectItem>>>,
+        event: &SelectEvent<Vec<SelectItem>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -219,8 +219,8 @@ impl ExclusionsSection {
 
     fn on_field_selected(
         &mut self,
-        _: &Entity<SelectState<Vec<Choice>>>,
-        event: &SelectEvent<Vec<Choice>>,
+        _: &Entity<SelectState<Vec<SelectItem>>>,
+        event: &SelectEvent<Vec<SelectItem>>,
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {

@@ -25,10 +25,9 @@ use crate::ui::format::ai_usage::{
     output_tokens_per_second, overall_output_tokens_per_second, speed_detail,
 };
 use crate::ui::format::date_range::parse_instant;
-use crate::ui::prefs::Prefs;
 use crate::ui::screens::insights::cost_chart::{cost_chart, cost_points};
-use crate::ui::screens::insights::segmented;
-use crate::ui::shell::{SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH};
+use crate::ui::shell::content_size;
+use crate::ui::widgets::segmented::segmented;
 use crate::ui::widgets::stat_tile::StatTile;
 
 const RECENT_RUNS: usize = 8;
@@ -134,9 +133,13 @@ impl UsageTab {
             runs_load: Task::ready(()),
             _subscriptions: subscriptions,
         };
-        tab.load_summary(cx);
-        tab.load_runs(cx);
+        tab.refresh(cx);
         tab
+    }
+
+    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.load_summary(cx);
+        self.load_runs(cx);
     }
 
     fn set_period(&mut self, period: UsagePeriod, cx: &mut Context<Self>) {
@@ -329,12 +332,7 @@ fn stat_grid(
     let totals = &summary.totals;
     let (cost, unpriced) = total_cost(&summary.models, lookup.prices);
     let has_remote = summary.models.iter().any(|model| model.provider.is_some());
-    let sidebar = if Prefs::get(cx).sidebar_collapsed {
-        SIDEBAR_COLLAPSED_WIDTH
-    } else {
-        SIDEBAR_WIDTH
-    };
-    let content = window.viewport_size().width.as_f32() - sidebar - 48.;
+    let content = content_size(window, cx).width.as_f32();
     let columns = if content >= WIDE_CONTENT { 6 } else { 3 };
 
     div()

@@ -20,4 +20,15 @@ pub trait Screen: Render + Sized {
     fn navigate(&mut self, location: Self::Location, window: &mut Window, cx: &mut Context<Self>) {
         let _ = (location, window, cx);
     }
+
+    /// Called when the screen comes back into view from another one; `new` covers the first
+    /// showing. The web UI refetched a page's data each time it was opened.
+    fn shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _ = (window, cx);
+    }
+
+    /// Called when another screen takes its place.
+    fn hidden(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _ = (window, cx);
+    }
 }

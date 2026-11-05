@@ -70,6 +70,11 @@ impl RulesTab {
         tab
     }
 
+    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.revision = None;
+        self.reload(cx);
+    }
+
     fn reload(&mut self, cx: &mut Context<Self>) {
         let revision = AppState::read(cx).revisions.categories;
         if self.revision == Some(revision) {

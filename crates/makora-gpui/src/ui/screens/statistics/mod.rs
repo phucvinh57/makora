@@ -7,11 +7,12 @@ use std::collections::HashMap;
 
 use chrono::Local;
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::{ActiveTheme, Icon, Sizable, h_flex, v_flex};
+use gpui_kit::component::button::Button;
+use gpui_kit::component::{Icon, Sizable, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription, Task, Window, px,
+    Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Task,
+    Window,
 };
 use makora_lib::domain::types::ActivityStats;
 use makora_lib::reporting::query;
@@ -24,6 +25,7 @@ use crate::ui::format::stats_date::{RANGE_PRESETS, RangePreset, compute_range};
 use crate::ui::screens::Screen;
 use crate::ui::widgets::feedback::ErrorBanner;
 use crate::ui::widgets::page_header::PageHeader;
+use crate::ui::widgets::segmented::segmented;
 
 /// The revisions the statistics are built from.
 fn watched(revisions: &Revisions) -> (u64, u64, u64) {
@@ -61,6 +63,10 @@ impl Screen for StatisticsScreen {
         };
         screen.reload(cx);
         screen
+    }
+
+    fn shown(&mut self, _: &mut Window, cx: &mut Context<Self>) {
+        self.reload(cx);
     }
 }
 
@@ -116,7 +122,7 @@ impl StatisticsScreen {
     }
 
     /// The stats to draw, and whether they are another range's held over while this one loads.
-    fn shown(&self) -> Option<(&ActivityStats, bool)> {
+    fn displayed(&self) -> Option<(&ActivityStats, bool)> {
         match self.loaded.get(&self.range) {
             Some(stats) => Some((stats, false)),
             None => self
@@ -127,30 +133,22 @@ impl StatisticsScreen {
     }
 
     fn render_controls(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let presets = RANGE_PRESETS.map(|(preset, label)| {
-            Button::new(label)
-                .small()
-                .label(label)
-                .map(|button| {
-                    if preset == self.range {
-                        button.secondary()
-                    } else {
-                        button.ghost()
-                    }
-                })
-                .on_click(cx.listener(move |screen, _, _, cx| screen.select(preset, cx)))
-        });
+        let selected = RANGE_PRESETS
+            .iter()
+            .position(|(preset, _)| *preset == self.range)
+            .unwrap_or(0);
         h_flex()
             .gap_2()
-            .child(
-                h_flex()
-                    .gap_1()
-                    .p(px(2.))
-                    .rounded_md()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .children(presets),
-            )
+            .child(segmented(
+                "statistics-range",
+                RANGE_PRESETS
+                    .iter()
+                    .map(|(_, label)| SharedString::from(*label))
+                    .collect(),
+                selected,
+                cx.listener(|screen, ix: &usize, _, cx| screen.select(RANGE_PRESETS[*ix].0, cx)),
+                cx,
+            ))
             .child(
                 Button::new("refresh-statistics")
                     .outline()
@@ -172,7 +170,7 @@ impl Render for StatisticsScreen {
             .filter(|(range, _)| *range == self.range)
             .map(|(_, message)| ErrorBanner::new(message.clone()));
         let categories = &AppState::read(cx).categories;
-        let body = match self.shown() {
+        let body = match self.displayed() {
             Some((stats, held_over)) => Some(
                 v_flex()
                     .gap_6()

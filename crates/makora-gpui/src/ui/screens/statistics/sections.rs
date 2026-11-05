@@ -164,7 +164,7 @@ fn category_card(stats: &ActivityStats, categories: &[Category], cx: &App) -> Ca
     card.child(
         wrapping_row(GAP_4)
             .justify_center()
-            .items_center()
+            .items_start()
             .child(div().size(px(DONUT_SIZE)).flex_shrink_0().child(donut))
             .child(
                 v_flex()

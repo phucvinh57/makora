@@ -6,9 +6,9 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme, Icon, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AnyElement, AnyView, AppContext, ClickEvent, Context, Entity, InteractiveElement, IntoElement,
-    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Subscription, Window,
-    div, px,
+    AnyElement, AnyView, App, AppContext, ClickEvent, Context, Entity, InteractiveElement,
+    IntoElement, ParentElement, Pixels, Render, SharedString, Size, StatefulInteractiveElement,
+    Styled, Subscription, Window, div, px, size,
 };
 
 use crate::ui::app_state::AppState;
@@ -24,8 +24,9 @@ use crate::ui::theme;
 use crate::ui::widgets::background_tasks::BackgroundTasksIndicator;
 use crate::ui::widgets::toast::Toast;
 
-pub const SIDEBAR_WIDTH: f32 = 208.;
-pub const SIDEBAR_COLLAPSED_WIDTH: f32 = 56.;
+const SIDEBAR_WIDTH: f32 = 208.;
+const SIDEBAR_COLLAPSED_WIDTH: f32 = 56.;
+const CONTENT_PADDING: f32 = 24.;
 
 pub struct Shell {
     section: Section,
@@ -67,20 +68,16 @@ impl Shell {
         shell
     }
 
-    pub fn section(&self) -> Section {
-        self.section
-    }
-
     /// Shows a screen as the user left it.
     pub fn select(&mut self, section: Section, window: &mut Window, cx: &mut Context<Self>) {
-        self.screen(section, window, cx);
-        self.section = section;
-        cx.notify();
+        let reentered = self.reentering(section);
+        self.show(section, reentered, window, cx);
     }
 
     /// Shows a screen at a tab or with filters.
     pub fn navigate(&mut self, route: Route, window: &mut Window, cx: &mut Context<Self>) {
         let section = route.section();
+        let reentered = self.reentering(section);
         match route {
             Route::Statistics | Route::Settings => {}
             Route::Categories(tab) => {
@@ -96,7 +93,31 @@ impl Shell {
                 screen.update(cx, |screen, cx| screen.navigate(tab, window, cx));
             }
         }
-        self.select(section, window, cx);
+        self.show(section, reentered, window, cx);
+    }
+
+    /// Whether `section` was built on an earlier visit and is about to come back into view.
+    fn reentering(&self, section: Section) -> bool {
+        section != self.section && self.is_open(section)
+    }
+
+    fn show(
+        &mut self,
+        section: Section,
+        reentered: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let previous = self.section;
+        self.screen(section, window, cx);
+        self.section = section;
+        if section != previous {
+            self.set_visible(previous, false, window, cx);
+            if reentered {
+                self.set_visible(section, true, window, cx);
+            }
+        }
+        cx.notify();
     }
 
     pub fn set_collapsed(&mut self, collapsed: bool, cx: &mut Context<Self>) {
@@ -112,6 +133,32 @@ impl Shell {
             Section::History => open(&mut self.history, window, cx).into(),
             Section::Insights => open(&mut self.insights, window, cx).into(),
             Section::Settings => open(&mut self.settings, window, cx).into(),
+        }
+    }
+
+    fn is_open(&self, section: Section) -> bool {
+        match section {
+            Section::Statistics => self.statistics.is_some(),
+            Section::Categories => self.categories.is_some(),
+            Section::History => self.history.is_some(),
+            Section::Insights => self.insights.is_some(),
+            Section::Settings => self.settings.is_some(),
+        }
+    }
+
+    fn set_visible(
+        &self,
+        section: Section,
+        visible: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match section {
+            Section::Statistics => set_visible(&self.statistics, visible, window, cx),
+            Section::Categories => set_visible(&self.categories, visible, window, cx),
+            Section::History => set_visible(&self.history, visible, window, cx),
+            Section::Insights => set_visible(&self.insights, visible, window, cx),
+            Section::Settings => set_visible(&self.settings, visible, window, cx),
         }
     }
 
@@ -267,6 +314,38 @@ fn open<S: Screen + 'static>(
         .clone()
 }
 
+fn set_visible<S: Screen + 'static>(
+    slot: &Option<Entity<S>>,
+    visible: bool,
+    window: &mut Window,
+    cx: &mut Context<Shell>,
+) {
+    if let Some(screen) = slot {
+        screen.update(cx, |screen, cx| {
+            if visible {
+                screen.shown(window, cx);
+            } else {
+                screen.hidden(window, cx);
+            }
+        });
+    }
+}
+
+/// The room a screen has inside the shell's padding, for screens that fill the window rather
+/// than scroll in it. The height leaves a few pixels for borders.
+pub fn content_size(window: &Window, cx: &App) -> Size<Pixels> {
+    let viewport = window.viewport_size();
+    let sidebar = if Prefs::get(cx).sidebar_collapsed {
+        SIDEBAR_COLLAPSED_WIDTH
+    } else {
+        SIDEBAR_WIDTH
+    };
+    size(
+        viewport.width - px(sidebar + 2. * CONTENT_PADDING),
+        viewport.height - px(2. * CONTENT_PADDING + 4.),
+    )
+}
+
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let screen = self.screen(self.section, window, cx);
@@ -286,7 +365,7 @@ impl Render for Shell {
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .p_6()
+                    .p(px(CONTENT_PADDING))
                     .overflow_y_scrollbar()
                     .child(screen),
             )

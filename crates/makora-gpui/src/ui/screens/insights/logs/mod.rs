@@ -20,12 +20,10 @@ use gpui_kit::{
 use makora_lib::logs::LogArea;
 use makora_lib::logs::reader::{HostTraffic, LogPage, LogQuery};
 
-use crate::runtime::window::main_section;
 use crate::ui::data;
 use crate::ui::error::UiError;
-use crate::ui::route::Section;
-use crate::ui::screens::insights::segmented;
 use crate::ui::widgets::feedback::ErrorBanner;
+use crate::ui::widgets::segmented::segmented;
 
 use model::{
     AREAS, GroupBy, KeyedEntry, ListItem, MinLevel, Period, area_label, group_rows, list_items,
@@ -153,29 +151,21 @@ impl LogsTab {
         }
     }
 
-    /// Stops refreshing; the next render starts again.
-    pub fn stop_polling(&mut self) {
-        self.polling = false;
-        self.poll = Task::ready(());
-    }
-
-    /// Reloads, then every few seconds while the tab is on screen.
-    fn start_polling(&mut self, cx: &mut Context<Self>) {
-        self.polling = true;
+    /// Reloads now and every few seconds after while `on`, which is while the tab is on screen.
+    pub fn set_polling(&mut self, on: bool, cx: &mut Context<Self>) {
+        if on == self.polling {
+            return;
+        }
+        self.polling = on;
+        if !on {
+            self.poll = Task::ready(());
+            return;
+        }
         self.reload(cx);
         self.poll = cx.spawn(async move |tab, cx| {
             loop {
                 cx.background_executor().timer(POLL).await;
-                let visible = tab.update(cx, |tab, cx| {
-                    if main_section(cx) == Some(Section::Insights) {
-                        tab.reload(cx);
-                        true
-                    } else {
-                        tab.polling = false;
-                        false
-                    }
-                });
-                if !matches!(visible, Ok(true)) {
+                if tab.update(cx, |tab, cx| tab.reload(cx)).is_err() {
                     break;
                 }
             }
@@ -525,9 +515,6 @@ fn area_chip(
 
 impl Render for LogsTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.polling {
-            self.start_polling(cx);
-        }
         let network = self.render_network(cx);
         let list = self.render_list(window, cx);
         v_flex()

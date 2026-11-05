@@ -97,6 +97,21 @@ impl Screen for CategoriesScreen {
     fn navigate(&mut self, tab: CategoriesTab, _: &mut Window, cx: &mut Context<Self>) {
         self.set_tab(tab, cx);
     }
+
+    fn shown(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        AppState::update(cx, |state, cx| state.reload_categories(cx));
+        self.labels = None;
+        self.reload_stats(cx);
+        match self.tab {
+            CategoriesTab::Taxonomy => {}
+            CategoriesTab::Rules => self.rules.update(cx, |rules, cx| rules.refresh(cx)),
+            CategoriesTab::Review => {
+                self.ai.update(cx, |ai, cx| ai.refresh(window, cx));
+                self.review
+                    .update(cx, |review, cx| review.reload(window, cx));
+            }
+        }
+    }
 }
 
 impl Render for CategoriesScreen {

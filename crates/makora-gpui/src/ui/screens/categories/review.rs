@@ -295,7 +295,7 @@ impl ReviewQueue {
         self.groups().iter().find(|group| group_id(group) == id)
     }
 
-    fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.labels = Some(AppState::read(cx).revisions.labels);
         self.fetching = true;
         let page = self.page as i64;
