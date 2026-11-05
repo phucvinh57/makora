@@ -1,7 +1,7 @@
 //! Categories: the taxonomy, the rules that file activity, and the AI with its review queue.
 
 mod ai_section;
-mod review;
+pub(crate) mod review;
 mod rules;
 mod taxonomy;
 

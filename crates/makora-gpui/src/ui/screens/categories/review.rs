@@ -92,7 +92,7 @@ pub fn moved_message(count: usize, category: Option<&str>) -> String {
 }
 
 /// Puts the classifications back as they were before a decision, from a toast's Undo.
-fn undo(prior: Vec<ActivityClassification>, cx: &mut App) {
+pub(crate) fn undo(prior: Vec<ActivityClassification>, cx: &mut App) {
     let core = Core::get(cx);
     let job = cx
         .background_executor()
