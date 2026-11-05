@@ -6,8 +6,9 @@ sharing screenshots or activity history.
 
 ## Development prerequisites
 
-- [Bun](https://bun.sh), [Node.js](https://nodejs.org), and a stable
-  [Rust toolchain](https://www.rust-lang.org/tools/install).
+- A stable [Rust toolchain](https://www.rust-lang.org/tools/install), plus
+  [Bun](https://bun.sh) and [Node.js](https://nodejs.org) for the browser
+  extension and the Biome/lefthook tooling.
 - A C/C++ toolchain: SQLite is compiled from source.
 - CMake and dependencies for the local AI backend: Vulkan on Windows/Linux,
   Metal on macOS.
@@ -17,57 +18,88 @@ sharing screenshots or activity history.
   ```powershell
   $env:CARGO_TARGET_DIR = "C:\mk"
   ```
-- On Linux, install Tauri's WebKitGTK dependencies. On Debian/Ubuntu:
+- On Linux, install GPUI's dependencies. On Debian/Ubuntu:
   ```sh
-  sudo apt install build-essential libwebkit2gtk-4.1-dev libgtk-3-dev \
-      librsvg2-dev libayatana-appindicator3-dev libssl-dev patchelf
+  sudo apt install build-essential libxkbcommon-dev libxkbcommon-x11-dev \
+      libwayland-dev libxcb1-dev libx11-xcb-dev libfontconfig-dev \
+      libfreetype-dev
   ```
+  GPUI renders through Vulkan, so a Vulkan driver must be installed. GNOME
+  needs the AppIndicator extension to show the tray icon.
   The AI backend also needs CMake, Vulkan development headers/libraries,
   and a shader compiler; package names depend on your distribution.
 - On macOS, install Xcode command line tools. Grant Accessibility permission
   to Makora to read focused window titles. Unsigned development rebuilds may
   need that permission granted again because the app signature changes.
 
-See the [Tauri prerequisites guide](https://tauri.app/start/prerequisites/)
-for additional platform setup.
-
 ## Building and running
 
 From the repository root:
 
 ```sh
-bun install
-bun tauri dev       # full desktop app: Vite frontend and Rust backend
+scripts/dev.sh      # build the app and the browser bridge, then run the app
 ```
 
-Other commands:
+The Rust code is a Cargo workspace rooted at the repository root, which holds
+`Cargo.lock` and `target/`:
 
 ```sh
-bun dev             # frontend only; desktop commands need a Tauri host
-bun run build       # route generation, TypeScript checks, frontend build
-bun tauri build     # release bundle/installer
+cargo run -p makora             # the app alone
+cargo build --workspace         # the app and makora-bridge
+cargo test --workspace          # run existing Rust tests
+cargo clippy --workspace --all-targets
+```
+
+The browser extension and scripts use Biome rather than ESLint or Prettier:
+
+```sh
+bun install
 bun run lint        # Biome lint checks
 bun run check       # Biome checks with automatic fixes
 bun run format      # Biome formatting checks
 ```
 
-The Rust backend is a single crate, not a workspace. From `src-tauri/`:
+## Packaging and releases
 
-```sh
-cargo build
-cargo test          # run existing Rust tests
-cargo clippy
-```
+`node scripts/bundle.mjs` (or `bun run bundle`) builds `makora` and
+`makora-bridge` in release mode and packages both for the host OS; it accepts
+`--target <triple>`. Every package puts the bridge next to the app, because
+the app registers the bridge it finds beside its own executable.
 
-Use Biome for formatting and linting, including React hook rules, rather
-than ESLint or Prettier. The frontend build checks strict TypeScript.
+| OS | Tool | Formats | Output |
+| --- | --- | --- | --- |
+| Linux | [cargo-deb](https://crates.io/crates/cargo-deb), [cargo-generate-rpm](https://crates.io/crates/cargo-generate-rpm) | DEB, RPM | `target/debian/`, `target/generate-rpm/` |
+| macOS | [cargo-packager](https://crates.io/crates/cargo-packager) | app, DMG (ad hoc signed, macOS 10.15+) | `target/packager/` |
+| Windows | cargo-packager | NSIS, MSI | `target/packager/` |
+
+Install the tools with `cargo install --locked cargo-deb cargo-generate-rpm`
+or `cargo install --locked cargo-packager`. Their configuration lives in
+`crates/makora/Cargo.toml` under `[package.metadata.deb]`,
+`[package.metadata.generate-rpm]` and `[package.metadata.packager]`;
+`crates/makora/build.rs` embeds the icon and version info into the Windows
+executable. The Linux packages add the desktop entry from `packaging/linux/`,
+whose name must stay `dev.phucvinh57.makora.desktop` to match the window's
+app ID, and the GNOME extension files. `packaging/linux/post-install.sh`
+copies the extension into GNOME Shell on GNOME Wayland and stops a running
+copy of a pre-GPUI release, which does not share the single-instance lock
+(`packaging/linux/deb/` links the Debian script names to these scripts). Check
+a package with `dpkg-deb -c` or `rpm -qlp` instead of installing it on your
+machine.
+
+The release workflow (`.github/workflows/release.yaml`) runs on a `v*` tag
+push and builds the Linux packages into a draft release; run it manually to
+build macOS and Windows installers for the latest release. It sets the version
+from the tag in the root `Cargo.toml` (`[workspace.package]`), the only place
+it lives. The same workflow publishes the browser extension to the Chrome Web
+Store for stable tags.
 
 ## Project layout and architecture
 
 | Location | Purpose |
 | --- | --- |
-| `src/` | React/TypeScript interface, routes, queries, shared components |
-| `src-tauri/` | Tauri 2 desktop host and Rust backend |
+| `crates/makora-core/` | Rust backend (tracking, categorization, storage, AI) and the `makora-bridge` binary |
+| `crates/makora/` | GPUI desktop app: window, tray, single instance, screens and dialogs |
+| `packaging/` | Linux desktop entry and package maintainer scripts |
 | `extensions/browser/` | Optional active-tab reporter |
 | `extensions/gnome/` | GNOME Shell focus reporter |
 | `demo/` | Remotion video and fictional screenshot fixtures |
@@ -86,8 +118,9 @@ alone does not stop tracking.
 
 ## Local data and migrations
 
-Sessions live in `makora.sqlite` under Tauri's per-user app-data directory,
-resolved in `src-tauri/src/lib.rs`:
+Sessions live in `makora.sqlite` under the per-user app-data directory,
+resolved by `AppPaths` in `crates/makora-core/src/paths.rs` (debug builds take
+`MAKORA_DATA_DIR` and `MAKORA_CONFIG_DIR` overrides):
 
 | Platform | Directory |
 | --- | --- |
@@ -127,7 +160,7 @@ See the [installation guide](extensions/browser/README.md#installing) for
 Chromium browsers and Firefox.
 
 The extension reaches the app through native messaging. The browser starts
-`makora-bridge` (`src-tauri/src/bin/makora_bridge.rs`), which relays each
+`makora-bridge` (`crates/makora-core/src/bin/makora_bridge.rs`), which relays each
 `{ browser, url, title }` message to the app over a per-user local socket
 (`$XDG_RUNTIME_DIR/makora/bridge.sock` on Linux, a named pipe on Windows) and
 drops it while the app is not running. On every start the app writes the host
@@ -135,11 +168,9 @@ manifests that point browsers at the `makora-bridge` next to its executable
 (`tracking/adapters/native_host.rs`), so a dev run points browsers at
 `target/debug/makora-bridge` until the installed app starts again.
 
-`bun tauri dev` needs no extra step: Tauri builds every binary of the crate, so
-`target/debug/makora-bridge` sits next to the dev app. Release installers need
-the bridge bundled as a sidecar, which one `tauri build` cannot do; build them
-with `bun run bundle` (`scripts/bundle.mjs`), as the release workflow does. A
-plain `bun tauri build` produces installers without the bridge.
+`scripts/dev.sh` builds the bridge with the app, so `target/debug/makora-bridge`
+sits next to the dev app. `cargo run -p makora` alone does not rebuild the
+bridge.
 
 ## GNOME and Wayland development
 
@@ -180,8 +211,11 @@ isolated browser context; it never reads or writes the real activity database.
   relevant to your changes.
 - Avoid unnecessary comments.
 - Use `tracing::{info, warn, error}` instead of `println!` or `eprintln!`.
-  The bootstrap fallback in `lib.rs` is the exception when logging setup fails.
-- Build process-wide state inside Tauri's `setup`, never before `tauri::Builder`.
+  The bootstrap fallback in `crates/makora/src/lib.rs`, for errors before
+  logging is set up, and `cargo:` directives in build scripts are the
+  exceptions.
+- Build process-wide state in `main` after the single-instance check, never
+  before it.
 - Preserve local storage and local inference for activity data.
 
 ## Platform gaps

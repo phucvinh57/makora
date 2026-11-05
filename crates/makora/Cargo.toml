@@ -1,0 +1,95 @@
+[package]
+name = "makora"
+version.workspace = true
+edition = "2024"
+description = "Local desktop time tracker"
+homepage = "https://github.com/phucvinh57/makora"
+
+[[bin]]
+name = "makora"
+path = "src/main.rs"
+
+[dependencies]
+makora-core.workspace = true
+gpui-kit = "=0.9.0"
+anyhow.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+async-channel = "2.5"
+auto-launch = "0.6"
+dirs = "7"
+image = { version = "0.25", default-features = false, features = ["png"] }
+interprocess = "2.4"
+toml = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3.7", default-features = false, features = ["blocking", "async-io"] }
+
+[target.'cfg(windows)'.dependencies]
+widestring = "1"
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+tray-icon = "0.25"
+
+[build-dependencies]
+winresource = "0.1.34"
+
+[package.metadata.deb]
+maintainer = "phucvinh57"
+copyright = "phucvinh57"
+extended-description = "Records the apps you use so you can look back at your day. Activity stays in a local SQLite database."
+section = "utils"
+priority = "optional"
+depends = "$auto, libwayland-client0"
+recommends = "mesa-vulkan-drivers"
+maintainer-scripts = "../../packaging/linux/deb"
+assets = [
+    ["target/release/makora", "usr/bin/", "755"],
+    ["target/release/makora-bridge", "usr/bin/", "755"],
+    ["../../packaging/linux/dev.phucvinh57.makora.desktop", "usr/share/applications/", "644"],
+    ["icons/32x32.png", "usr/share/icons/hicolor/32x32/apps/dev.phucvinh57.makora.png", "644"],
+    ["icons/128x128.png", "usr/share/icons/hicolor/128x128/apps/dev.phucvinh57.makora.png", "644"],
+    ["icons/128x128@2x.png", "usr/share/icons/hicolor/256x256/apps/dev.phucvinh57.makora.png", "644"],
+    ["icons/icon.png", "usr/share/icons/hicolor/512x512/apps/dev.phucvinh57.makora.png", "644"],
+    ["../../extensions/gnome/metadata.json", "usr/share/makora/gnome-extension/", "644"],
+    ["../../extensions/gnome/extension.js", "usr/share/makora/gnome-extension/", "644"],
+    ["../../extensions/gnome/session-is-gnome-wayland.sh", "usr/share/makora/gnome-extension/", "644"],
+    ["../../extensions/gnome/install-system.sh", "usr/share/makora/gnome-extension/", "644"],
+]
+
+[package.metadata.generate-rpm]
+license = "NOASSERTION"
+post_install_script = "../../packaging/linux/post-install.sh"
+post_uninstall_script = "../../packaging/linux/post-remove-rpm.sh"
+assets = [
+    { source = "target/release/makora", dest = "/usr/bin/makora", mode = "755" },
+    { source = "target/release/makora-bridge", dest = "/usr/bin/makora-bridge", mode = "755" },
+    { source = "../../packaging/linux/dev.phucvinh57.makora.desktop", dest = "/usr/share/applications/dev.phucvinh57.makora.desktop", mode = "644" },
+    { source = "icons/32x32.png", dest = "/usr/share/icons/hicolor/32x32/apps/dev.phucvinh57.makora.png", mode = "644" },
+    { source = "icons/128x128.png", dest = "/usr/share/icons/hicolor/128x128/apps/dev.phucvinh57.makora.png", mode = "644" },
+    { source = "icons/128x128@2x.png", dest = "/usr/share/icons/hicolor/256x256/apps/dev.phucvinh57.makora.png", mode = "644" },
+    { source = "icons/icon.png", dest = "/usr/share/icons/hicolor/512x512/apps/dev.phucvinh57.makora.png", mode = "644" },
+    { source = "../../extensions/gnome/metadata.json", dest = "/usr/share/makora/gnome-extension/metadata.json", mode = "644" },
+    { source = "../../extensions/gnome/extension.js", dest = "/usr/share/makora/gnome-extension/extension.js", mode = "644" },
+    { source = "../../extensions/gnome/session-is-gnome-wayland.sh", dest = "/usr/share/makora/gnome-extension/session-is-gnome-wayland.sh", mode = "644" },
+    { source = "../../extensions/gnome/install-system.sh", dest = "/usr/share/makora/gnome-extension/install-system.sh", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+"libwayland-client.so.0()(64bit)" = "*"
+
+[package.metadata.generate-rpm.recommends]
+mesa-vulkan-drivers = "*"
+
+[package.metadata.packager]
+product-name = "Makora"
+identifier = "dev.phucvinh57.makora"
+category = "Productivity"
+binaries = [{ path = "makora", main = true }, { path = "makora-bridge" }]
+icons = ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"]
+
+[package.metadata.packager.macos]
+minimum-system-version = "10.15"
+signing-identity = "-"

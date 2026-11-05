@@ -28,10 +28,15 @@ gnome-extensions disable makora@phucvinh57.dev
 gnome-extensions enable makora@phucvinh57.dev
 ```
 
-The DEB and RPM packages install `metadata.json` and `extension.js` under
+The DEB and RPM packages ship `metadata.json`, `extension.js`,
+`session-is-gnome-wayland.sh` and `install-system.sh` under
+`/usr/share/makora/gnome-extension/`. Their post-install script
+([`packaging/linux/post-install.sh`](../../packaging/linux/post-install.sh))
+runs `install-system.sh`, which installs the extension under
 `/usr/share/gnome-shell/extensions/makora@phucvinh57.dev/`. If the extension
-adds files, update the file list in
-[`src-tauri/tauri.linux.conf.json`](../../src-tauri/tauri.linux.conf.json) too.
+adds files, add them to both package asset lists in `crates/makora/Cargo.toml`
+(`[package.metadata.deb]` and `[package.metadata.generate-rpm]`) and to the
+post-remove scripts.
 
 ## D-Bus protocol
 
@@ -51,7 +56,7 @@ current activity block open. `pid` is zero when GNOME cannot provide a process
 ID; Makora then uses `app_id` to identify the application.
 
 The matching interface names and signatures are in
-[`src-tauri/src/tracking/adapters/platform/linux/gnome.rs`](../../src-tauri/src/tracking/adapters/platform/linux/gnome.rs).
+[`crates/makora-core/src/tracking/adapters/platform/linux/gnome.rs`](../../crates/makora-core/src/tracking/adapters/platform/linux/gnome.rs).
 Keep the extension and Rust definitions in sync. If a signature changes, bump
 `PROTOCOL_VERSION` in both places so Makora can detect mismatched versions.
 

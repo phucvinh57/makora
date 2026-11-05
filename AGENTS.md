@@ -1,34 +1,40 @@
 ## What this is
 
-Makora is a local desktop time tracker: Tauri 2 + Rust backend, React/TypeScript frontend, SQLite storage. It records one row per activity block — an app gains focus, a row opens; a different app takes focus, it closes. Nothing leaves the machine unless the user opts into a remote LLM provider (OpenAI, Anthropic or OpenAI-compatible, configured under Settings) for AI categorization; embeddings always stay local. An optional browser extension (`extensions/browser/`) reports the active tab so browser time splits per site instead of one opaque `chrome` block.
+Makora is a local desktop time tracker: a native Rust app with a GPUI (gpui-component) UI and SQLite storage. It records one row per activity block — an app gains focus, a row opens; a different app takes focus, it closes. Nothing leaves the machine unless the user opts into a remote LLM provider (OpenAI, Anthropic or OpenAI-compatible, configured under Settings) for AI categorization; embeddings always stay local. An optional browser extension (`extensions/browser/`) reports the active tab so browser time splits per site instead of one opaque `chrome` block.
 
 ## Commands
 
 ```
-bun install
-bun tauri dev      # full app (Vite + Rust) — the normal dev loop
-bun dev            # frontend only
-bun run build      # tsc typecheck + vite build
+scripts/dev.sh             # builds makora + makora-bridge, runs the app — the normal dev loop
+cargo run -p makora        # the app alone
+cargo test --workspace
+cargo clippy --workspace --all-targets
+bun install                # JS tooling: Biome, lefthook, the browser extension build
+node scripts/bundle.mjs    # release installers: deb + rpm (cargo-deb, cargo-generate-rpm) or app/dmg, nsis/msi (cargo-packager)
 ```
 
-From `src-tauri/` (single crate, no workspace): `cargo build`, `cargo test`, `cargo clippy`.
+Packaging config lives in `crates/makora/Cargo.toml` (`[package.metadata.{deb,generate-rpm,packager}]`) and `packaging/linux/`. Inspect built packages with `dpkg-deb -c` / `rpm -qlp`; never install them on the dev machine.
 
-No ESLint/Prettier: Biome lints and formats (`bun run lint`, `bun run check`, with the React hook rules on), and `tsc` in `bun run build` enforces TypeScript strictness.
+Cargo workspace at the repo root (`Cargo.lock` and `target/` live there). Members: `crates/makora-core` (lib `makora_lib`, every backend module, and the `makora-bridge` bin) and `crates/makora` (bin `makora`, the GPUI app: `runtime/` for tray, window, single instance and autostart; `ui/` for screens, dialogs and widgets).
 
-Build deps: Rust, Node, a C/C++ toolchain (`rusqlite` builds SQLite from source). Linux also needs Tauri's WebKitGTK stack (`libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libssl-dev patchelf`).
+No ESLint/Prettier: Biome lints and formats the extension and scripts (`bun run lint`, `bun run check`); `bun run ext:check` typechecks the extension.
 
-Database: `makora.sqlite` in Tauri's app-data dir (`~/.local/share/dev.phucvinh57.makora/` on Linux), resolved by `database_path` in `src-tauri/src/lib.rs`.
+Build deps: Rust, Node/Bun, a C/C++ toolchain and CMake (SQLite and llama.cpp build from source), Vulkan headers and `glslc` on Linux/Windows. Linux also needs GPUI's libraries (`libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev libx11-xcb-dev libfontconfig-dev libfreetype-dev`).
+
+Database: `makora.sqlite` in the app-data dir (`~/.local/share/dev.phucvinh57.makora/` on Linux), resolved by `AppPaths` in `crates/makora-core/src/paths.rs`. Debug builds take `MAKORA_DATA_DIR` / `MAKORA_CONFIG_DIR` to run on other data.
+
+Backend layout: `AppCore` (`crates/makora-core/src/app_core.rs`) builds every service and starts the background work; the UI in `crates/makora/src/ui/` calls its application-layer traits.
 
 ## Workflow
 
-- **One worktree per independent change.** Start with `claude -w <name>`, or ask to work in a worktree. Worktrees live in `.claude/worktrees/`. A hook runs `scripts/worktree-setup.sh`, which installs JS deps and points cargo at the main checkout's `target/`. Run it yourself for a worktree made with plain `git worktree add`.
-- **Show the result, don't claim it.** `scripts/check.sh` runs the checks that cover the paths changed since `main` (`--all` runs every check). Report its output. For UI changes, also launch `bun tauri dev` in the background and screenshot the affected screen. The pre-push hook runs `scripts/check.sh` too; don't bypass it with `--no-verify`.
+- **One worktree per independent change.** Start with `claude -w <name>`, or ask to work in a worktree. Worktrees live in `.claude/worktrees/`. A hook runs `scripts/worktree-setup.sh`, which installs JS deps and symlinks `target/` to the main checkout's. Run it yourself for a worktree made with plain `git worktree add`.
+- **Show the result, don't claim it.** `scripts/check.sh` runs the checks that cover the paths changed since `main` (`--all` runs every check). Report its output. For UI changes, also launch the app (`cargo run -p makora`) in the background and screenshot the affected screen. The pre-push hook runs `scripts/check.sh` too; don't bypass it with `--no-verify`.
 - **Finish with `/pre-pr`.** It checks, reviews against `REVIEW.md`, commits, and opens the PR. Related changes go up as a stack with `gh stack`. There is no AI review in CI.
 - **Run `/pre-pr` without asking.** When a change is done, run it straight away. If checks pass and review findings are resolved, commit, push and open the PR without waiting for confirmation. Stop and ask only when checks keep failing or findings remain after round 3.
 
 ## Rules
 
 - **Do not add unnecessary comments.**
-- **No `println!`/`eprintln!`** — use `tracing::{info, warn, error}`. The only exception is the bootstrap fallback in `lib.rs`, for when the subscriber failed to install.
-- **Build process-wide state inside `setup`**, never before `tauri::Builder`.
+- **No `println!`/`eprintln!`** — use `tracing::{info, warn, error}`. The only exceptions are the bootstrap fallback in `crates/makora/src/lib.rs`, for errors before the subscriber is installed, and `cargo:` directives in build scripts.
+- **Build process-wide state in `main` after the single-instance check** (`makora::run`), never before it: a second launch exits there.
 - **Before applying new migration, make sure to back up the db first.

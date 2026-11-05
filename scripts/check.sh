@@ -35,20 +35,17 @@ run() {
   fi
 }
 
-frontend='^(src/|scripts/|extensions/|index\.html|package\.json|bun\.lock|tsconfig\.json|vite\.config\.ts|biome\.json|components\.json)'
-if touches "$frontend"; then
-  run biome bunx biome ci src extensions scripts
-  run build bun run build
+if touches '^(scripts/|extensions/|package\.json|bun\.lock|biome\.json)'; then
+  run biome bunx biome ci extensions scripts
 fi
 
-if touches '^extensions/browser/'; then
+if touches '^(extensions/browser/|package\.json|bun\.lock)'; then
   run ext-check bun run ext:check
 fi
 
-if touches '^src-tauri/'; then
-  [[ -f dist/index.html ]] || bun run build >/dev/null
-  run clippy bash -c 'cd src-tauri && cargo clippy --all-targets -- -D warnings'
-  run cargo-test bash -c 'cd src-tauri && cargo test'
+if touches '^(crates/|Cargo\.(toml|lock)|\.cargo/)'; then
+  run clippy cargo clippy --workspace --all-targets -- -D warnings
+  run cargo-test cargo test --workspace
 fi
 
 echo

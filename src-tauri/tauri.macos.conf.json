@@ -1,9 +1,0 @@
-{
-  "identifier": "dev.phucvinh57.makora",
-  "bundle": {
-    "macOS": {
-      "minimumSystemVersion": "10.15",
-      "signingIdentity": "-"
-    }
-  }
-}

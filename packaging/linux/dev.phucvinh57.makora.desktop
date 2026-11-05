@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Makora
+GenericName=Time Tracker
+Comment=See where your computer time goes
+Exec=makora
+Icon=dev.phucvinh57.makora
+StartupWMClass=dev.phucvinh57.makora
+Categories=Utility;
+Keywords=time;tracker;activity;productivity;
+Terminal=false

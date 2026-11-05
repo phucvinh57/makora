@@ -84,7 +84,7 @@ jobs:
               arch: "x64",
               target: "",
               artifact_name: "makora-linux",
-              files: "src-tauri/target/release/bundle/deb/*.deb\nsrc-tauri/target/release/bundle/rpm/*.rpm",
+              files: "target/debian/*.deb\ntarget/generate-rpm/*.rpm",
             });
           }
 
@@ -94,7 +94,7 @@ jobs:
               arch: "aarch64",
               target: "aarch64-apple-darwin",
               artifact_name: "makora-macos-arm64",
-              files: "src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg",
+              files: "target/packager/*.dmg",
             });
           }
 
@@ -104,7 +104,7 @@ jobs:
               arch: "x64",
               target: "",
               artifact_name: "makora-windows",
-              files: "src-tauri/target/release/bundle/msi/*.msi\nsrc-tauri/target/release/bundle/nsis/*.exe",
+              files: "target/packager/*.msi\ntarget/packager/*-setup.exe",
             });
           }
 
@@ -133,15 +133,16 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            librsvg2-dev \
-            libayatana-appindicator3-dev \
-            libssl-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libxcb1-dev \
+            libx11-xcb-dev \
+            libfontconfig-dev \
+            libfreetype-dev \
             libvulkan-dev \
             glslc \
             spirv-headers \
-            patchelf \
             build-essential
 
       - name: Extract release version
@@ -168,21 +169,16 @@ jobs:
           node <<'NODE'
           const fs = require("fs");
           const version = process.env.VERSION;
-          const cargoPath = "src-tauri/Cargo.toml";
+          const cargoPath = "Cargo.toml";
           const cargo = fs.readFileSync(cargoPath, "utf8");
           const updatedCargo = cargo.replace(
             /^version = ".*"$/m,
             'version = "' + version + '"',
           );
           if (updatedCargo === cargo) {
-            throw new Error("package version was not found in Cargo.toml");
+            throw new Error("workspace version was not found in Cargo.toml");
           }
           fs.writeFileSync(cargoPath, updatedCargo);
-
-          const configPath = "src-tauri/tauri.conf.json";
-          const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-          config.version = version;
-          fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
           NODE
 
       - name: Install Rust stable
@@ -193,31 +189,29 @@ jobs:
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
           key: ${{ matrix.platform }}-${{ matrix.arch }}
 
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: Cache Bun packages
-        uses: actions/cache@v6
+      - name: Install Linux packaging tools
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
         with:
-          path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-${{ runner.os }}-
+          tool: cargo-deb@3.8.0,cargo-generate-rpm@0.21.1
 
-      - name: Install frontend dependencies
-        run: bun install --frozen-lockfile
+      - name: Install macOS and Windows packaging tools
+        if: runner.os != 'Linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-packager@0.11.8
 
-      - name: Build Tauri app with the browser bridge
+      - name: Build the installers with the browser bridge
         shell: bash
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ startsWith(matrix.target, 'aarch64-apple-darwin') && '10.15' || '' }}
         run: |
           if [ -n "${{ matrix.target }}" ]; then
-            bun run bundle --target "${{ matrix.target }}"
+            node scripts/bundle.mjs --target "${{ matrix.target }}"
           else
-            bun run bundle
+            node scripts/bundle.mjs
           fi
 
       - name: Upload desktop installers
@@ -271,8 +265,7 @@ jobs:
             exit 1
           fi
 
-          shopt -s nullglob
-          assets=(release-assets/*)
+          mapfile -t assets < <(find release-assets -type f)
           if (( ${#assets[@]} == 0 )); then
             echo "No installer artifacts were downloaded." >&2
             exit 1
