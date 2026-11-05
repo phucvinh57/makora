@@ -3,10 +3,10 @@
 
 use std::sync::{Arc, LazyLock};
 
-use gpui_kit::component::Root;
+use gpui_kit::component::{Root, TitleBar};
 use gpui_kit::{
-    App, AppContext, Entity, Global, TitlebarOptions, WindowBounds, WindowHandle, WindowOptions,
-    px, size,
+    App, AppContext, Entity, Global, TitlebarOptions, WindowBounds, WindowDecorations,
+    WindowHandle, WindowOptions, px, size,
 };
 use makora_lib::paths::APP_ID;
 use tracing::{error, warn};
@@ -89,12 +89,13 @@ fn open(route: Option<Route>, cx: &mut App) {
         window_bounds: Some(WindowBounds::centered(size(px(1000.), px(700.)), cx)),
         titlebar: Some(TitlebarOptions {
             title: Some(TITLE.into()),
-            ..Default::default()
+            ..TitleBar::title_bar_options()
         }),
+        window_decorations: Some(WindowDecorations::Client),
         window_min_size: Some(size(px(900.), px(620.))),
         app_id: Some(APP_ID.into()),
         icon: WINDOW_ICON.clone(),
-        ..Default::default()
+        ..TitleBar::window_options()
     };
     let mut shell = None;
     let opened = cx.open_window(options, |window, cx| {

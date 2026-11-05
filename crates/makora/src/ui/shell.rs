@@ -3,7 +3,7 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{ActiveTheme, Icon, Sizable, StyledExt, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, Sizable, StyledExt, TitleBar, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, AnyView, App, AppContext, ClickEvent, Context, Entity, InteractiveElement,
@@ -11,6 +11,7 @@ use gpui_kit::{
     Styled, Subscription, Window, div, px, size,
 };
 
+use crate::runtime::window::TITLE;
 use crate::ui::app_state::AppState;
 use crate::ui::prefs::Prefs;
 use crate::ui::route::{Route, Section};
@@ -350,24 +351,39 @@ impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let screen = self.screen(self.section, window, cx);
         let theme = cx.theme();
-        h_flex()
+        v_flex()
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
             .text_size(theme.font_size)
-            .child(self.render_sidebar(cx))
             .child(
-                div()
-                    .id(SharedString::from(format!(
-                        "content-{}",
-                        self.section.label()
-                    )))
+                TitleBar::new().child(
+                    div()
+                        .text_sm()
+                        .font_medium()
+                        .text_color(theme.muted_foreground)
+                        .child(TITLE),
+                ),
+            )
+            .child(
+                h_flex()
                     .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .p(px(CONTENT_PADDING))
-                    .overflow_y_scrollbar()
-                    .child(screen),
+                    .min_h_0()
+                    .w_full()
+                    .child(self.render_sidebar(cx))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!(
+                                "content-{}",
+                                self.section.label()
+                            )))
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .p(px(CONTENT_PADDING))
+                            .overflow_y_scrollbar()
+                            .child(screen),
+                    ),
             )
     }
 }
