@@ -3,6 +3,8 @@
 //! The file is read once at startup. Changes made through the settings page are applied at once
 //! and written back; edits made to the file while the app runs are picked up on the next launch.
 
+mod application;
+
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock};
 
@@ -12,9 +14,12 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
 use crate::ai::{embedding, llm};
+use crate::categorization::domain::rules::InvalidRule;
 use crate::shared::sync;
 use crate::tracking::domain::exclusion::Exclusion;
 use crate::tracking::domain::session_policy::{DEFAULT_MIN_SESSION_SECONDS, MIN_SESSION_SECONDS_RANGE};
+
+pub use application::{SettingsService, SettingsSvc};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ts_rs::TS)]
 #[ts(export)]
@@ -120,6 +125,8 @@ pub enum SettingsError {
     /// The value asked for is not one the setting can take.
     #[error("{0}")]
     Invalid(String),
+    #[error(transparent)]
+    InvalidRule(#[from] InvalidRule),
     #[error(transparent)]
     Failed(#[from] anyhow::Error),
 }

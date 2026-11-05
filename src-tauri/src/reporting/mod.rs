@@ -7,6 +7,7 @@
 //! [`crate::categorization::domain::classification`].
 
 pub mod history;
+pub mod query;
 pub mod review;
 pub mod rules;
 mod scope;

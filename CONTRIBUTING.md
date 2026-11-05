@@ -86,8 +86,9 @@ alone does not stop tracking.
 
 ## Local data and migrations
 
-Sessions live in `makora.sqlite` under Tauri's per-user app-data directory,
-resolved in `src-tauri/src/lib.rs`:
+Sessions live in `makora.sqlite` under the per-user app-data directory,
+resolved by `AppPaths` in `src-tauri/src/paths.rs` (debug builds take
+`MAKORA_DATA_DIR` and `MAKORA_CONFIG_DIR` overrides):
 
 | Platform | Directory |
 | --- | --- |

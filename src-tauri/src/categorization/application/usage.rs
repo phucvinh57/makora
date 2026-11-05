@@ -90,6 +90,13 @@ pub trait AiUsageSvc: Send + Sync {
     fn get_summary(&self, since: Option<DateTime<Utc>>) -> Result<AiUsageSummary>;
 }
 
+pub const DEFAULT_RECENT_RUNS: u32 = 20;
+
+/// Where a summary of the last `days` starts, `None` (every run) when `days` is.
+pub fn since_days_ago(days: Option<u32>, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    days.map(|days| now - chrono::Duration::days(days.into()))
+}
+
 pub struct SqliteAiUsage {
     db: Db,
 }

@@ -1,24 +1,26 @@
+use std::sync::Arc;
+
 use tauri::State;
 
+use crate::app_core::AppCore;
 use crate::domain::types::{Category, NewCategory};
 use crate::host::error::IpcError;
 use crate::shared::ids::CategoryId;
-use crate::taxonomy::CategorySvc;
 
 #[tauri::command(async)]
-pub fn category_list(categories: State<Box<dyn CategorySvc>>) -> Result<Vec<Category>, IpcError> {
-    Ok(categories.get_list()?)
+pub fn category_list(core: State<Arc<AppCore>>) -> Result<Vec<Category>, IpcError> {
+    Ok(core.categories.get_list()?)
 }
 
 #[tauri::command(async)]
 pub fn category_create(
-    categories: State<Box<dyn CategorySvc>>,
+    core: State<Arc<AppCore>>,
     name: String,
     color: String,
     description: Option<String>,
     parent_id: Option<CategoryId>,
 ) -> Result<Category, IpcError> {
-    Ok(categories.create(&NewCategory {
+    Ok(core.categories.create(&NewCategory {
         name,
         color,
         description,
@@ -28,14 +30,14 @@ pub fn category_create(
 
 #[tauri::command(async)]
 pub fn category_update(
-    categories: State<Box<dyn CategorySvc>>,
+    core: State<Arc<AppCore>>,
     id: CategoryId,
     name: String,
     color: String,
     description: Option<String>,
     parent_id: Option<CategoryId>,
 ) -> Result<(), IpcError> {
-    categories.update(
+    core.categories.update(
         id,
         &NewCategory {
             name,
@@ -48,6 +50,6 @@ pub fn category_update(
 }
 
 #[tauri::command(async)]
-pub fn category_delete(categories: State<Box<dyn CategorySvc>>, id: CategoryId) -> Result<(), IpcError> {
-    Ok(categories.delete(id)?)
+pub fn category_delete(core: State<Arc<AppCore>>, id: CategoryId) -> Result<(), IpcError> {
+    Ok(core.categories.delete(id)?)
 }

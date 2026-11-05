@@ -11,6 +11,7 @@ mod gguf;
 pub mod llm;
 pub mod model_download;
 mod prompt;
+pub mod providers;
 pub mod remote;
 pub mod router;
 pub mod secrets;

@@ -16,7 +16,7 @@ impl From<DieselError> for TaxonomyError {
 
 /// Loads every category's `(id, parent_id)` into a [`CategoryTree`] — shared with the review
 /// queue and the history list, which both need to expand a category filter to its descendants.
-pub fn load_tree(conn: &mut SqliteConnection) -> QueryResult<CategoryTree> {
+pub(crate) fn load_tree(conn: &mut SqliteConnection) -> QueryResult<CategoryTree> {
     Ok(CategoryTree::new(db::categories::CategoriesRepo::get_parent_pairs(conn)?))
 }
 

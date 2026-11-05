@@ -2476,6 +2476,7 @@ dependencies = [
  "chrono",
  "core-foundation-sys",
  "diesel",
+ "dirs 7.0.0",
  "interprocess",
  "keyring",
  "libsqlite3-sys",

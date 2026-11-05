@@ -17,7 +17,9 @@ No ESLint/Prettier: Biome lints and formats (`bun run lint`, `bun run check`, wi
 
 Build deps: Rust, Node, a C/C++ toolchain (`rusqlite` builds SQLite from source). Linux also needs Tauri's WebKitGTK stack (`libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev libssl-dev patchelf`).
 
-Database: `makora.sqlite` in Tauri's app-data dir (`~/.local/share/dev.phucvinh57.makora/` on Linux), resolved by `database_path` in `src-tauri/src/lib.rs`.
+Database: `makora.sqlite` in the app-data dir (`~/.local/share/dev.phucvinh57.makora/` on Linux), resolved by `AppPaths` in `src-tauri/src/paths.rs`. Debug builds take `MAKORA_DATA_DIR` / `MAKORA_CONFIG_DIR` to run on other data.
+
+Backend layout: `AppCore` (`src-tauri/src/app_core.rs`) builds every service and starts the background work; the Tauri commands in `src-tauri/src/host/` are thin wrappers over it.
 
 ## Workflow
 

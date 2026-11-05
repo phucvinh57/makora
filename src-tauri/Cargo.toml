@@ -24,6 +24,7 @@ tauri = { version = "2.12.5", features = ["tray-icon"] }
 tauri-plugin-autostart = "2.6.0"
 tauri-plugin-single-instance = "2.5.5"
 anyhow = "1.0.104"
+dirs = "7"
 thiserror = "2"
 chrono = "0.4.45"
 interprocess = "2.4"

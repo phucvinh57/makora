@@ -1,122 +1,78 @@
 use std::sync::Arc;
 
-use chrono::Utc;
 use tauri::State;
-use tracing::info;
 
+use crate::app_core::AppCore;
 use crate::categorization::domain::rules::{PatternField, RuleKind};
-use crate::categorization::ActivityIndexer;
-use crate::host::auto_categorize::ScheduleAnchor;
 use crate::host::error::IpcError;
-use crate::settings::{ModelPrice, Settings, SettingsStore};
-use crate::tracking::domain::exclusion::Exclusion;
+use crate::settings::{ModelPrice, Settings};
 
 #[tauri::command]
-pub fn settings_get(settings: State<Arc<dyn SettingsStore>>) -> Settings {
-    settings.get()
+pub fn settings_get(core: State<Arc<AppCore>>) -> Settings {
+    core.settings.get()
 }
 
 /// Why the settings file could not be used at startup, once; `None` after that or when it could.
 #[tauri::command]
-pub fn settings_take_load_issue(settings: State<Arc<dyn SettingsStore>>) -> Option<String> {
-    settings.take_load_issue()
+pub fn settings_take_load_issue(core: State<Arc<AppCore>>) -> Option<String> {
+    core.settings.take_load_issue()
 }
 
 #[tauri::command]
-pub fn settings_set_min_session_seconds(settings: State<Arc<dyn SettingsStore>>, seconds: i64) -> Result<Settings, IpcError> {
-    let saved = settings.set_min_session_seconds(seconds)?;
-    info!(setting = "min_session_seconds", value = seconds, "setting changed");
-    Ok(saved)
+pub fn settings_set_min_session_seconds(core: State<Arc<AppCore>>, seconds: i64) -> Result<Settings, IpcError> {
+    Ok(core.settings.set_min_session_seconds(seconds)?)
 }
 
 #[tauri::command]
 pub fn settings_add_exclusion(
-    settings: State<Arc<dyn SettingsStore>>,
+    core: State<Arc<AppCore>>,
     kind: RuleKind,
     field: Option<PatternField>,
     value: String,
 ) -> Result<Settings, IpcError> {
-    let exclusion = parse_exclusion(kind, field, &value)?;
-    let saved = settings.add_exclusion(exclusion.clone())?;
-    log_exclusion("exclusion added", &exclusion);
-    Ok(saved)
+    Ok(core.settings.add_exclusion(kind, field, &value)?)
 }
 
 #[tauri::command]
 pub fn settings_remove_exclusion(
-    settings: State<Arc<dyn SettingsStore>>,
+    core: State<Arc<AppCore>>,
     kind: RuleKind,
     field: Option<PatternField>,
     value: String,
 ) -> Result<Settings, IpcError> {
-    let exclusion = parse_exclusion(kind, field, &value)?;
-    let saved = settings.remove_exclusion(&exclusion)?;
-    log_exclusion("exclusion removed", &exclusion);
-    Ok(saved)
-}
-
-fn log_exclusion(message: &str, exclusion: &Exclusion) {
-    let field = exclusion.field.map(|field| format!("{field:?}"));
-    info!(setting = "exclusions", kind = ?exclusion.kind, field, value = exclusion.value.as_str(), "{message}");
-}
-
-/// The exclusion in the normalized form it is stored in, so removing matches what adding saved.
-fn parse_exclusion(kind: RuleKind, field: Option<PatternField>, value: &str) -> Result<Exclusion, IpcError> {
-    Exclusion::parse(kind, field, value).map_err(|err| IpcError::new("invalid_rule", err.to_string()))
+    Ok(core.settings.remove_exclusion(kind, field, &value)?)
 }
 
 /// Sets the LLM to `model` on the remote `provider`, or on the local runtime when it is left out.
 #[tauri::command]
 pub fn settings_set_llm(
-    settings: State<Arc<dyn SettingsStore>>,
+    core: State<Arc<AppCore>>,
     provider: Option<String>,
     model: String,
 ) -> Result<Settings, IpcError> {
-    let saved = settings.set_llm(provider.as_deref(), &model)?;
-    let provider = provider.as_deref().unwrap_or("local");
-    info!(setting = "llm", provider, model = model.as_str(), "setting changed");
-    Ok(saved)
+    Ok(core.settings.set_llm(provider.as_deref(), &model)?)
 }
 
 #[tauri::command]
-pub fn settings_set_embedding_model(
-    settings: State<Arc<dyn SettingsStore>>,
-    indexer: State<Arc<dyn ActivityIndexer>>,
-    model: String,
-) -> Result<Settings, IpcError> {
-    let settings = settings.set_embedding_model(&model)?;
-    info!(setting = "embedding_model", value = model.as_str(), "setting changed");
-    indexer.refresh();
-    Ok(settings)
-}
-
-/// Setting the period restarts the schedule: the first run comes one period from now, on the hour.
-#[tauri::command]
-pub fn settings_set_auto_categorize_hours(
-    settings: State<Arc<dyn SettingsStore>>,
-    anchor: State<ScheduleAnchor>,
-    hours: u32,
-) -> Result<Settings, IpcError> {
-    let saved = settings.set_auto_categorize_hours(hours)?;
-    info!(setting = "auto_categorize_hours", value = hours, "setting changed");
-    anchor.set(Utc::now());
-    Ok(saved)
+pub fn settings_set_embedding_model(core: State<Arc<AppCore>>, model: String) -> Result<Settings, IpcError> {
+    Ok(core.settings.set_embedding_model(&model)?)
 }
 
 #[tauri::command]
-pub fn settings_set_model_price(settings: State<Arc<dyn SettingsStore>>, price: ModelPrice) -> Result<Settings, IpcError> {
-    let saved = settings.set_model_price(price.clone())?;
-    info!(setting = "model_price", provider = price.provider.as_str(), model = price.model.as_str(), "setting changed");
-    Ok(saved)
+pub fn settings_set_auto_categorize_hours(core: State<Arc<AppCore>>, hours: u32) -> Result<Settings, IpcError> {
+    Ok(core.settings.set_auto_categorize_hours(hours)?)
+}
+
+#[tauri::command]
+pub fn settings_set_model_price(core: State<Arc<AppCore>>, price: ModelPrice) -> Result<Settings, IpcError> {
+    Ok(core.settings.set_model_price(price)?)
 }
 
 #[tauri::command]
 pub fn settings_remove_model_price(
-    settings: State<Arc<dyn SettingsStore>>,
+    core: State<Arc<AppCore>>,
     provider: String,
     model: String,
 ) -> Result<Settings, IpcError> {
-    let saved = settings.remove_model_price(&provider, &model)?;
-    info!(setting = "model_price", provider = provider.as_str(), model = model.as_str(), "price removed");
-    Ok(saved)
+    Ok(core.settings.remove_model_price(&provider, &model)?)
 }

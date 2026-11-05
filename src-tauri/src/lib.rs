@@ -1,51 +1,27 @@
-mod ai;
-mod categorization;
-mod db;
-mod domain;
+pub mod ai;
+pub mod app_core;
+pub mod categorization;
+pub mod db;
+pub mod domain;
+pub mod events;
 mod host;
-mod logging;
-mod logs;
-mod reporting;
-mod settings;
-mod shared;
-mod taxonomy;
-mod tracking;
+pub mod logging;
+pub mod logs;
+pub mod paths;
+pub mod reporting;
+pub mod settings;
+pub mod shared;
+pub mod taxonomy;
+pub mod tracking;
 
-use std::sync::mpsc::{self, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
 
-use anyhow::Context;
-use chrono::Utc;
 use tauri::Manager;
-use tracing::{error, info};
+use tracing::warn;
 
-use crate::ai::embedding::LlamaEmbedder;
-use crate::ai::llm::{LlamaClassifier, ModelCache};
-use crate::ai::model_download::ModelDownloadState;
-use crate::ai::router::LlmRouter;
-use crate::ai::secrets::{KeyringSecrets, SecretStore};
-use crate::categorization::application::ai_run::AiRunState;
-use crate::categorization::application::usage::{AiUsageSvc, SqliteAiUsage};
-use crate::categorization::ports::{Classifier, Embedder};
-use crate::categorization::{
-    ActivityIndexer, BackgroundIndexer, ClassificationSvc, EmbedSkips, EmbeddingSvc, RuleSvc, SqliteClassification,
-    SqliteEmbeddings, SqliteRules,
-};
-use crate::settings::{SettingsStore, TomlSettings};
-use crate::shared::sync::lock;
-use crate::domain::{HistorySvc, LabelingSvc, SqliteHistory, SqliteLabeling};
-use crate::taxonomy::{CategorySvc, SqliteCategories};
-use crate::tracking::adapters::model::WatchEvent;
-use crate::tracking::adapters::platform::PlatformFocusWatcher;
-use crate::tracking::adapters::watcher::FocusWatcher;
-use crate::tracking::application::{SettingsExclusions, SqliteSessionRecorder};
-use crate::tracking::domain::focus_machine::FocusStateMachine;
-use crate::tracking::ports::{ExclusionPolicy, SessionRecorder, SessionTracker};
-
-type SharedTracker = Arc<Mutex<Box<dyn SessionTracker>>>;
-
-const HEARTBEAT: Duration = Duration::from_secs(30);
+use crate::app_core::AppCore;
+use crate::host::events::TauriEvents;
+use crate::paths::AppPaths;
 
 pub fn run() {
     let mut builder = tauri::Builder::default()
@@ -118,115 +94,27 @@ pub fn run() {
             host::commands::logs::logs_open_dir,
         ])
         .setup(|app| {
-            let data_dir = app.path().app_data_dir()?;
-            let config_dir = app.path().app_config_dir()?;
-            if let Err(err) = logging::init(&data_dir) {
+            let tauri_paths = AppPaths {
+                data_dir: app.path().app_data_dir()?,
+                config_dir: app.path().app_config_dir()?,
+            };
+            let platform = AppPaths::platform()?;
+            let paths = if platform == tauri_paths { AppPaths::resolve()? } else { tauri_paths.clone() };
+            if let Err(err) = logging::init(&paths.data_dir) {
                 eprintln!("makora: failed to start logging: {err:#}");
             }
-            info!(
-                version = env!("CARGO_PKG_VERSION"),
-                os = std::env::consts::OS,
-                arch = std::env::consts::ARCH,
-                data_dir = %data_dir.display(),
-                config_dir = %config_dir.display(),
-                "Makora started"
-            );
-            app.manage(Box::new(logs::JsonlLogReader::new(logging::log_dir(&data_dir))) as Box<dyn logs::LogReader>);
+            if platform != tauri_paths {
+                warn!(
+                    tauri = ?tauri_paths,
+                    platform = ?platform,
+                    "the platform app directories differ from Tauri's; using Tauri's"
+                );
+            }
 
-            let db_path = data_dir.join("makora.sqlite");
-            let conn = db::open_sqlite(&db_path).map_err(|err| {
-                anyhow::anyhow!("opening database at {}: {err:#}", db_path.display())
-            })?;
-
-            let settings_path = config_dir.join("settings.toml");
-            let settings: Arc<dyn SettingsStore> = Arc::new(TomlSettings::load(settings_path));
-
-            let models = ModelCache::default();
-            let embedder: Arc<dyn Embedder> = Arc::new(LlamaEmbedder::new(models.clone()));
-            let embeddings: Arc<dyn EmbeddingSvc> = Arc::new(SqliteEmbeddings::new(conn.clone()));
-            let embed_skips = Arc::new(EmbedSkips::default());
-            let indexer: Arc<dyn ActivityIndexer> = Arc::new(
-                BackgroundIndexer::spawn(embeddings.clone(), embedder.clone(), settings.clone(), embed_skips.clone())
-                    .context("spawning activity-embedder thread")?,
-            );
-            // Activities recorded before they were embedded as they were saved.
-            indexer.refresh();
-
-            let recorder: Box<dyn SessionRecorder> =
-                Box::new(SqliteSessionRecorder::new(conn.clone(), settings.clone(), indexer.clone()));
-            let exclusions: Box<dyn ExclusionPolicy> = Box::new(SettingsExclusions::new(settings.clone()));
-            let session_tracker =
-                FocusStateMachine::new(recorder, exclusions).context("initializing session tracker")?;
-            let tracker: SharedTracker = Arc::new(Mutex::new(Box::new(session_tracker) as Box<dyn SessionTracker>));
-            ai::llm::set_download_root(data_dir.join("models"));
-
-            app.manage(Box::new(SqliteHistory::new(conn.clone())) as Box<dyn HistorySvc>);
-            app.manage(Box::new(SqliteCategories::new(conn.clone())) as Box<dyn CategorySvc>);
-            app.manage(Box::new(SqliteClassification::new(conn.clone())) as Box<dyn ClassificationSvc>);
-            app.manage(Box::new(SqliteRules::new(conn.clone())) as Box<dyn RuleSvc>);
-            app.manage(Box::new(SqliteAiUsage::new(conn.clone())) as Box<dyn AiUsageSvc>);
-            app.manage(Box::new(SqliteLabeling::new(conn)) as Box<dyn LabelingSvc>);
-            let secrets: Arc<dyn SecretStore> = Arc::new(KeyringSecrets);
-            let classifier = LlmRouter::new(LlamaClassifier::new(models.clone()), settings.clone(), secrets.clone());
-            app.manage(settings);
-            app.manage(secrets);
-            app.manage(AiRunState::default());
-            app.manage(host::auto_categorize::ScheduleAnchor::new(data_dir.join("ai-last-run")));
-            app.manage(ModelDownloadState::default());
-            app.manage(Box::new(classifier) as Box<dyn Classifier>);
-            app.manage(embedder);
-            app.manage(embeddings);
-            app.manage(embed_skips);
-            app.manage(indexer);
-            app.manage(models);
-            app.manage(tracker.clone());
-            let (tx, rx) = mpsc::channel::<WatchEvent>();
-
-            crate::tracking::adapters::platform::start_presence_watcher(tx.clone())
-                .context("starting presence watcher")?;
-
-            let mut watcher = PlatformFocusWatcher::new();
-            watcher.start(tx).context("starting focus watcher")?;
-
-            let event_tracker = tracker.clone();
-            std::thread::Builder::new()
-                .name("makora-activity-tracker".into())
-                .spawn(move || {
-                    let mut next_heartbeat = Instant::now() + HEARTBEAT;
-                    loop {
-                        let result = match rx.recv_timeout(next_heartbeat.saturating_duration_since(Instant::now())) {
-                            Ok(WatchEvent::Focus(event)) => {
-                                lock(&event_tracker).handle_focus(event.into())
-                            }
-                            Ok(WatchEvent::Unattributed { timestamp }) => {
-                                lock(&event_tracker).close_current(timestamp)
-                            }
-                            Ok(WatchEvent::Presence(event)) => {
-                                lock(&event_tracker).handle_presence(event.into())
-                            }
-                            Err(RecvTimeoutError::Timeout) => Ok(()),
-                            Err(RecvTimeoutError::Disconnected) => break,
-                        };
-                        if let Err(err) = result {
-                            error!(error = format!("{err:#}"), "failed to record session");
-                        }
-                        if Instant::now() >= next_heartbeat {
-                            next_heartbeat = Instant::now() + HEARTBEAT;
-                            if let Err(err) = lock(&event_tracker).heartbeat(Utc::now()) {
-                                error!(error = format!("{err:#}"), "failed to record heartbeat");
-                            }
-                        }
-                    }
-                })
-                .context("spawning activity-tracker thread")?;
-
-            tracking::adapters::native_host::register(&data_dir);
-            tracking::adapters::ingest::spawn(tracker);
-
-            host::auto_categorize::spawn(app.handle().clone()).context("spawning AI scheduler thread")?;
-
+            let core = AppCore::open(paths, Arc::new(TauriEvents::new(app.handle().clone())))?;
+            app.manage(core.clone());
+            core.start_background()?;
             host::tray::build(app.handle())?;
-
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -237,17 +125,9 @@ pub fn run() {
                     api.prevent_exit();
                     return;
                 }
-                info!("Makora shutting down");
-                if let Some(tracker) = app_handle.try_state::<SharedTracker>() {
-                    let result = lock(&tracker).close_current(Utc::now());
-                    if let Err(err) = result {
-                        error!(
-                            error = format!("{err:#}"),
-                            "failed to close session on shutdown"
-                        );
-                    }
+                if let Some(core) = app_handle.try_state::<Arc<AppCore>>() {
+                    core.shutdown();
                 }
-                logging::flush();
             }
         });
 }

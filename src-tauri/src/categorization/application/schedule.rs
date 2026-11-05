@@ -2,22 +2,23 @@
 //! pile up for review instead of waiting for someone to open the AI tab, and notifies when a run
 //! has labeled something.
 
+use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, DurationRound, Local, Utc};
 use notify_rust::{Notification, NotificationResponse};
-use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
 use tracing::{info, warn};
 
 use crate::ai::llm;
-use crate::categorization::application::ai_run::{AiRunError, AiRunState};
+use crate::categorization::application::ai_run::AiRunError;
+use crate::categorization::application::runner::CategorizationRunner;
 use crate::categorization::domain::usage::RunTrigger;
 use crate::domain::LabelingSvc;
-use crate::host::commands::categorization::run_categorization;
-use crate::host::tray;
+use crate::events::{CoreEvent, EventSink, NavTarget};
+#[cfg(any(windows, target_os = "macos"))]
+use crate::paths::APP_ID;
 use crate::settings::SettingsStore;
 use crate::shared::time;
 use crate::taxonomy::CategorySvc;
@@ -25,8 +26,6 @@ use crate::taxonomy::CategorySvc;
 /// Left alone after launch so the app's own start-up work finishes first.
 const STARTUP_DELAY: Duration = Duration::from_secs(120);
 const CHECK_EVERY: Duration = Duration::from_secs(60);
-/// Where clicking the notification lands: the AI review tab.
-const REVIEW_ROUTE: &str = "/categories?tab=review";
 
 /// What the schedule counts from: the end of the last labeling run, or when the period was last
 /// set. Kept in a file so a restart does not start the clock over.
@@ -65,83 +64,106 @@ pub fn next_run(anchor: &ScheduleAnchor, hours: u32, now: DateTime<Utc>) -> Opti
     Some(on_the_hour.max(now))
 }
 
-#[derive(Serialize, Clone)]
-struct Started {
-    recheck: bool,
+pub trait AutoCategorizeSchedule: Send + Sync {
+    /// When the next scheduled run is due, `None` while automatic categorization is off.
+    fn next_run(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>>;
+    /// Starts the period over: the next run comes one period from now, on the hour.
+    fn restart(&self);
+    /// Checks every minute, on a thread of its own, whether a run is due.
+    fn start(self: Arc<Self>) -> io::Result<()>;
 }
 
-pub fn spawn(app: AppHandle) -> std::io::Result<()> {
-    // With nothing to count from, the first run waits a period instead of starting right away.
-    let anchor = app.state::<ScheduleAnchor>();
-    if anchor.get().is_none() {
-        anchor.set(Utc::now());
-    }
-    std::thread::Builder::new()
-        .name("makora-ai-scheduler".into())
-        .spawn(move || {
-            std::thread::sleep(STARTUP_DELAY);
-            loop {
-                check(&app);
-                std::thread::sleep(CHECK_EVERY);
-            }
-        })?;
-    Ok(())
+pub struct ScheduledCategorization {
+    pub anchor: Arc<ScheduleAnchor>,
+    pub settings: Arc<dyn SettingsStore>,
+    pub runner: Arc<dyn CategorizationRunner>,
+    pub categories: Arc<dyn CategorySvc>,
+    pub labeling: Arc<dyn LabelingSvc>,
+    pub events: Arc<dyn EventSink>,
 }
 
-fn check(app: &AppHandle) {
-    let settings = app.state::<Arc<dyn SettingsStore>>().get();
-    let hours = settings.ai.auto_categorize_hours;
-    if hours == 0 {
-        return;
-    }
-    let anchor = app.state::<ScheduleAnchor>();
-    let now = Utc::now();
-    if next_run(&anchor, hours, now).is_some_and(|due| due > now) {
-        return;
-    }
-    if app.state::<AiRunState>().status().running {
-        return;
+impl AutoCategorizeSchedule for ScheduledCategorization {
+    fn next_run(&self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+        next_run(&self.anchor, self.settings.get().ai.auto_categorize_hours, now)
     }
 
-    let llm_ready = match settings.ai.llm_provider.as_deref() {
-        Some(id) => settings.ai.provider(id).is_some(),
-        None => llm::resolve_model(&settings.ai.llm_model).is_ok(),
-    };
-    if !llm_ready || llm::resolve_model(&settings.ai.embedding_model).is_err() {
-        return;
+    fn restart(&self) {
+        self.anchor.set(Utc::now());
     }
-    if !matches!(app.state::<Box<dyn CategorySvc>>().get_list(), Ok(list) if !list.is_empty()) {
-        return;
+
+    fn start(self: Arc<Self>) -> io::Result<()> {
+        // With nothing to count from, the first run waits a period instead of starting right away.
+        if self.anchor.get().is_none() {
+            self.anchor.set(Utc::now());
+        }
+        std::thread::Builder::new()
+            .name("makora-ai-scheduler".into())
+            .spawn(move || {
+                std::thread::sleep(STARTUP_DELAY);
+                loop {
+                    self.check();
+                    std::thread::sleep(CHECK_EVERY);
+                }
+            })?;
+        Ok(())
     }
-    match app.state::<Box<dyn LabelingSvc>>().get_activities_to_label(false) {
-        Ok(pending) if pending.is_empty() => {
-            anchor.set(Utc::now());
+}
+
+impl ScheduledCategorization {
+    fn check(&self) {
+        let settings = self.settings.get();
+        let hours = settings.ai.auto_categorize_hours;
+        if hours == 0 {
             return;
         }
-        Ok(_) => {}
-        Err(err) => {
-            warn!(error = format!("{err:#}"), "could not look for activities to categorize");
+        let now = Utc::now();
+        if next_run(&self.anchor, hours, now).is_some_and(|due| due > now) {
             return;
         }
-    }
+        if self.runner.status().running {
+            return;
+        }
 
-    info!(hours, "starting scheduled AI categorization");
-    let _ = app.emit("ai-categorize-started", Started { recheck: false });
-    match run_categorization(app, false, RunTrigger::Scheduled) {
-        Ok(outcome) => {
-            if outcome.labeled > 0 {
-                notify(app, outcome.labeled);
+        let llm_ready = match settings.ai.llm_provider.as_deref() {
+            Some(id) => settings.ai.provider(id).is_some(),
+            None => llm::resolve_model(&settings.ai.llm_model).is_ok(),
+        };
+        if !llm_ready || llm::resolve_model(&settings.ai.embedding_model).is_err() {
+            return;
+        }
+        if !matches!(self.categories.get_list(), Ok(list) if !list.is_empty()) {
+            return;
+        }
+        match self.labeling.get_activities_to_label(false) {
+            Ok(pending) if pending.is_empty() => {
+                self.anchor.set(Utc::now());
+                return;
+            }
+            Ok(_) => {}
+            Err(err) => {
+                warn!(error = format!("{err:#}"), "could not look for activities to categorize");
+                return;
             }
         }
-        Err(AiRunError::AlreadyRunning) => {}
-        Err(err) => {
-            warn!(error = %err, "scheduled AI categorization failed");
-            anchor.set(Utc::now());
+
+        info!(hours, "starting scheduled AI categorization");
+        self.events.emit(CoreEvent::CategorizeStarted { recheck: false });
+        match self.runner.run(false, RunTrigger::Scheduled) {
+            Ok(outcome) => {
+                if outcome.labeled > 0 {
+                    notify(self.events.clone(), outcome.labeled);
+                }
+            }
+            Err(AiRunError::AlreadyRunning) => {}
+            Err(err) => {
+                warn!(error = %err, "scheduled AI categorization failed");
+                self.anchor.set(Utc::now());
+            }
         }
     }
 }
 
-fn notify(app: &AppHandle, labeled: usize) {
+fn notify(events: Arc<dyn EventSink>, labeled: usize) {
     let noun = if labeled == 1 { "activity" } else { "activities" };
     let mut notification = Notification::new();
     notification
@@ -159,24 +181,23 @@ fn notify(app: &AppHandle, labeled: usize) {
                 .is_some_and(|dir| dir.ends_with("target/debug") || dir.ends_with("target/release"))
         });
         if !unbundled {
-            notification.app_id(&app.config().identifier);
+            notification.app_id(APP_ID);
         }
     }
     #[cfg(target_os = "macos")]
-    let _ = notify_rust::set_application(if tauri::is_dev() {
+    let _ = notify_rust::set_application(if cfg!(debug_assertions) {
         "com.apple.Terminal"
     } else {
-        &app.config().identifier
+        APP_ID
     });
 
-    let app = app.clone();
     let spawned = std::thread::Builder::new()
         .name("makora-notification".into())
         .spawn(move || {
             let clicked = notification.show().and_then(|handle| {
                 handle.wait_for_response(|response: &NotificationResponse| {
                     if response.is_default_action() {
-                        tray::show_main_window_at(&app, REVIEW_ROUTE);
+                        events.emit(CoreEvent::Navigate(NavTarget::CategoriesReview));
                     }
                 })
             });

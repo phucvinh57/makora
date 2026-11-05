@@ -4,8 +4,10 @@
 use serde::Serialize;
 
 use crate::ai::model_download::ModelDownloadError;
+use crate::ai::providers::ProviderError;
 use crate::categorization::application::ai_run::AiRunError;
 use crate::categorization::application::rules::RuleError;
+use crate::reporting::query::QueryError;
 use crate::settings::SettingsError;
 use crate::taxonomy::TaxonomyError;
 
@@ -82,6 +84,7 @@ impl From<SettingsError> for IpcError {
     fn from(err: SettingsError) -> Self {
         match err {
             SettingsError::Invalid(message) => Self::invalid_input(message),
+            SettingsError::InvalidRule(err) => Self::new("invalid_rule", err.to_string()),
             SettingsError::Failed(cause) => Self::internal(format!("{cause:#}")),
         }
     }
@@ -92,6 +95,26 @@ impl From<ModelDownloadError> for IpcError {
         match err {
             ModelDownloadError::AlreadyRunning => Self::new("already_running", err.to_string()),
             ModelDownloadError::Failed(cause) => Self::internal(format!("{cause:#}")),
+        }
+    }
+}
+
+impl From<ProviderError> for IpcError {
+    fn from(err: ProviderError) -> Self {
+        match err {
+            ProviderError::NotFound(_) => Self::new("not_found", err.to_string()),
+            ProviderError::Settings(err) => err.into(),
+            ProviderError::Keychain(_) => Self::internal(err.to_string()),
+            ProviderError::Remote(_) => Self::new("provider_error", err.to_string()),
+        }
+    }
+}
+
+impl From<QueryError> for IpcError {
+    fn from(err: QueryError) -> Self {
+        match err {
+            QueryError::Invalid(message) => Self::invalid_input(message),
+            QueryError::Failed(cause) => cause.into(),
         }
     }
 }

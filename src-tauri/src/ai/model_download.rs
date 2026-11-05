@@ -9,7 +9,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -18,6 +18,9 @@ use sha2::{Digest, Sha256};
 use tracing::{info, warn};
 use ureq::Agent;
 
+use crate::ai::llm;
+use crate::categorization::ActivityIndexer;
+use crate::events::{CoreEvent, EventSink};
 use crate::logs::NETWORK_TARGET;
 use crate::shared::sync::{lock, RunGuard};
 
@@ -29,6 +32,7 @@ const READ_BUF: usize = 256 * 1024;
 const RANGE_BYTES: u64 = 64 * 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 
 #[derive(Debug, thiserror::Error)]
 pub enum ModelDownloadError {
@@ -91,6 +95,58 @@ impl ModelDownloadState {
         };
         download(root, model, &self.cancel, &mut progress)?;
         Ok(!self.cancel.load(Ordering::Acquire))
+    }
+}
+
+pub trait ModelDownloads: Send + Sync {
+    fn status(&self) -> ModelDownloadStatus;
+    fn cancel(&self);
+    /// Downloads an Ollama-library model (`llama3.2:3b`) into the model directory, reporting
+    /// [`CoreEvent::DownloadProgress`]. Returns `false` when the user stopped it; the partial file
+    /// is kept for resuming.
+    fn download(&self, model: &str) -> Result<bool, ModelDownloadError>;
+}
+
+pub struct OllamaDownloads {
+    state: Arc<ModelDownloadState>,
+    indexer: Arc<dyn ActivityIndexer>,
+    events: Arc<dyn EventSink>,
+}
+
+impl OllamaDownloads {
+    pub fn new(state: Arc<ModelDownloadState>, indexer: Arc<dyn ActivityIndexer>, events: Arc<dyn EventSink>) -> Self {
+        Self { state, indexer, events }
+    }
+}
+
+impl ModelDownloads for OllamaDownloads {
+    fn status(&self) -> ModelDownloadStatus {
+        self.state.status()
+    }
+
+    fn cancel(&self) {
+        self.state.cancel();
+    }
+
+    fn download(&self, model: &str) -> Result<bool, ModelDownloadError> {
+        let model = model.trim();
+        let root = llm::download_root().ok_or_else(|| anyhow!("model directory is not ready"))?;
+        let mut last_emit = Instant::now();
+        let downloaded = self.state.run(root, model, &mut |downloaded, total| {
+            // ~10 events a second is plenty for a progress bar.
+            if last_emit.elapsed() >= PROGRESS_EVERY || downloaded == total {
+                last_emit = Instant::now();
+                self.events.emit(CoreEvent::DownloadProgress { downloaded, total });
+            }
+        });
+        if !matches!(downloaded, Err(ModelDownloadError::AlreadyRunning)) {
+            self.events.emit(CoreEvent::DownloadFinished);
+        }
+        // The model may be the embedding one, and activities may be waiting for it.
+        if matches!(downloaded, Ok(true)) {
+            self.indexer.refresh();
+        }
+        downloaded
     }
 }
 
