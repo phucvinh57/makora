@@ -107,6 +107,13 @@ jobs:
             librsvg2-dev \
             libayatana-appindicator3-dev \
             libssl-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libxcb1-dev \
+            libx11-xcb-dev \
+            libfontconfig-dev \
+            libfreetype-dev \
             libvulkan-dev \
             glslc \
             spirv-headers \
