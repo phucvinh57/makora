@@ -28,6 +28,35 @@ pub fn init(cx: &mut App) {
     Theme::change(mode, None, cx);
 }
 
+/// GPUI maps `.SystemUIFont` to IBM Plex Sans on Linux, which most desktops lack, so the
+/// first lookup warns before falling back. Naming the installed family its fallback stack
+/// would land on, before `gpui_kit::init`, keeps gpui-component from probing the missing one.
+#[cfg(target_os = "linux")]
+pub fn preset_ui_font(cx: &mut App) {
+    const FAMILIES: [&str; 7] = [
+        "IBM Plex Sans",
+        "Ubuntu",
+        "Adwaita Sans",
+        "Cantarell",
+        "Noto Sans",
+        "DejaVu Sans",
+        "Arial",
+    ];
+    let installed = cx.text_system().all_font_names();
+    let Some(family) = FAMILIES
+        .into_iter()
+        .find(|family| installed.iter().any(|name| name == family))
+    else {
+        return;
+    };
+    let mut theme = Theme::default();
+    theme.font_family = family.into();
+    cx.set_global(theme);
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn preset_ui_font(_cx: &mut App) {}
+
 pub fn themes() -> Result<(ThemeConfig, ThemeConfig)> {
     let set: ThemeSet = serde_json::from_str(THEMES).context("parsing makora.json")?;
     let pick = |mode: ThemeMode| {
