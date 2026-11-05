@@ -9,9 +9,8 @@ pre-commit:
       stage_fixed: true
 
     - name: check Rust
-      root: "src-tauri/"
       glob: "*.{rs,toml}"
-      run: CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/target}" cargo check
+      run: cargo check --workspace
 
 pre-push:
   jobs:

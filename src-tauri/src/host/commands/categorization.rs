@@ -1,20 +1,20 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use makora_lib::app_core::AppCore;
+use makora_lib::categorization::application::ai_run::{AiRunOutcome, AiRunStatus};
+use makora_lib::categorization::application::rules::{
+    CategoryRuleView, PathSuggestion, RuleDraft, RulePreview, SourceSuggestion,
+};
+use makora_lib::categorization::domain::classification::ActivityClassification;
+use makora_lib::categorization::domain::rules::{PatternField, RuleKind};
+use makora_lib::categorization::domain::usage::RunTrigger;
+use makora_lib::shared::ids::{ActivityId, CategoryId, RuleId, SessionId};
+use makora_lib::shared::time;
 use serde::Serialize;
 use tauri::State;
 
-use crate::app_core::AppCore;
-use crate::categorization::application::ai_run::{AiRunOutcome, AiRunStatus};
-use crate::categorization::application::rules::{
-    CategoryRuleView, PathSuggestion, RuleDraft, RulePreview, SourceSuggestion,
-};
-use crate::categorization::domain::classification::ActivityClassification;
-use crate::categorization::domain::rules::{PatternField, RuleKind};
-use crate::categorization::domain::usage::RunTrigger;
 use crate::host::error::IpcError;
-use crate::shared::ids::{ActivityId, CategoryId, RuleId, SessionId};
-use crate::shared::time;
 
 #[tauri::command]
 pub fn session_set_row_category(

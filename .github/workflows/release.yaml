@@ -84,7 +84,7 @@ jobs:
               arch: "x64",
               target: "",
               artifact_name: "makora-linux",
-              files: "src-tauri/target/release/bundle/deb/*.deb\nsrc-tauri/target/release/bundle/rpm/*.rpm",
+              files: "target/release/bundle/deb/*.deb\ntarget/release/bundle/rpm/*.rpm",
             });
           }
 
@@ -94,7 +94,7 @@ jobs:
               arch: "aarch64",
               target: "aarch64-apple-darwin",
               artifact_name: "makora-macos-arm64",
-              files: "src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg",
+              files: "target/aarch64-apple-darwin/release/bundle/dmg/*.dmg",
             });
           }
 
@@ -104,7 +104,7 @@ jobs:
               arch: "x64",
               target: "",
               artifact_name: "makora-windows",
-              files: "src-tauri/target/release/bundle/msi/*.msi\nsrc-tauri/target/release/bundle/nsis/*.exe",
+              files: "target/release/bundle/msi/*.msi\ntarget/release/bundle/nsis/*.exe",
             });
           }
 
@@ -168,14 +168,14 @@ jobs:
           node <<'NODE'
           const fs = require("fs");
           const version = process.env.VERSION;
-          const cargoPath = "src-tauri/Cargo.toml";
+          const cargoPath = "Cargo.toml";
           const cargo = fs.readFileSync(cargoPath, "utf8");
           const updatedCargo = cargo.replace(
             /^version = ".*"$/m,
             'version = "' + version + '"',
           );
           if (updatedCargo === cargo) {
-            throw new Error("package version was not found in Cargo.toml");
+            throw new Error("workspace version was not found in Cargo.toml");
           }
           fs.writeFileSync(cargoPath, updatedCargo);
 
@@ -193,7 +193,6 @@ jobs:
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
           key: ${{ matrix.platform }}-${{ matrix.arch }}
 
       - name: Install Bun

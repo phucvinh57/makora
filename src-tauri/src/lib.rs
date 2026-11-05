@@ -1,27 +1,14 @@
-pub mod ai;
-pub mod app_core;
-pub mod categorization;
-pub mod db;
-pub mod domain;
-pub mod events;
 mod host;
-pub mod logging;
-pub mod logs;
-pub mod paths;
-pub mod reporting;
-pub mod settings;
-pub mod shared;
-pub mod taxonomy;
-pub mod tracking;
 
 use std::sync::Arc;
 
+use makora_lib::app_core::AppCore;
+use makora_lib::logging;
+use makora_lib::paths::AppPaths;
 use tauri::Manager;
 use tracing::warn;
 
-use crate::app_core::AppCore;
 use crate::host::events::TauriEvents;
-use crate::paths::AppPaths;
 
 pub fn run() {
     let mut builder = tauri::Builder::default()
@@ -130,4 +117,16 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use makora_lib::paths::APP_ID;
+
+    #[test]
+    fn the_app_id_is_the_bundle_identifier() {
+        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(config["identifier"], APP_ID);
+        assert!(config["app"].get("appDirectoriesOverride").is_none());
+    }
 }

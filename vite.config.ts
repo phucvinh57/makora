@@ -19,8 +19,8 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
-    // The Rust build tree (mistral.rs alone is thousands of files) would exhaust inotify watches.
-    watch: { ignored: ["**/src-tauri/**"] },
+    // The Rust sources and build tree (thousands of files) would exhaust inotify watches.
+    watch: { ignored: ["**/src-tauri/**", "**/crates/**", "**/target/**"] },
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: {

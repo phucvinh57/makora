@@ -50,7 +50,11 @@ jobs:
               - bun.lock
             rust:
               - *ci
+              - 'crates/**'
               - 'src-tauri/**'
+              - Cargo.toml
+              - Cargo.lock
+              - '.cargo/**'
 
   frontend:
     needs: changes
@@ -116,7 +120,6 @@ jobs:
       - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
@@ -136,9 +139,7 @@ jobs:
           bun run build
 
       - name: Clippy
-        working-directory: src-tauri
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Tests
-        working-directory: src-tauri
-        run: cargo test
+        run: cargo test --workspace

@@ -45,10 +45,10 @@ if touches '^extensions/browser/'; then
   run ext-check bun run ext:check
 fi
 
-if touches '^src-tauri/'; then
+if touches '^(crates/|src-tauri/|Cargo\.(toml|lock)|\.cargo/)'; then
   [[ -f dist/index.html ]] || bun run build >/dev/null
-  run clippy bash -c 'cd src-tauri && cargo clippy --all-targets -- -D warnings'
-  run cargo-test bash -c 'cd src-tauri && cargo test'
+  run clippy cargo clippy --workspace --all-targets -- -D warnings
+  run cargo-test cargo test --workspace
 fi
 
 echo

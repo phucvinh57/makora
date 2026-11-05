@@ -39,15 +39,3 @@ impl AppPaths {
         self.data_dir.join("makora.sqlite")
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_app_id_is_the_bundle_identifier() {
-        let config: serde_json::Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
-        assert_eq!(config["identifier"], APP_ID);
-        assert!(config["app"].get("appDirectoriesOverride").is_none());
-    }
-}

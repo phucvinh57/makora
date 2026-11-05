@@ -4,7 +4,7 @@
 //
 // Dev builds pin the unpacked extension's ID with DEV_PUBLIC_KEY so Makora's
 // native-messaging host manifest can allow it (DEV_EXTENSION_ID in
-// src-tauri/src/tracking/adapters/native_host.rs). --store leaves the key out:
+// crates/makora-core/src/tracking/adapters/native_host.rs). --store leaves the key out:
 // the Chrome Web Store assigns its own ID and rejects uploads that carry one.
 //
 // esbuild only strips types; run `bun run ext:check` to actually typecheck.

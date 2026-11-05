@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "dev.phucvinh57.makora",
   "build": {
-    "beforeDevCommand": { "script": "bun run dev", "cwd": "../" },
+    "beforeDevCommand": { "script": "node scripts/dev.mjs", "cwd": "../" },
     "beforeBuildCommand": { "script": "bun run build", "cwd": "../" },
     "devUrl": "http://localhost:1420",
     "frontendDist": "../dist"

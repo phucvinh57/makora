@@ -15,10 +15,9 @@ root=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || exit 0
 main=$(dirname "$(git -C "$root" rev-parse --path-format=absolute --git-common-dir)")
 [[ "$root" == "$main" ]] && exit 0
 
-cargo_cfg="$root/.cargo/config.toml"
-if [[ ! -f "$cargo_cfg" ]]; then
-  mkdir -p "$(dirname "$cargo_cfg")"
-  printf '[build]\ntarget-dir = "%s/target"\n' "$main" >"$cargo_cfg"
+mkdir -p "$main/target"
+if [[ ! -e "$root/target" && ! -L "$root/target" ]]; then
+  ln -s "$main/target" "$root/target"
 fi
 
 if [[ ! -d "$root/node_modules" ]]; then

@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
+use makora_lib::ai::llm;
+use makora_lib::ai::model_download::ModelDownloadStatus;
+use makora_lib::app_core::AppCore;
 use tauri::State;
 
-use crate::ai::llm;
-use crate::ai::model_download::ModelDownloadStatus;
-use crate::app_core::AppCore;
 use crate::host::error::IpcError;
 
 #[tauri::command(async)]

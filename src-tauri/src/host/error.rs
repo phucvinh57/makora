@@ -1,15 +1,14 @@
 //! What a failed command tells the frontend: a stable `code` to branch on and a `message` fit to
 //! show. The contexts' own errors are turned into it here, and only here.
 
+use makora_lib::ai::model_download::ModelDownloadError;
+use makora_lib::ai::providers::ProviderError;
+use makora_lib::categorization::application::ai_run::AiRunError;
+use makora_lib::categorization::application::rules::RuleError;
+use makora_lib::reporting::query::QueryError;
+use makora_lib::settings::SettingsError;
+use makora_lib::taxonomy::TaxonomyError;
 use serde::Serialize;
-
-use crate::ai::model_download::ModelDownloadError;
-use crate::ai::providers::ProviderError;
-use crate::categorization::application::ai_run::AiRunError;
-use crate::categorization::application::rules::RuleError;
-use crate::reporting::query::QueryError;
-use crate::settings::SettingsError;
-use crate::taxonomy::TaxonomyError;
 
 #[derive(Debug, Serialize)]
 pub struct IpcError {

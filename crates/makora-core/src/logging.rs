@@ -32,7 +32,7 @@ const MAX_LOG_FILES: usize = 30;
 
 const DEV_FILTER: &str = "makora=debug,makora_lib=debug,warn";
 const PROD_FILTER: &str = "makora=info,makora_lib=info,warn";
-const APP_LOG_FILTER: &str = "makora_lib=info,warn";
+const APP_LOG_FILTER: &str = "makora=info,warn";
 
 /// The non-blocking writers' flush guards. Dropping one flushes and stops its background
 /// writer thread, so they live until [`flush`] at exit.
@@ -113,12 +113,13 @@ mod tests {
         tracing::subscriber::with_default(subscriber, || {
             tracing::debug!(target: "makora_lib::tracking", "focus changed");
             tracing::info!(target: "makora_lib::settings", "setting changed");
+            tracing::info!(target: "makora_tauri::host::tray", "window rebuilt");
             tracing::info!(target: "ureq::pool", "connection reused");
             tracing::warn!(target: "ureq::pool", "connection dropped");
         });
 
         let text = buffer.text();
-        assert!(text.contains("setting changed") && text.contains("connection dropped"));
+        assert!(text.contains("setting changed") && text.contains("window rebuilt") && text.contains("connection dropped"));
         assert!(!text.contains("focus changed") && !text.contains("connection reused"));
     }
 }

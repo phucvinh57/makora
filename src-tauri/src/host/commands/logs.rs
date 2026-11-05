@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use makora_lib::app_core::AppCore;
+use makora_lib::logs::reader::{HostTraffic, LogPage, LogQuery};
 use tauri::{AppHandle, State};
 use tauri_plugin_opener::OpenerExt;
 
-use crate::app_core::AppCore;
 use crate::host::error::IpcError;
-use crate::logs::reader::{HostTraffic, LogPage, LogQuery};
 
 #[tauri::command(async)]
 pub fn logs_query(core: State<Arc<AppCore>>, query: LogQuery) -> Result<LogPage, IpcError> {

@@ -51,12 +51,13 @@ bun run check       # Biome checks with automatic fixes
 bun run format      # Biome formatting checks
 ```
 
-The Rust backend is a single crate, not a workspace. From `src-tauri/`:
+The Rust code is a Cargo workspace rooted at the repository root, which holds
+`Cargo.lock` and `target/`. From the repository root:
 
 ```sh
-cargo build
-cargo test          # run existing Rust tests
-cargo clippy
+cargo build --workspace
+cargo test --workspace          # run existing Rust tests
+cargo clippy --workspace --all-targets
 ```
 
 Use Biome for formatting and linting, including React hook rules, rather
@@ -67,7 +68,8 @@ than ESLint or Prettier. The frontend build checks strict TypeScript.
 | Location | Purpose |
 | --- | --- |
 | `src/` | React/TypeScript interface, routes, queries, shared components |
-| `src-tauri/` | Tauri 2 desktop host and Rust backend |
+| `crates/makora-core/` | Rust backend (tracking, categorization, storage, AI) and the `makora-bridge` binary |
+| `src-tauri/` | Tauri 2 desktop host: window, tray and the commands the frontend calls |
 | `extensions/browser/` | Optional active-tab reporter |
 | `extensions/gnome/` | GNOME Shell focus reporter |
 | `demo/` | Remotion video and fictional screenshot fixtures |
@@ -87,7 +89,7 @@ alone does not stop tracking.
 ## Local data and migrations
 
 Sessions live in `makora.sqlite` under the per-user app-data directory,
-resolved by `AppPaths` in `src-tauri/src/paths.rs` (debug builds take
+resolved by `AppPaths` in `crates/makora-core/src/paths.rs` (debug builds take
 `MAKORA_DATA_DIR` and `MAKORA_CONFIG_DIR` overrides):
 
 | Platform | Directory |
@@ -128,7 +130,7 @@ See the [installation guide](extensions/browser/README.md#installing) for
 Chromium browsers and Firefox.
 
 The extension reaches the app through native messaging. The browser starts
-`makora-bridge` (`src-tauri/src/bin/makora_bridge.rs`), which relays each
+`makora-bridge` (`crates/makora-core/src/bin/makora_bridge.rs`), which relays each
 `{ browser, url, title }` message to the app over a per-user local socket
 (`$XDG_RUNTIME_DIR/makora/bridge.sock` on Linux, a named pipe on Windows) and
 drops it while the app is not running. On every start the app writes the host
@@ -136,8 +138,9 @@ manifests that point browsers at the `makora-bridge` next to its executable
 (`tracking/adapters/native_host.rs`), so a dev run points browsers at
 `target/debug/makora-bridge` until the installed app starts again.
 
-`bun tauri dev` needs no extra step: Tauri builds every binary of the crate, so
-`target/debug/makora-bridge` sits next to the dev app. Release installers need
+`bun tauri dev` needs no extra step: its `beforeDevCommand` (`scripts/dev.mjs`)
+builds the bridge alongside Vite, so `target/debug/makora-bridge` sits next to
+the dev app. Restart it after changing the bridge; Tauri only rebuilds the app. Release installers need
 the bridge bundled as a sidecar, which one `tauri build` cannot do; build them
 with `bun run bundle` (`scripts/bundle.mjs`), as the release workflow does. A
 plain `bun tauri build` produces installers without the bridge.

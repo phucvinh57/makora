@@ -16,7 +16,7 @@ For human reviewers and the local `/pre-pr` skill. Keep it short. When a bug sli
 
 Set by the paths a change touches, not by who wrote it.
 
-- **High**, a human reads the diff: `src-tauri/src/db/migrations/`, `src-tauri/src/db/migrate.rs`, `src-tauri/src/ai/remote/`, `src-tauri/src/ai/secrets.rs`, `src-tauri/src/bin/`, `src-tauri/src/tracking/adapters/native_host.rs`, `src-tauri/src/tracking/adapters/bridge_wire.rs`, `src-tauri/capabilities/`, `src-tauri/tauri*.conf.json`, `.github/workflows/`, `scripts/bundle.mjs`, `extensions/browser/manifest.json`, `extensions/gnome/`.
+- **High**, a human reads the diff: `crates/makora-core/src/db/migrations/`, `crates/makora-core/src/db/migrate.rs`, `crates/makora-core/src/ai/remote/`, `crates/makora-core/src/ai/secrets.rs`, `crates/makora-core/src/bin/`, `crates/makora-core/src/tracking/adapters/native_host.rs`, `crates/makora-core/src/tracking/adapters/bridge_wire.rs`, `src-tauri/capabilities/`, `src-tauri/tauri*.conf.json`, `.github/workflows/`, `scripts/bundle.mjs`, `extensions/browser/manifest.json`, `extensions/gnome/`.
 - **Medium**: other tracking, categorization, reporting and db code.
 - **Low**: UI styling and copy, docs, `demo/`.
 

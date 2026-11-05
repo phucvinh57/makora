@@ -1,9 +1,9 @@
 //! The core's events as the webview hears them.
 
+use makora_lib::events::{CoreEvent, EventSink, NavTarget};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
-use crate::events::{CoreEvent, EventSink, NavTarget};
 use crate::host::tray;
 
 pub struct TauriEvents {

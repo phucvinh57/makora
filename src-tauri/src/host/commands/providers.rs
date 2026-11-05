@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
+use makora_lib::ai::providers::ProviderDraft;
+use makora_lib::app_core::AppCore;
+use makora_lib::settings::Settings;
 use tauri::State;
 
-use crate::ai::providers::ProviderDraft;
-use crate::app_core::AppCore;
 use crate::host::error::IpcError;
-use crate::settings::Settings;
 
 #[tauri::command]
 pub async fn ai_provider_save(

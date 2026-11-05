@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
+use makora_lib::app_core::AppCore;
+use makora_lib::categorization::domain::rules::{PatternField, RuleKind};
+use makora_lib::settings::{ModelPrice, Settings};
 use tauri::State;
 
-use crate::app_core::AppCore;
-use crate::categorization::domain::rules::{PatternField, RuleKind};
 use crate::host::error::IpcError;
-use crate::settings::{ModelPrice, Settings};
 
 #[tauri::command]
 pub fn settings_get(core: State<Arc<AppCore>>) -> Settings {

@@ -117,7 +117,7 @@ mod tests {
             ("makora_lib::settings::application", LogArea::Settings),
             ("makora_lib::ai::providers", LogArea::Settings),
             ("makora_lib::app_core", LogArea::App),
-            ("makora_lib::host::tray", LogArea::App),
+            ("makora_tauri::host::tray", LogArea::App),
             ("makora_lib", LogArea::App),
             ("makora_lib::aim", LogArea::App),
             ("makora_lib::network::extra", LogArea::App),

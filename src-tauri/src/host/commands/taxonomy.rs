@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
+use makora_lib::app_core::AppCore;
+use makora_lib::domain::types::{Category, NewCategory};
+use makora_lib::shared::ids::CategoryId;
 use tauri::State;
 
-use crate::app_core::AppCore;
-use crate::domain::types::{Category, NewCategory};
 use crate::host::error::IpcError;
-use crate::shared::ids::CategoryId;
 
 #[tauri::command(async)]
 pub fn category_list(core: State<Arc<AppCore>>) -> Result<Vec<Category>, IpcError> {

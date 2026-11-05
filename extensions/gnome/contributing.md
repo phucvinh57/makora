@@ -51,7 +51,7 @@ current activity block open. `pid` is zero when GNOME cannot provide a process
 ID; Makora then uses `app_id` to identify the application.
 
 The matching interface names and signatures are in
-[`src-tauri/src/tracking/adapters/platform/linux/gnome.rs`](../../src-tauri/src/tracking/adapters/platform/linux/gnome.rs).
+[`crates/makora-core/src/tracking/adapters/platform/linux/gnome.rs`](../../crates/makora-core/src/tracking/adapters/platform/linux/gnome.rs).
 Keep the extension and Rust definitions in sync. If a signature changes, bump
 `PROTOCOL_VERSION` in both places so Makora can detect mismatched versions.
 
