@@ -13,6 +13,7 @@ pub mod category_form;
 pub mod confirm;
 pub mod delete_category;
 pub mod edit_category;
+pub mod model_price;
 pub mod provider;
 pub mod remove_provider;
 pub mod reset_categorization;
