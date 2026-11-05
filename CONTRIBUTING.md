@@ -6,8 +6,9 @@ sharing screenshots or activity history.
 
 ## Development prerequisites
 
-- [Bun](https://bun.sh), [Node.js](https://nodejs.org), and a stable
-  [Rust toolchain](https://www.rust-lang.org/tools/install).
+- A stable [Rust toolchain](https://www.rust-lang.org/tools/install), plus
+  [Bun](https://bun.sh) and [Node.js](https://nodejs.org) for the browser
+  extension and the Biome/lefthook tooling.
 - A C/C++ toolchain: SQLite is compiled from source.
 - CMake and dependencies for the local AI backend: Vulkan on Windows/Linux,
   Metal on macOS.
@@ -17,59 +18,57 @@ sharing screenshots or activity history.
   ```powershell
   $env:CARGO_TARGET_DIR = "C:\mk"
   ```
-- On Linux, install Tauri's WebKitGTK dependencies. On Debian/Ubuntu:
+- On Linux, install GPUI's dependencies. On Debian/Ubuntu:
   ```sh
-  sudo apt install build-essential libwebkit2gtk-4.1-dev libgtk-3-dev \
-      librsvg2-dev libayatana-appindicator3-dev libssl-dev patchelf
+  sudo apt install build-essential libxkbcommon-dev libxkbcommon-x11-dev \
+      libwayland-dev libxcb1-dev libx11-xcb-dev libfontconfig-dev \
+      libfreetype-dev
   ```
+  GPUI renders through Vulkan, so a Vulkan driver must be installed. GNOME
+  needs the AppIndicator extension to show the tray icon.
   The AI backend also needs CMake, Vulkan development headers/libraries,
   and a shader compiler; package names depend on your distribution.
 - On macOS, install Xcode command line tools. Grant Accessibility permission
   to Makora to read focused window titles. Unsigned development rebuilds may
   need that permission granted again because the app signature changes.
 
-See the [Tauri prerequisites guide](https://tauri.app/start/prerequisites/)
-for additional platform setup.
-
 ## Building and running
 
 From the repository root:
 
 ```sh
-bun install
-bun tauri dev       # full desktop app: Vite frontend and Rust backend
+scripts/dev.sh      # build the app and the browser bridge, then run the app
 ```
 
-Other commands:
+The Rust code is a Cargo workspace rooted at the repository root, which holds
+`Cargo.lock` and `target/`:
 
 ```sh
-bun dev             # frontend only; desktop commands need a Tauri host
-bun run build       # route generation, TypeScript checks, frontend build
-bun tauri build     # release bundle/installer
+cargo run -p makora             # the app alone
+cargo build --workspace         # the app and makora-bridge
+cargo test --workspace          # run existing Rust tests
+cargo clippy --workspace --all-targets
+```
+
+The browser extension and scripts use Biome rather than ESLint or Prettier:
+
+```sh
+bun install
 bun run lint        # Biome lint checks
 bun run check       # Biome checks with automatic fixes
 bun run format      # Biome formatting checks
 ```
 
-The Rust code is a Cargo workspace rooted at the repository root, which holds
-`Cargo.lock` and `target/`. From the repository root:
-
-```sh
-cargo build --workspace
-cargo test --workspace          # run existing Rust tests
-cargo clippy --workspace --all-targets
-```
-
-Use Biome for formatting and linting, including React hook rules, rather
-than ESLint or Prettier. The frontend build checks strict TypeScript.
+Release installers are not built yet: `bun run bundle` (`scripts/bundle.mjs`)
+only builds the release binaries.
 
 ## Project layout and architecture
 
 | Location | Purpose |
 | --- | --- |
-| `src/` | React/TypeScript interface, routes, queries, shared components |
 | `crates/makora-core/` | Rust backend (tracking, categorization, storage, AI) and the `makora-bridge` binary |
-| `src-tauri/` | Tauri 2 desktop host: window, tray and the commands the frontend calls |
+| `crates/makora/` | GPUI desktop app: window, tray, single instance, screens and dialogs |
+| `packaging/` | Linux package maintainer scripts |
 | `extensions/browser/` | Optional active-tab reporter |
 | `extensions/gnome/` | GNOME Shell focus reporter |
 | `demo/` | Remotion video and fictional screenshot fixtures |
@@ -138,12 +137,9 @@ manifests that point browsers at the `makora-bridge` next to its executable
 (`tracking/adapters/native_host.rs`), so a dev run points browsers at
 `target/debug/makora-bridge` until the installed app starts again.
 
-`bun tauri dev` needs no extra step: its `beforeDevCommand` (`scripts/dev.mjs`)
-builds the bridge alongside Vite, so `target/debug/makora-bridge` sits next to
-the dev app. Restart it after changing the bridge; Tauri only rebuilds the app. Release installers need
-the bridge bundled as a sidecar, which one `tauri build` cannot do; build them
-with `bun run bundle` (`scripts/bundle.mjs`), as the release workflow does. A
-plain `bun tauri build` produces installers without the bridge.
+`scripts/dev.sh` builds the bridge with the app, so `target/debug/makora-bridge`
+sits next to the dev app. `cargo run -p makora` alone does not rebuild the
+bridge.
 
 ## GNOME and Wayland development
 
@@ -184,8 +180,10 @@ isolated browser context; it never reads or writes the real activity database.
   relevant to your changes.
 - Avoid unnecessary comments.
 - Use `tracing::{info, warn, error}` instead of `println!` or `eprintln!`.
-  The bootstrap fallback in `lib.rs` is the exception when logging setup fails.
-- Build process-wide state inside Tauri's `setup`, never before `tauri::Builder`.
+  The bootstrap fallback in `crates/makora/src/lib.rs` is the exception, for
+  errors before logging is set up.
+- Build process-wide state in `main` after the single-instance check, never
+  before it.
 - Preserve local storage and local inference for activity data.
 
 ## Platform gaps

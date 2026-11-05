@@ -1,15 +1,15 @@
 //! Process-wide `tracing` setup.
 //!
 //! Two layers share one registry. The developer log goes to stderr in debug builds, so
-//! `bun tauri dev` shows events in the terminal; release builds have no terminal at all
+//! `cargo run -p makora` shows events in the terminal; release builds have no terminal at all
 //! (`windows_subsystem = "windows"`), so it goes to `<app-data>/logs/makora.<date>.log` instead.
 //! The app log ([`AppLogLayer`]) always goes to `<app-data>/logs/events.<date>.jsonl`, with the
 //! same filter in every build, for the in-app log viewer. Both rotate daily and keep the last
 //! [`MAX_LOG_FILES`] days.
 //!
-//! Must be called from the Tauri `setup` hook like every other process-wide
-//! initializer — a second launch dies inside the single-instance plugin, before
-//! `setup`, and must not touch the log directory the live instance is writing to.
+//! Must be called in `main` after the single-instance check, like every other process-wide
+//! initializer: a second launch exits at that check and must not touch the log directory the
+//! live instance is writing to.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -113,7 +113,7 @@ mod tests {
         tracing::subscriber::with_default(subscriber, || {
             tracing::debug!(target: "makora_lib::tracking", "focus changed");
             tracing::info!(target: "makora_lib::settings", "setting changed");
-            tracing::info!(target: "makora_tauri::host::tray", "window rebuilt");
+            tracing::info!(target: "makora::runtime::tray", "window rebuilt");
             tracing::info!(target: "ureq::pool", "connection reused");
             tracing::warn!(target: "ureq::pool", "connection dropped");
         });

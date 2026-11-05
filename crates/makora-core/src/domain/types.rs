@@ -4,8 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::shared::ids::{ActivityId, CategoryId, SessionId};
 use crate::tracking::domain::source_key::KeyKind;
 
-#[derive(Debug, Clone, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Category {
     pub id: CategoryId,
     pub name: String,
@@ -37,8 +36,7 @@ pub struct AiVerdict {
     pub category_id: Option<CategoryId>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CategorySource {
     Manual,
@@ -63,8 +61,7 @@ impl TryFrom<&str> for CategorySource {
     }
 }
 
-#[derive(Debug, Clone, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AiReviewRow {
     pub activity_id: ActivityId,
     pub app_name: String,
@@ -77,15 +74,13 @@ pub struct AiReviewRow {
     pub session_count: i64,
 }
 
-#[derive(Debug, Clone, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AiReviewPage {
     pub rows: Vec<AiReviewRow>,
     pub total: i64,
 }
 
-#[derive(Debug, Clone, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AiReviewGroup {
     pub key_kind: KeyKind,
     pub key: String,
@@ -98,23 +93,20 @@ pub struct AiReviewGroup {
     pub activity_ids: Vec<ActivityId>,
 }
 
-#[derive(Debug, Clone, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AiReviewGroupPage {
     pub groups: Vec<AiReviewGroup>,
     pub total: i64,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, ts_rs::TS)]
-#[ts(export, optional_fields)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ReviewFilter {
     pub category: Option<CategoryId>,
     pub activities: Option<Vec<ActivityId>>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct FeedbackStats {
     pub corrected: i64,
     pub confirmed: i64,
@@ -125,15 +117,13 @@ pub struct FeedbackStats {
     pub reviewed_seconds: f64,
 }
 
-#[derive(Debug, Clone, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SessionsPage {
     pub rows: Vec<SessionRow>,
     pub total: i64,
 }
 
-#[derive(Debug, Clone, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SessionRow {
     pub id: SessionId,
     pub activity_id: ActivityId,
@@ -151,8 +141,7 @@ pub struct SessionRow {
     pub category_source: Option<CategorySource>,
 }
 
-#[derive(Debug, Clone, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ActivityStats {
     pub total_seconds: f64,
     pub session_count: i64,
@@ -161,8 +150,7 @@ pub struct ActivityStats {
     pub daily: Vec<DailyStat>,
 }
 
-#[derive(Debug, Clone, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize)]
 pub struct CategoryStat {
     pub category_id: Option<CategoryId>,
     pub name: Option<String>,
@@ -171,8 +159,7 @@ pub struct CategoryStat {
     pub session_count: i64,
 }
 
-#[derive(Debug, Clone, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AppStat {
     pub label: String,
     pub kind: KeyKind,
@@ -181,8 +168,7 @@ pub struct AppStat {
     pub session_count: i64,
 }
 
-#[derive(Debug, Clone, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DailyStat {
     pub day: String,
     pub total_seconds: f64,

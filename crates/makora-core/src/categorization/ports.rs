@@ -66,8 +66,7 @@ pub struct TokenUsage {
 /// milliseconds; `busy_ms` sums the latency of every request, so with requests in flight at once
 /// it can exceed `llm_ms`, the wall time of the labeling phase. `prefill_ms` and `decode_ms` are
 /// only known for the local model.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct RunUsage {
     pub requests: u64,
     pub failed_requests: u64,

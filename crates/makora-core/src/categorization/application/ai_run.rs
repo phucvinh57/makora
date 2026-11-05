@@ -4,8 +4,8 @@
 //! closest few to the [`Classifier`]. Every answer is saved the moment it arrives, so a stopped
 //! run keeps its progress.
 //!
-//! [`AiRunState`] also lets a page that reloaded mid-run find out one is still going and resync
-//! its progress bar. Nothing here knows about Tauri: progress is reported through a callback.
+//! [`AiRunState`] also lets a window opened mid-run find out one is still going and resync
+//! its progress bar. Nothing here knows about the UI: progress is reported through a callback.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
@@ -47,8 +47,7 @@ pub struct AiRunState {
     total: AtomicUsize,
 }
 
-#[derive(Debug, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Serialize)]
 pub struct AiRunStatus {
     pub running: bool,
     pub recheck: bool,
@@ -62,8 +61,7 @@ pub struct AiRunProgress {
     pub total: usize,
 }
 
-#[derive(Debug, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Serialize)]
 pub struct AiRunOutcome {
     pub labeled: usize,
     pub skipped: usize,

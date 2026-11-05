@@ -51,8 +51,7 @@ pub struct ModelDownloadState {
     total: AtomicU64,
 }
 
-#[derive(Debug, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Serialize)]
 pub struct ModelDownloadStatus {
     pub running: bool,
     pub model: String,

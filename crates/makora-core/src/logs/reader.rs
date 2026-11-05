@@ -13,24 +13,19 @@ use super::{LogArea, LogEntry, LogLevel, EVENTS_FILE_PREFIX, EVENTS_FILE_SUFFIX,
 pub const MAX_ENTRIES: u32 = 1000;
 const MAX_DAYS: u32 = 31;
 
-#[derive(Debug, Clone, Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogQuery {
     pub days: u32,
     pub min_level: LogLevel,
     /// Every area when left out.
-    #[ts(optional)]
     pub areas: Option<Vec<LogArea>>,
-    #[ts(optional)]
     pub search: Option<String>,
     /// At most [`MAX_ENTRIES`], which is also the default.
-    #[ts(optional)]
     pub limit: Option<u32>,
 }
 
-#[derive(Debug, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Serialize)]
 pub struct LogPage {
     /// Newest first.
     pub entries: Vec<LogEntry>,
@@ -41,8 +36,7 @@ pub struct LogPage {
 }
 
 /// Everything sent to or received from one host in a period.
-#[derive(Debug, PartialEq, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, PartialEq, Serialize)]
 pub struct HostTraffic {
     pub host: String,
     pub requests: u64,

@@ -4,13 +4,8 @@
 *.db-shm
 
 /node_modules
-/dist
-/src-tauri/gen
-/src-tauri/binaries
-/src/routeTree.gen.ts
 
 .vscode
-.tanstack/tmp
 
 /extensions/browser/dist
 /target

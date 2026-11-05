@@ -16,8 +16,7 @@ pub const NETWORK_TARGET: &str = "makora_lib::network";
 pub const EVENTS_FILE_PREFIX: &str = "events";
 pub const EVENTS_FILE_SUFFIX: &str = "jsonl";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     Trace,
@@ -39,8 +38,7 @@ impl From<&tracing::Level> for LogLevel {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogArea {
     App,
@@ -83,8 +81,7 @@ pub fn area_for(target: &str) -> LogArea {
         .map_or(LogArea::App, |(_, area)| *area)
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LogEntry {
     /// RFC 3339, UTC.
     pub ts: String,
@@ -92,7 +89,6 @@ pub struct LogEntry {
     pub target: String,
     pub area: LogArea,
     pub message: String,
-    #[ts(type = "Record<string, string | number | boolean | null>")]
     pub fields: Map<String, Value>,
 }
 
@@ -117,7 +113,7 @@ mod tests {
             ("makora_lib::settings::application", LogArea::Settings),
             ("makora_lib::ai::providers", LogArea::Settings),
             ("makora_lib::app_core", LogArea::App),
-            ("makora_tauri::host::tray", LogArea::App),
+            ("makora::runtime::tray", LogArea::App),
             ("makora_lib", LogArea::App),
             ("makora_lib::aim", LogArea::App),
             ("makora_lib::network::extra", LogArea::App),

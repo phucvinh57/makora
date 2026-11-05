@@ -194,16 +194,14 @@ fn ollama_roots() -> Vec<PathBuf> {
     roots
 }
 
-#[derive(Serialize, Clone, Copy, PartialEq, Eq, ts_rs::TS)]
-#[ts(export)]
+#[derive(Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelRole {
     Llm,
     Embedding,
 }
 
-#[derive(Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Serialize)]
 pub struct InstalledModel {
     pub name: String,
     pub role: ModelRole,

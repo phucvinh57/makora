@@ -17,8 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::shared::ids::{ActivityId, CategoryId};
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct AiSuggestion {
     pub category: CategoryId,
     pub rejected: bool,
@@ -27,8 +26,7 @@ pub struct AiSuggestion {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PinConflict;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActivityClassification {
     activity_id: ActivityId,
     pin: Option<CategoryId>,

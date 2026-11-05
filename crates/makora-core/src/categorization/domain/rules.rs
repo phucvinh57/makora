@@ -17,8 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::shared::ids::RuleId;
 use crate::tracking::domain::source_key::{normalized_domain, url_path, KeyKind};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RuleKind {
     App,
@@ -52,8 +51,7 @@ impl TryFrom<&str> for RuleKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PatternField {
     Url,

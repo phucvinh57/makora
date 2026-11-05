@@ -14,8 +14,7 @@ use crate::db::models::{AiModelTotalsRow, AiRunRow, AiRunTokensRow, NewAiRunRow}
 use crate::db::Db;
 use crate::shared::time;
 
-#[derive(Debug, Clone, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AiRunView {
     pub id: i64,
     pub trigger: RunTrigger,
@@ -33,8 +32,7 @@ pub struct AiRunView {
 
 /// Sums over a set of runs. Rates are left to the reader: output speed is `output_tokens` over
 /// `decode_ms` for the local model and over `busy_ms` for a remote one.
-#[derive(Debug, Clone, Default, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct UsageTotals {
     pub runs: u64,
     pub items: u64,
@@ -50,8 +48,7 @@ pub struct UsageTotals {
     pub decode_ms: u64,
 }
 
-#[derive(Debug, Clone, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ModelUsage {
     /// `None` for the local model.
     pub provider: Option<String>,
@@ -60,8 +57,7 @@ pub struct ModelUsage {
 }
 
 /// The tokens one remote model used on one local calendar day.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DailyModelTokens {
     /// `YYYY-MM-DD`.
     pub day: String,
@@ -72,8 +68,7 @@ pub struct DailyModelTokens {
     pub output_tokens: u64,
 }
 
-#[derive(Debug, Clone, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize)]
 pub struct AiUsageSummary {
     pub totals: UsageTotals,
     /// The most recently used first.

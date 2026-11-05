@@ -1,5 +1,6 @@
 //! Where Makora keeps its files: `<data dir>/<APP_ID>` and `<config dir>/<APP_ID>`, the same
-//! directories Tauri resolved from the bundle identifier, so existing data stays where it is.
+//! directories the former Tauri build resolved from its bundle identifier, so existing data stays
+//! where it is.
 
 use std::path::PathBuf;
 
@@ -37,5 +38,23 @@ impl AppPaths {
 
     pub fn database(&self) -> PathBuf {
         self.data_dir.join("makora.sqlite")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_app_id_is_the_identifier_existing_installs_store_their_data_under() {
+        assert_eq!(APP_ID, "dev.phucvinh57.makora");
+    }
+
+    #[test]
+    fn platform_paths_sit_under_the_app_id() {
+        let paths = AppPaths::platform().unwrap();
+        assert_eq!(paths.data_dir, dirs::data_dir().unwrap().join("dev.phucvinh57.makora"));
+        assert_eq!(paths.config_dir, dirs::config_dir().unwrap().join("dev.phucvinh57.makora"));
+        assert_eq!(paths.database().file_name().unwrap(), "makora.sqlite");
     }
 }

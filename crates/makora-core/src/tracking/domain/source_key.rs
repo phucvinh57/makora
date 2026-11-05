@@ -1,8 +1,7 @@
 use serde::Serialize;
 use url::Url;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum KeyKind {
     Exe,

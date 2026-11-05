@@ -133,15 +133,16 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            librsvg2-dev \
-            libayatana-appindicator3-dev \
-            libssl-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libxcb1-dev \
+            libx11-xcb-dev \
+            libfontconfig-dev \
+            libfreetype-dev \
             libvulkan-dev \
             glslc \
             spirv-headers \
-            patchelf \
             build-essential
 
       - name: Extract release version
@@ -178,11 +179,6 @@ jobs:
             throw new Error("workspace version was not found in Cargo.toml");
           }
           fs.writeFileSync(cargoPath, updatedCargo);
-
-          const configPath = "src-tauri/tauri.conf.json";
-          const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-          config.version = version;
-          fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
           NODE
 
       - name: Install Rust stable
@@ -195,28 +191,15 @@ jobs:
         with:
           key: ${{ matrix.platform }}-${{ matrix.arch }}
 
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: Cache Bun packages
-        uses: actions/cache@v6
-        with:
-          path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-          restore-keys: bun-${{ runner.os }}-
-
-      - name: Install frontend dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Build Tauri app with the browser bridge
+      - name: Build the app with the browser bridge
         shell: bash
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ startsWith(matrix.target, 'aarch64-apple-darwin') && '10.15' || '' }}
         run: |
           if [ -n "${{ matrix.target }}" ]; then
-            bun run bundle --target "${{ matrix.target }}"
+            node scripts/bundle.mjs --target "${{ matrix.target }}"
           else
-            bun run bundle
+            node scripts/bundle.mjs
           fi
 
       - name: Upload desktop installers

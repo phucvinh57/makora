@@ -28,10 +28,13 @@ gnome-extensions disable makora@phucvinh57.dev
 gnome-extensions enable makora@phucvinh57.dev
 ```
 
-The DEB and RPM packages install `metadata.json` and `extension.js` under
+The DEB and RPM packages ship `metadata.json`, `extension.js`,
+`session-is-gnome-wayland.sh` and `install-system.sh` under
+`/usr/share/makora/gnome-extension/`. Their post-install script
+([`packaging/linux/post-install.sh`](../../packaging/linux/post-install.sh))
+runs `install-system.sh`, which installs the extension under
 `/usr/share/gnome-shell/extensions/makora@phucvinh57.dev/`. If the extension
-adds files, update the file list in
-[`src-tauri/tauri.linux.conf.json`](../../src-tauri/tauri.linux.conf.json) too.
+adds files, add them to the package file list and the post-remove scripts too.
 
 ## D-Bus protocol
 

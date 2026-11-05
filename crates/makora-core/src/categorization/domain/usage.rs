@@ -6,8 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::categorization::domain::rules::UnknownValue;
 use crate::categorization::ports::RunUsage;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RunTrigger {
     Manual,
@@ -35,8 +34,7 @@ impl TryFrom<&str> for RunTrigger {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RunStatus {
     Completed,

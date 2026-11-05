@@ -11,8 +11,7 @@ use crate::ai::secrets::SecretStore;
 use crate::settings::{ProviderConfig, ProviderKind, Settings, SettingsError, SettingsStore};
 
 /// A provider as the settings page sends it: no `id` when it is new.
-#[derive(Debug, Deserialize, ts_rs::TS)]
-#[ts(export, optional_fields)]
+#[derive(Debug, Deserialize)]
 pub struct ProviderDraft {
     pub id: Option<String>,
     pub name: String,

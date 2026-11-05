@@ -17,22 +17,16 @@ pub enum QueryError {
     Failed(#[from] anyhow::Error),
 }
 
-#[derive(Debug, Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionListQuery {
     pub page: i64,
     pub page_size: i64,
-    #[ts(optional)]
     pub search: Option<String>,
     /// A category id, or `"uncategorized"`.
-    #[ts(optional)]
     pub category: Option<String>,
-    #[ts(optional, type = "\"manual\" | \"rule\" | \"ai\"")]
     pub source: Option<String>,
-    #[ts(optional)]
     pub start: Option<String>,
-    #[ts(optional)]
     pub end: Option<String>,
 }
 
