@@ -62,7 +62,7 @@ impl Toast {
         Self::new(ToastKind::Warning, message)
     }
 
-    /// A second, muted line under the message.
+    /// A second line under the message, which then shows as the title.
     pub fn description(mut self, description: impl Into<SharedString>) -> Self {
         self.description = Some(description.into());
         self

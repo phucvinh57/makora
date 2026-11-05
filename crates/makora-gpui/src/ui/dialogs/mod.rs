@@ -7,9 +7,16 @@
 //! A dialog is a type implementing [`AppDialog`] in its own module here; adding one takes that
 //! module and its `pub mod` line below, and nothing else shared.
 
+pub mod add_category;
+pub mod add_model;
+pub mod category_form;
 pub mod confirm;
+pub mod delete_category;
+pub mod edit_category;
 pub mod provider;
 pub mod remove_provider;
+pub mod reset_categorization;
+pub mod rule;
 
 use gpui_kit::{App, Window};
 

@@ -9,6 +9,7 @@ pub mod feedback;
 pub mod page_header;
 pub mod pagination;
 pub mod ranked_bar;
+pub mod select_item;
 pub mod stat_tile;
 pub mod suggest_input;
 pub mod toast;

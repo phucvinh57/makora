@@ -284,7 +284,7 @@ impl SuggestInput {
                         .children(rows),
                 ),
             )
-            .with_priority(1),
+            .with_priority(gpui_kit::base::POPUP_PRIORITY),
         )
     }
 }

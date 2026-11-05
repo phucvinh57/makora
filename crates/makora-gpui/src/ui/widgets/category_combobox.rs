@@ -11,6 +11,8 @@
 //! })
 //! ```
 
+use std::collections::HashSet;
+
 use gpui_kit::base::actions::Cancel;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::combobox::{Combobox, ComboboxEvent, ComboboxState};
@@ -22,6 +24,7 @@ use gpui_kit::{
     SharedString, Styled, Subscription, Window, div, px,
 };
 use makora_lib::domain::types::Category;
+use makora_lib::shared::ids::CategoryId;
 
 use crate::ui::app_state::AppState;
 use crate::ui::format::categories::{category_paths, ordered_categories};
@@ -131,6 +134,7 @@ type State = ComboboxState<SearchableVec<CategoryChoice>>;
 pub struct CategoryCombobox {
     state: Entity<State>,
     extra: Vec<CategoryChoice>,
+    excluded: HashSet<CategoryId>,
     choices: Vec<CategoryChoice>,
     value: Option<SharedString>,
     placeholder: SharedString,
@@ -149,7 +153,7 @@ impl CategoryCombobox {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let choices = all_choices(&extra, &AppState::read(cx).categories);
+        let choices = all_choices(&extra, &AppState::read(cx).categories, &HashSet::new());
         let selected = selected_index(&choices, value.as_ref());
         let state = cx.new(|cx| {
             ComboboxState::new(
@@ -170,13 +174,14 @@ impl CategoryCombobox {
                 }
             }),
             cx.observe_in(&AppState::entity(cx), window, |this, app, window, cx| {
-                let choices = all_choices(&this.extra, &app.read(cx).categories);
+                let choices = all_choices(&this.extra, &app.read(cx).categories, &this.excluded);
                 this.set_choices(choices, window, cx);
             }),
         ];
         Self {
             state,
             extra,
+            excluded: HashSet::new(),
             choices,
             value,
             placeholder: "Choose a category".into(),
@@ -225,7 +230,20 @@ impl CategoryCombobox {
         cx: &mut Context<Self>,
     ) {
         self.extra = extra;
-        let choices = all_choices(&self.extra, &AppState::read(cx).categories);
+        let choices = all_choices(&self.extra, &AppState::read(cx).categories, &self.excluded);
+        self.set_choices(choices, window, cx);
+    }
+
+    /// Leaves these categories out of the list, such as a category's own branch when choosing
+    /// its new parent.
+    pub fn set_excluded(
+        &mut self,
+        excluded: HashSet<CategoryId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.excluded = excluded;
+        let choices = all_choices(&self.extra, &AppState::read(cx).categories, &self.excluded);
         self.set_choices(choices, window, cx);
     }
 
@@ -259,11 +277,20 @@ impl CategoryCombobox {
     }
 }
 
-fn all_choices(extra: &[CategoryChoice], categories: &[Category]) -> Vec<CategoryChoice> {
+fn all_choices(
+    extra: &[CategoryChoice],
+    categories: &[Category],
+    excluded: &HashSet<CategoryId>,
+) -> Vec<CategoryChoice> {
+    let kept: Vec<Category> = categories
+        .iter()
+        .filter(|category| !excluded.contains(&category.id))
+        .cloned()
+        .collect();
     extra
         .iter()
         .cloned()
-        .chain(category_choices(categories))
+        .chain(category_choices(&kept))
         .collect()
 }
 
@@ -333,8 +360,6 @@ impl Render for CategoryCombobox {
 
 #[cfg(test)]
 mod tests {
-    use makora_lib::shared::ids::CategoryId;
-
     use super::*;
 
     fn category(id: i64, name: &str, parent: Option<i64>) -> Category {
@@ -374,7 +399,7 @@ mod tests {
     #[test]
     fn extra_rows_come_first() {
         let extra = vec![CategoryChoice::new("uncategorized", "Uncategorized")];
-        let choices = all_choices(&extra, &[category(1, "Work", None)]);
+        let choices = all_choices(&extra, &[category(1, "Work", None)], &HashSet::new());
         assert_eq!(choices[0].value.as_ref(), "uncategorized");
         assert_eq!(choices[1].value.as_ref(), "1");
         assert_eq!(
@@ -382,6 +407,14 @@ mod tests {
             Some(1)
         );
         assert_eq!(selected_index(&choices, Some(&"9".into())), None);
+    }
+
+    #[test]
+    fn excluded_categories_leave_the_list() {
+        let categories = [category(1, "Work", None), category(2, "Code", Some(1))];
+        let choices = all_choices(&[], &categories, &HashSet::from([CategoryId(2)]));
+        let values: Vec<_> = choices.iter().map(|c| c.value.as_ref()).collect();
+        assert_eq!(values, ["1"]);
     }
 
     #[test]

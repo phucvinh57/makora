@@ -105,6 +105,10 @@ pub trait ModelDownloads: Send + Sync {
     /// [`CoreEvent::DownloadProgress`]. Returns `false` when the user stopped it; the partial file
     /// is kept for resuming.
     fn download(&self, model: &str) -> Result<bool, ModelDownloadError>;
+    /// The models that can be loaded right now: downloaded here or pulled by Ollama.
+    fn installed(&self) -> Vec<llm::InstalledModel>;
+    /// Whether `model` can be loaded right now (downloaded here, pulled by Ollama, or a file).
+    fn is_installed(&self, model: &str) -> bool;
 }
 
 pub struct OllamaDownloads {
@@ -147,6 +151,14 @@ impl ModelDownloads for OllamaDownloads {
             self.indexer.refresh();
         }
         downloaded
+    }
+
+    fn installed(&self) -> Vec<llm::InstalledModel> {
+        llm::installed_models()
+    }
+
+    fn is_installed(&self, model: &str) -> bool {
+        llm::resolve_model(model.trim()).is_ok()
     }
 }
 

@@ -57,6 +57,29 @@ where
     })
 }
 
+/// Runs a core call that blocks for long (a categorization run, a model download) on a thread of
+/// its own, so it does not hold one of the executor's threads.
+pub fn blocking<V, T>(
+    cx: &Context<V>,
+    load: impl FnOnce(&AppCore) -> T + Send + 'static,
+) -> Task<Option<T>>
+where
+    V: 'static,
+    T: Send + 'static,
+{
+    let core: Arc<AppCore> = Core::get(cx);
+    let (tx, rx) = async_channel::bounded(1);
+    let spawned = std::thread::Builder::new()
+        .name("makora-ui-job".into())
+        .spawn(move || {
+            let _ = tx.send_blocking(load(&core));
+        });
+    if let Err(err) = spawned {
+        tracing::error!(error = %err, "failed to start a background job");
+    }
+    cx.background_spawn(async move { rx.recv().await.ok() })
+}
+
 /// Runs a core call on a background thread; await the task from a foreground one.
 pub fn background<V, T>(
     cx: &Context<V>,

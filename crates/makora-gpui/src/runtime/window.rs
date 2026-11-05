@@ -80,7 +80,7 @@ pub fn with_main_window(cx: &mut App, f: impl FnOnce(&mut gpui_kit::Window, &mut
         .try_global::<MainWindowSlot>()
         .and_then(|slot| slot.0.clone())
     {
-        let _ = main.handle.update(cx, |_, window, cx| f(window, cx));
+        let _ = cx.update_window(main.handle.into(), |_, window, cx| f(window, cx));
     }
 }
 

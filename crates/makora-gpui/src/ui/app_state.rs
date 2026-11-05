@@ -124,6 +124,9 @@ pub struct BackgroundTask {
 pub struct AppState {
     pub settings: Settings,
     pub categories: Vec<Category>,
+    /// Whether the categories have loaded once, and why the last load failed.
+    pub categories_loaded: bool,
+    pub categories_error: Option<String>,
     pub categorize: CategorizeTask,
     pub download: DownloadTask,
     pub revisions: Revisions,
@@ -167,6 +170,11 @@ impl AppState {
         cx.notify();
     }
 
+    /// The categories loaded and there are none: not just a failed load.
+    pub fn has_no_categories(&self) -> bool {
+        self.categories_loaded && self.categories_error.is_none() && self.categories.is_empty()
+    }
+
     /// After a category edit, a pin or a label: reloads the categories and tells every screen.
     pub fn invalidate_categorization(&mut self, cx: &mut Context<Self>) {
         self.revisions.bump_categorization();
@@ -181,9 +189,16 @@ impl AppState {
             |state, result, cx| match result {
                 Ok(categories) => {
                     state.categories = categories;
+                    state.categories_loaded = true;
+                    state.categories_error = None;
                     cx.notify();
                 }
-                Err(err) => warn!(error = %err, "failed to load the categories"),
+                Err(err) => {
+                    warn!(error = %err, "failed to load the categories");
+                    state.categories_loaded = true;
+                    state.categories_error = Some(err.to_string());
+                    cx.notify();
+                }
             },
         );
     }
@@ -297,6 +312,8 @@ pub fn init(events: Receiver<CoreEvent>, cx: &mut App) {
         let mut state = AppState {
             settings: core.settings.get(),
             categories: Vec::new(),
+            categories_loaded: false,
+            categories_error: None,
             categorize: core.runner.status().into(),
             download: core.downloads.status().into(),
             revisions: Revisions::default(),

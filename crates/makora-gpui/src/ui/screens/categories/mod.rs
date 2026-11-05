@@ -1,13 +1,44 @@
-use gpui_kit::component::v_flex;
-use gpui_kit::{Context, IntoElement, ParentElement, Render, Styled, Window};
+//! Categories: the taxonomy, the rules that file activity, and the AI with its review queue.
 
+mod ai_section;
+mod review;
+mod rules;
+mod taxonomy;
+
+use gpui_kit::component::tab::{Tab, TabBar};
+use gpui_kit::component::{ActiveTheme, v_flex};
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::{
+    AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription, Task,
+    Window, div, px,
+};
+use makora_lib::domain::types::FeedbackStats;
+
+use crate::ui::app_state::AppState;
+use crate::ui::data;
 use crate::ui::prefs::Prefs;
 use crate::ui::route::CategoriesTab;
 use crate::ui::screens::Screen;
+use crate::ui::screens::categories::ai_section::AiSection;
+use crate::ui::screens::categories::review::ReviewQueue;
+use crate::ui::screens::categories::rules::RulesTab;
 use crate::ui::widgets::page_header::PageHeader;
+
+const TABS: [CategoriesTab; 3] = [
+    CategoriesTab::Taxonomy,
+    CategoriesTab::Rules,
+    CategoriesTab::Review,
+];
 
 pub struct CategoriesScreen {
     pub tab: CategoriesTab,
+    rules: Entity<RulesTab>,
+    ai: Entity<AiSection>,
+    review: Entity<ReviewQueue>,
+    stats: Option<FeedbackStats>,
+    labels: Option<u64>,
+    stats_load: Task<()>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl CategoriesScreen {
@@ -17,15 +48,50 @@ impl CategoriesScreen {
         Prefs::update(cx, |prefs| prefs.categories_tab = tab);
         cx.notify();
     }
+
+    fn reload_stats(&mut self, cx: &mut Context<Self>) {
+        let labels = AppState::read(cx).revisions.labels;
+        if self.labels == Some(labels) {
+            return;
+        }
+        self.labels = Some(labels);
+        self.stats_load = data::fetch(
+            cx,
+            |core| core.labeling.get_feedback_stats(),
+            |this, result, cx| match result {
+                Ok(stats) => {
+                    let pending = stats.pending_review;
+                    this.stats = Some(stats);
+                    this.ai
+                        .update(cx, |ai, cx| ai.set_pending_review(Some(pending), cx));
+                }
+                Err(err) => tracing::warn!(error = %err, "failed to load the AI feedback stats"),
+            },
+        );
+    }
 }
 
 impl Screen for CategoriesScreen {
     type Location = CategoriesTab;
 
-    fn new(_: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let rules = cx.new(RulesTab::new);
+        let ai = cx.new(|cx| AiSection::new(window, cx));
+        let review = cx.new(|cx| ReviewQueue::new(window, cx));
+        let subscriptions =
+            vec![cx.observe(&AppState::entity(cx), |this, _, cx| this.reload_stats(cx))];
+        let mut screen = Self {
             tab: Prefs::get(cx).categories_tab,
-        }
+            rules,
+            ai,
+            review,
+            stats: None,
+            labels: None,
+            stats_load: Task::ready(()),
+            _subscriptions: subscriptions,
+        };
+        screen.reload_stats(cx);
+        screen
     }
 
     fn navigate(&mut self, tab: CategoriesTab, _: &mut Window, cx: &mut Context<Self>) {
@@ -34,10 +100,52 @@ impl Screen for CategoriesScreen {
 }
 
 impl Render for CategoriesScreen {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        v_flex().gap_6().child(PageHeader::new(
-            "Categories",
-            "Organize activity with categories, rules and the AI",
-        ))
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let pending = self.stats.as_ref().map_or(0, |stats| stats.pending_review);
+        let selected = TABS.iter().position(|tab| *tab == self.tab).unwrap_or(0);
+        let theme = cx.theme();
+        let badge = div()
+            .rounded_full()
+            .bg(theme.primary)
+            .px_1p5()
+            .text_xs()
+            .text_color(theme.primary_foreground)
+            .child(pending.to_string());
+
+        v_flex()
+            .gap_4()
+            .child(PageHeader::new(
+                "Categories",
+                "Organize activity with categories, rules and the AI",
+            ))
+            .child(
+                div().child(
+                    TabBar::new("categories-tabs")
+                        .segmented()
+                        .selected_index(selected)
+                        .child(Tab::new().label("Taxonomy"))
+                        .child(Tab::new().label("Rules"))
+                        .child(
+                            Tab::new()
+                                .label("AI review")
+                                .when(pending > 0, |tab| tab.suffix(badge)),
+                        )
+                        .on_click(cx.listener(|this, ix: &usize, _, cx| {
+                            if let Some(tab) = TABS.get(*ix) {
+                                this.set_tab(*tab, cx);
+                            }
+                        })),
+                ),
+            )
+            .child(match self.tab {
+                CategoriesTab::Taxonomy => taxonomy::render(cx).into_any_element(),
+                CategoriesTab::Rules => self.rules.clone().into_any_element(),
+                CategoriesTab::Review => v_flex()
+                    .gap_6()
+                    .child(self.ai.clone())
+                    .child(self.review.clone())
+                    .into_any_element(),
+            })
+            .pb(px(8.))
     }
 }
