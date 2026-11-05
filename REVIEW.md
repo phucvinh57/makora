@@ -8,7 +8,7 @@ For human reviewers and the local `/pre-pr` skill. Keep it short. When a bug sli
 - Tracked time is lost or double-counted: a session row left open on focus change, lock/suspend or quit; overlapping rows; duration clipping done in more than one place.
 - A migration loses or corrupts user data. Shipped migration files are never edited; changes go in a new numbered file.
 - API keys stored or logged in plain text.
-- Process-wide state built before the single-instance check in `makora::run`; `println!`/`eprintln!` outside the `crates/makora/src/lib.rs` bootstrap fallback.
+- Process-wide state built before the single-instance check in `makora::run`; `println!`/`eprintln!` outside the `crates/makora/src/lib.rs` bootstrap fallback and build-script `cargo:` directives.
 - The bridge or native-host manifest points browsers at the wrong binary, or the socket/pipe accepts another user's messages.
 - Docs that lie: README, CONTRIBUTING or AGENTS.md out of step with the change.
 

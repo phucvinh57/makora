@@ -59,8 +59,39 @@ bun run check       # Biome checks with automatic fixes
 bun run format      # Biome formatting checks
 ```
 
-Release installers are not built yet: `bun run bundle` (`scripts/bundle.mjs`)
-only builds the release binaries.
+## Packaging and releases
+
+`node scripts/bundle.mjs` (or `bun run bundle`) builds `makora` and
+`makora-bridge` in release mode and packages both for the host OS; it accepts
+`--target <triple>`. Every package puts the bridge next to the app, because
+the app registers the bridge it finds beside its own executable.
+
+| OS | Tool | Formats | Output |
+| --- | --- | --- | --- |
+| Linux | [cargo-deb](https://crates.io/crates/cargo-deb), [cargo-generate-rpm](https://crates.io/crates/cargo-generate-rpm) | DEB, RPM | `target/debian/`, `target/generate-rpm/` |
+| macOS | [cargo-packager](https://crates.io/crates/cargo-packager) | app, DMG (ad hoc signed, macOS 10.15+) | `target/packager/` |
+| Windows | cargo-packager | NSIS, MSI | `target/packager/` |
+
+Install the tools with `cargo install --locked cargo-deb cargo-generate-rpm`
+or `cargo install --locked cargo-packager`. Their configuration lives in
+`crates/makora/Cargo.toml` under `[package.metadata.deb]`,
+`[package.metadata.generate-rpm]` and `[package.metadata.packager]`;
+`crates/makora/build.rs` embeds the icon and version info into the Windows
+executable. The Linux packages add the desktop entry from `packaging/linux/`,
+whose name must stay `dev.phucvinh57.makora.desktop` to match the window's
+app ID, and the GNOME extension files. `packaging/linux/post-install.sh`
+copies the extension into GNOME Shell on GNOME Wayland and stops a running
+copy of a pre-GPUI release, which does not share the single-instance lock
+(`packaging/linux/deb/` links the Debian script names to these scripts). Check
+a package with `dpkg-deb -c` or `rpm -qlp` instead of installing it on your
+machine.
+
+The release workflow (`.github/workflows/release.yaml`) runs on a `v*` tag
+push and builds the Linux packages into a draft release; run it manually to
+build macOS and Windows installers for the latest release. It sets the version
+from the tag in the root `Cargo.toml` (`[workspace.package]`), the only place
+it lives. The same workflow publishes the browser extension to the Chrome Web
+Store for stable tags.
 
 ## Project layout and architecture
 
@@ -68,7 +99,7 @@ only builds the release binaries.
 | --- | --- |
 | `crates/makora-core/` | Rust backend (tracking, categorization, storage, AI) and the `makora-bridge` binary |
 | `crates/makora/` | GPUI desktop app: window, tray, single instance, screens and dialogs |
-| `packaging/` | Linux package maintainer scripts |
+| `packaging/` | Linux desktop entry and package maintainer scripts |
 | `extensions/browser/` | Optional active-tab reporter |
 | `extensions/gnome/` | GNOME Shell focus reporter |
 | `demo/` | Remotion video and fictional screenshot fixtures |
@@ -180,8 +211,9 @@ isolated browser context; it never reads or writes the real activity database.
   relevant to your changes.
 - Avoid unnecessary comments.
 - Use `tracing::{info, warn, error}` instead of `println!` or `eprintln!`.
-  The bootstrap fallback in `crates/makora/src/lib.rs` is the exception, for
-  errors before logging is set up.
+  The bootstrap fallback in `crates/makora/src/lib.rs`, for errors before
+  logging is set up, and `cargo:` directives in build scripts are the
+  exceptions.
 - Build process-wide state in `main` after the single-instance check, never
   before it.
 - Preserve local storage and local inference for activity data.

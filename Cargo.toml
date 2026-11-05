@@ -6,6 +6,9 @@ members = ["crates/makora-core", "crates/makora"]
 version = "0.1.0"
 edition = "2021"
 
+[profile.release]
+strip = true
+
 [workspace.dependencies]
 makora-core = { path = "crates/makora-core" }
 anyhow = "1.0.104"

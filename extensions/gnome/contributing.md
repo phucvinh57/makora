@@ -34,7 +34,9 @@ The DEB and RPM packages ship `metadata.json`, `extension.js`,
 ([`packaging/linux/post-install.sh`](../../packaging/linux/post-install.sh))
 runs `install-system.sh`, which installs the extension under
 `/usr/share/gnome-shell/extensions/makora@phucvinh57.dev/`. If the extension
-adds files, add them to the package file list and the post-remove scripts too.
+adds files, add them to both package asset lists in `crates/makora/Cargo.toml`
+(`[package.metadata.deb]` and `[package.metadata.generate-rpm]`) and to the
+post-remove scripts.
 
 ## D-Bus protocol
 

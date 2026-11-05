@@ -10,7 +10,10 @@ cargo run -p makora        # the app alone
 cargo test --workspace
 cargo clippy --workspace --all-targets
 bun install                # JS tooling: Biome, lefthook, the browser extension build
+node scripts/bundle.mjs    # release installers: deb + rpm (cargo-deb, cargo-generate-rpm) or app/dmg, nsis/msi (cargo-packager)
 ```
+
+Packaging config lives in `crates/makora/Cargo.toml` (`[package.metadata.{deb,generate-rpm,packager}]`) and `packaging/linux/`. Inspect built packages with `dpkg-deb -c` / `rpm -qlp`; never install them on the dev machine.
 
 Cargo workspace at the repo root (`Cargo.lock` and `target/` live there). Members: `crates/makora-core` (lib `makora_lib`, every backend module, and the `makora-bridge` bin) and `crates/makora` (bin `makora`, the GPUI app: `runtime/` for tray, window, single instance and autostart; `ui/` for screens, dialogs and widgets).
 
@@ -32,6 +35,6 @@ Backend layout: `AppCore` (`crates/makora-core/src/app_core.rs`) builds every se
 ## Rules
 
 - **Do not add unnecessary comments.**
-- **No `println!`/`eprintln!`** — use `tracing::{info, warn, error}`. The only exception is the bootstrap fallback in `crates/makora/src/lib.rs`, for errors before the subscriber is installed.
+- **No `println!`/`eprintln!`** — use `tracing::{info, warn, error}`. The only exceptions are the bootstrap fallback in `crates/makora/src/lib.rs`, for errors before the subscriber is installed, and `cargo:` directives in build scripts.
 - **Build process-wide state in `main` after the single-instance check** (`makora::run`), never before it: a second launch exits there.
 - **Before applying new migration, make sure to back up the db first.

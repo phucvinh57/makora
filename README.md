@@ -35,6 +35,33 @@ downloads for your operating system. If a build is not available yet, the
 [contributing guide](CONTRIBUTING.md#building-and-running) explains how to run
 Makora from source.
 
+| Platform | Download | Install |
+| --- | --- | --- |
+| Debian, Ubuntu | `.deb` | `sudo apt install ./makora_*.deb` |
+| Fedora, openSUSE | `.rpm` | `sudo dnf install ./makora-*.rpm` or `sudo zypper install ./makora-*.rpm` |
+| macOS (Apple silicon) | `.dmg` | Drag Makora to Applications |
+| Windows | `-setup.exe` or `.msi` | Run the installer |
+
+On Linux, Makora draws its window with Vulkan, so a Vulkan driver must be
+installed (Mesa's Vulkan drivers cover most GPUs: `mesa-vulkan-drivers` on
+Debian, Ubuntu and Fedora, `libvulkan_radeon` or `libvulkan_intel` on
+openSUSE). GNOME needs the AppIndicator extension to show the tray icon.
+
+### Upgrading an earlier release
+
+Earlier releases were built on a web view and cannot tell that the current
+app is running, so both would track at once. Activity history and settings
+are kept across the upgrade.
+
+- **Linux:** the DEB or RPM package stops any copy of the earlier release
+  that is still running. Start Makora again from the app menu afterwards; it
+  also starts at your next login if "Run when system starts" is on. The menu
+  entry has a new file name, so re-pin Makora if you had pinned it to the
+  dock.
+- **macOS:** quit Makora from its tray menu before replacing it in
+  Applications.
+- **Windows:** the installer offers to close a running Makora.
+
 ### macOS first launch
 
 The macOS release is ad hoc signed and is not notarized by Apple. After moving

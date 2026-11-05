@@ -84,7 +84,7 @@ jobs:
               arch: "x64",
               target: "",
               artifact_name: "makora-linux",
-              files: "target/release/bundle/deb/*.deb\ntarget/release/bundle/rpm/*.rpm",
+              files: "target/debian/*.deb\ntarget/generate-rpm/*.rpm",
             });
           }
 
@@ -94,7 +94,7 @@ jobs:
               arch: "aarch64",
               target: "aarch64-apple-darwin",
               artifact_name: "makora-macos-arm64",
-              files: "target/aarch64-apple-darwin/release/bundle/dmg/*.dmg",
+              files: "target/packager/*.dmg",
             });
           }
 
@@ -104,7 +104,7 @@ jobs:
               arch: "x64",
               target: "",
               artifact_name: "makora-windows",
-              files: "target/release/bundle/msi/*.msi\ntarget/release/bundle/nsis/*.exe",
+              files: "target/packager/*.msi\ntarget/packager/*-setup.exe",
             });
           }
 
@@ -191,7 +191,19 @@ jobs:
         with:
           key: ${{ matrix.platform }}-${{ matrix.arch }}
 
-      - name: Build the app with the browser bridge
+      - name: Install Linux packaging tools
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb@3.8.0,cargo-generate-rpm@0.21.1
+
+      - name: Install macOS and Windows packaging tools
+        if: runner.os != 'Linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-packager@0.11.8
+
+      - name: Build the installers with the browser bridge
         shell: bash
         env:
           MACOSX_DEPLOYMENT_TARGET: ${{ startsWith(matrix.target, 'aarch64-apple-darwin') && '10.15' || '' }}
@@ -253,8 +265,7 @@ jobs:
             exit 1
           fi
 
-          shopt -s nullglob
-          assets=(release-assets/*)
+          mapfile -t assets < <(find release-assets -type f)
           if (( ${#assets[@]} == 0 )); then
             echo "No installer artifacts were downloaded." >&2
             exit 1
