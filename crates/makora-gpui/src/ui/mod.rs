@@ -2,6 +2,7 @@
 
 pub mod app_state;
 pub mod data;
+pub mod dialogs;
 pub mod error;
 pub mod format;
 pub mod prefs;
