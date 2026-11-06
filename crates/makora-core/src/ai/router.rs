@@ -379,4 +379,54 @@ mod tests {
         assert!(!sent.contains("jane.doe@acme.com"), "{sent}");
         assert!(sent.contains("[email]"));
     }
+
+    #[test]
+    fn describing_a_category_sends_only_redacted_samples() {
+        let categories = [
+            Category {
+                id: CategoryId(1),
+                name: "Work".to_string(),
+                color: "#000000".to_string(),
+                parent_id: None,
+                description: Some("Paid work".to_string()),
+            },
+            Category {
+                id: CategoryId(2),
+                name: "Fun".to_string(),
+                color: "#000000".to_string(),
+                parent_id: None,
+                description: None,
+            },
+        ];
+        let choices = choices(&categories);
+        let kept = [page("github.com", "/acme/api/pull/42", "Review for jane.doe@acme.com")];
+        let moved = [MovedActivity {
+            text: page("mail.google.com", "/mail/u/0", "Re: lunch - john.roe@acme.com"),
+            to: Some(CategoryId(2)),
+        }];
+        let samples: Vec<ActivityText> = kept.iter().cloned().chain(moved.iter().map(|m| m.text.clone())).collect();
+        let lines = |samples: &[ActivityText]| {
+            let all = sample_lines(samples);
+            let (kept, moved) = all.split_at(1);
+            describe_lines("Work", kept, &[(moved[0].clone(), "Fun".to_string())])
+        };
+        let ask = JsonAsk {
+            system: describe_system_prompt(&choices, "Work", Some("Paid work")),
+            grammar: String::new(),
+            schema: describe_schema(),
+            max_tokens: DESCRIBE_MAX_TOKENS,
+            fields: DESCRIBE_FIELDS,
+            samples: &samples,
+            lines: &lines,
+        };
+        let api = RecordingApi::default();
+        ask_remote(&api, "https://api.example.com/v1", &PrivacySettings::default(), "model", &ask, &UsageMeter::default())
+            .unwrap();
+
+        let sent = lock(&api.0).join("\n");
+        for secret in ["jane.doe@acme.com", "john.roe@acme.com", "pull/42"] {
+            assert!(!sent.contains(secret), "{secret} was sent: {sent}");
+        }
+        assert!(sent.contains("[email]") && sent.contains("-> Fun"), "{sent}");
+    }
 }

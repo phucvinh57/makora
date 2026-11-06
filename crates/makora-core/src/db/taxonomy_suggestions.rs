@@ -22,13 +22,13 @@ impl TaxonomySuggestionsRepo for SqliteConnection {
         Ok(())
     }
 
-    fn set_status(&mut self, id: i64, from: &str, to: &str) -> QueryResult<bool> {
+    fn set_status(&mut self, id: i64, from: &str, to: &str, at: &str) -> QueryResult<bool> {
         let changed = diesel::update(
             taxonomy_suggestions::table
                 .find(id)
                 .filter(taxonomy_suggestions::status.eq(from)),
         )
-        .set(taxonomy_suggestions::status.eq(to))
+        .set((taxonomy_suggestions::status.eq(to), taxonomy_suggestions::decided_at.eq(at)))
         .execute(self)?;
         Ok(changed > 0)
     }
@@ -75,8 +75,8 @@ mod tests {
             ("new", r#"{"a":1}"#, "pending")
         );
 
-        assert!(conn.set_status(id, "pending", "dismissed").unwrap());
-        assert!(!conn.set_status(id, "pending", "accepted").unwrap());
+        assert!(conn.set_status(id, "pending", "dismissed", "y").unwrap());
+        assert!(!conn.set_status(id, "pending", "accepted", "z").unwrap());
         assert!(conn.get_list(&["pending"]).unwrap().is_empty());
         assert_eq!(conn.get_list(&["pending", "dismissed"]).unwrap().len(), 1);
     }

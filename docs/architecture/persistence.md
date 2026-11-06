@@ -99,6 +99,7 @@ erDiagram
         text payload "JSON"
         text status "pending | accepted | dismissed"
         text created_at
+        text decided_at "accepted or dismissed"
         int run_id FK
     }
 ```

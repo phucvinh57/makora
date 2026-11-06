@@ -112,8 +112,8 @@ pub trait AiUnlabeledRepo {
 pub trait TaxonomySuggestionsRepo {
     fn insert(&mut self, new: &NewTaxonomySuggestionRow<'_>) -> QueryResult<i64>;
     fn update_payload(&mut self, id: i64, payload: &str) -> QueryResult<()>;
-    /// Moves the suggestion from `from` to `to`; `false` when it was not in `from`.
-    fn set_status(&mut self, id: i64, from: &str, to: &str) -> QueryResult<bool>;
+    /// Moves the suggestion from `from` to `to`, decided `at`; `false` when it was not in `from`.
+    fn set_status(&mut self, id: i64, from: &str, to: &str, at: &str) -> QueryResult<bool>;
     fn get(&mut self, id: i64) -> QueryResult<Option<TaxonomySuggestionRow>>;
     /// The suggestions in any of `statuses`, oldest first.
     fn get_list(&mut self, statuses: &[&str]) -> QueryResult<Vec<TaxonomySuggestionRow>>;

@@ -60,7 +60,8 @@ pub struct SuggestionView {
 pub struct StoredSuggestion {
     pub id: i64,
     pub status: SuggestionStatus,
-    pub created_at: Option<DateTime<Utc>>,
+    /// When it was accepted or dismissed, or else made.
+    pub at: Option<DateTime<Utc>>,
     pub suggestion: TaxonomySuggestion,
 }
 
@@ -96,14 +97,14 @@ pub trait TaxonomySuggestionSvc: Send + Sync {
     /// The still-unfiled activities the model found no category for, with an embedding from
     /// `embedding_model`.
     fn get_unlabeled(&self, embedding_model: &str) -> Result<Vec<UnlabeledActivity>>;
-    /// The pending and the dismissed suggestions, for generation to match against.
+    /// Every suggestion, pending or decided, for generation to match against.
     fn get_for_generation(&self) -> Result<Vec<StoredSuggestion>>;
     /// Per category, how the user answered the AI labels of activities seen since `since`.
     fn get_feedback(&self, since: DateTime<Utc>) -> Result<Vec<CategoryFeedback>>;
     /// What the user kept in `category` and what they moved out of it since `since`.
     fn get_describe_samples(&self, category: CategoryId, since: DateTime<Utc>) -> Result<(Vec<ActivityText>, Vec<MovedActivity>)>;
-    /// The embeddings from `embedding_model` and the time of each category's filed activities,
-    /// and the corrections between categories since `since`.
+    /// The corrections between categories since `since` and, when there are any, the embeddings
+    /// from `embedding_model` and the time of each category's filed activities.
     fn get_merge_signals(&self, embedding_model: &str, since: DateTime<Utc>) -> Result<MergeSignals>;
     /// Writes what generation decided, linked to `run_id`. Returns how many are new.
     fn save(&self, writes: &[SuggestionWrite], run_id: Option<i64>) -> Result<usize>;
@@ -117,6 +118,11 @@ impl SqliteTaxonomySuggestions {
     pub fn new(db: Db) -> Self {
         Self { db }
     }
+}
+
+/// Moves a pending suggestion to `status`, now; `false` when it was no longer pending.
+fn decide(conn: &mut diesel::SqliteConnection, id: i64, status: SuggestionStatus) -> diesel::QueryResult<bool> {
+    conn.set_status(id, SuggestionStatus::Pending.as_str(), status.as_str(), &time::to_db(Utc::now()))
 }
 
 fn decode_row(row: &TaxonomySuggestionRow) -> Option<(SuggestionStatus, TaxonomySuggestion)> {
@@ -176,7 +182,9 @@ impl TaxonomySuggestionSvc for SqliteTaxonomySuggestions {
             let Some(row) = conn.get(id)? else {
                 return Ok(Vec::new());
             };
-            conn.set_status(id, SuggestionStatus::Pending.as_str(), SuggestionStatus::Accepted.as_str())?;
+            if !decide(conn, id, SuggestionStatus::Accepted)? {
+                return Ok(Vec::new());
+            }
             let Some((_, TaxonomySuggestion::New(proposal))) = decode_row(&row) else {
                 return Ok(Vec::new());
             };
@@ -191,20 +199,12 @@ impl TaxonomySuggestionSvc for SqliteTaxonomySuggestions {
     }
 
     fn accept(&self, id: i64) -> Result<()> {
-        self.db.write().set_status(
-            id,
-            SuggestionStatus::Pending.as_str(),
-            SuggestionStatus::Accepted.as_str(),
-        )?;
+        decide(&mut self.db.write(), id, SuggestionStatus::Accepted)?;
         Ok(())
     }
 
     fn dismiss(&self, id: i64) -> Result<()> {
-        self.db.write().set_status(
-            id,
-            SuggestionStatus::Pending.as_str(),
-            SuggestionStatus::Dismissed.as_str(),
-        )?;
+        decide(&mut self.db.write(), id, SuggestionStatus::Dismissed)?;
         Ok(())
     }
 
@@ -232,14 +232,18 @@ impl TaxonomySuggestionSvc for SqliteTaxonomySuggestions {
 
     fn get_for_generation(&self) -> Result<Vec<StoredSuggestion>> {
         let mut conn = self.db.read()?;
-        let rows = conn.get_list(&[SuggestionStatus::Pending.as_str(), SuggestionStatus::Dismissed.as_str()])?;
+        let rows = conn.get_list(&[
+            SuggestionStatus::Pending.as_str(),
+            SuggestionStatus::Accepted.as_str(),
+            SuggestionStatus::Dismissed.as_str(),
+        ])?;
         Ok(rows
             .iter()
             .filter_map(|row| {
                 decode_row(row).map(|(status, suggestion)| StoredSuggestion {
                     id: row.id,
                     status,
-                    created_at: time::parse_db(&row.created_at),
+                    at: time::parse_db(row.decided_at.as_deref().unwrap_or(&row.created_at)),
                     suggestion,
                 })
             })
@@ -285,10 +289,13 @@ impl TaxonomySuggestionSvc for SqliteTaxonomySuggestions {
     fn get_merge_signals(&self, embedding_model: &str, since: DateTime<Utc>) -> Result<MergeSignals> {
         let mut conn = self.db.read()?;
         let (filed, seconds, corrections) = (*conn).transaction(|conn| {
+            let corrections = conn.get_correction_pairs(&time::to_db(since))?;
+            if corrections.is_empty() {
+                return diesel::QueryResult::Ok((Vec::new(), Vec::new(), corrections));
+            }
             let filed = conn.get_categorized(embedding_model)?;
             let seconds = conn.get_filed_seconds(&Window::until(Utc::now()))?;
-            let corrections = conn.get_correction_pairs(&time::to_db(since))?;
-            diesel::QueryResult::Ok((filed, seconds, corrections))
+            Ok((filed, seconds, corrections))
         })?;
         Ok(MergeSignals {
             vectors: filed
@@ -368,9 +375,18 @@ pub fn generate(
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<SuggestionWrite>> {
     let existing = suggestions.get_for_generation()?;
-    let mut writes = propose_new(suggestions, suggester, llm, embedding_model, taxonomy, &existing, meter, cancelled)?;
-    writes.extend(propose_descriptions(suggestions, suggester, llm, taxonomy, &existing, meter, cancelled)?);
-    writes.extend(propose_merges(suggestions, embedding_model, taxonomy, &existing)?);
+    let steps = [
+        ("new categories", propose_new(suggestions, suggester, llm, embedding_model, taxonomy, &existing, meter, cancelled)),
+        ("sharper descriptions", propose_descriptions(suggestions, suggester, llm, taxonomy, &existing, meter, cancelled)),
+        ("merges", propose_merges(suggestions, embedding_model, taxonomy, &existing)),
+    ];
+    let mut writes = Vec::new();
+    for (step, result) in steps {
+        match result {
+            Ok(step_writes) => writes.extend(step_writes),
+            Err(err) => warn!(error = format!("{err:#}"), step, "could not look for taxonomy suggestions"),
+        }
+    }
     Ok(writes)
 }
 
@@ -397,13 +413,12 @@ fn propose_new(
         unlabeled.iter().map(|activity| (activity.point.id, &activity.text)).collect();
 
     let mut pending: Vec<(i64, &NewCategoryProposal)> = Vec::new();
-    let mut dismissed: Vec<&NewCategoryProposal> = Vec::new();
+    let mut decided: Vec<&NewCategoryProposal> = Vec::new();
     for stored in existing {
         if let TaxonomySuggestion::New(proposal) = &stored.suggestion {
             match stored.status {
                 SuggestionStatus::Pending => pending.push((stored.id, proposal)),
-                SuggestionStatus::Dismissed => dismissed.push(proposal),
-                SuggestionStatus::Accepted => {}
+                SuggestionStatus::Dismissed | SuggestionStatus::Accepted => decided.push(proposal),
             }
         }
     }
@@ -411,7 +426,7 @@ fn propose_new(
 
     let mut writes = Vec::new();
     let mut named = 0;
-    for plan in reconcile_new(&clusters, &pending, &dismissed) {
+    for plan in reconcile_new(&clusters, &pending, &decided) {
         let group = &clusters[plan.cluster()];
         let sample_ids = samples(group, &points, NAMING_SAMPLES);
         let sample_texts: Vec<ActivityText> =
@@ -494,7 +509,8 @@ fn propose_merges(
 }
 
 /// Asks for a sharper description of each category whose AI labels the user moved out often
-/// enough lately, unless one is pending or was dismissed lately.
+/// enough lately, unless one is pending or was accepted or dismissed lately: labels moved before a
+/// new description still count for a while.
 fn propose_descriptions(
     suggestions: &dyn TaxonomySuggestionSvc,
     suggester: &dyn Suggester,
@@ -510,12 +526,8 @@ fn propose_descriptions(
         .iter()
         .filter_map(|stored| match &stored.suggestion {
             TaxonomySuggestion::Describe(proposal) => {
-                let recent = stored.created_at.is_none_or(|at| at >= quiet_since);
-                let blocks = match stored.status {
-                    SuggestionStatus::Pending => true,
-                    SuggestionStatus::Dismissed => recent,
-                    SuggestionStatus::Accepted => false,
-                };
+                let blocks = stored.status == SuggestionStatus::Pending
+                    || stored.at.is_some_and(|at| at >= quiet_since);
                 blocks.then_some(proposal.category_id)
             }
             _ => None,
@@ -681,7 +693,7 @@ mod tests {
         StoredSuggestion {
             id: category * 100,
             status,
-            created_at: Some(Utc::now() - Duration::days(days_ago)),
+            at: Some(Utc::now() - Duration::days(days_ago)),
             suggestion: TaxonomySuggestion::Describe(DescribeProposal {
                 category_id: CategoryId(category),
                 current: None,
@@ -742,7 +754,7 @@ mod tests {
             existing: vec![StoredSuggestion {
                 id: 9,
                 status: SuggestionStatus::Pending,
-                created_at: None,
+                at: None,
                 suggestion: TaxonomySuggestion::New(earlier),
             }],
             ..Store::default()
@@ -775,12 +787,12 @@ mod tests {
     }
 
     #[test]
-    fn a_pending_or_lately_dismissed_description_holds_off_another() {
+    fn a_pending_or_lately_decided_description_holds_off_another() {
         let store = Store {
             feedback: vec![moved_out(1), moved_out(2)],
             existing: vec![
                 describe(1, SuggestionStatus::Pending, 60),
-                describe(2, SuggestionStatus::Dismissed, 10),
+                describe(2, SuggestionStatus::Accepted, 10),
             ],
             ..Store::default()
         };
@@ -819,7 +831,7 @@ mod tests {
             existing: vec![StoredSuggestion {
                 id: 5,
                 status: SuggestionStatus::Dismissed,
-                created_at: None,
+                at: None,
                 suggestion: TaxonomySuggestion::Merge(proposal.clone()),
             }],
             ..Store::default()

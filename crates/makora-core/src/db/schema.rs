@@ -126,6 +126,7 @@ diesel::table! {
         payload -> Text,
         status -> Text,
         created_at -> Text,
+        decided_at -> Nullable<Text>,
         run_id -> Nullable<BigInt>,
     }
 }

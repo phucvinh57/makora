@@ -109,6 +109,17 @@ fn merge(conn: &mut SqliteConnection, from: CategoryId, into: CategoryId) -> Res
     if from == into || tree.descendants(from.into()).contains(&into.into()) {
         return Err(TaxonomyError::Cycle);
     }
+    let categories = db::categories::CategoriesRepo::get_list(conn)?;
+    let names_under = |parent: CategoryId| {
+        categories
+            .iter()
+            .filter(move |category| category.parent_id == Some(parent.into()))
+            .map(|category| category.name.as_str())
+    };
+    let taken: Vec<&str> = names_under(into).collect();
+    if let Some(name) = names_under(from).find(|name| taken.contains(name)) {
+        return Err(TaxonomyError::SubcategoryNameTaken(name.to_string()));
+    }
     db::categories::CategoriesRepo::reparent_children(conn, from.into(), into.into())?;
     categorization::store::move_category(conn, from.into(), into.into())?;
     db::categories::CategoriesRepo::delete_many(conn, &[from.into()])?;
@@ -178,11 +189,17 @@ mod tests {
     }
 
     #[test]
-    fn a_category_cannot_be_merged_into_its_own_branch() {
+    fn a_merge_into_its_own_branch_or_onto_a_taken_name_is_refused() {
         let mut conn = conn();
         assert!(matches!(merge(&mut conn, CategoryId(1), CategoryId(2)), Err(TaxonomyError::Cycle)));
         assert!(matches!(merge(&mut conn, CategoryId(1), CategoryId(1)), Err(TaxonomyError::Cycle)));
         assert!(matches!(merge(&mut conn, CategoryId(9), CategoryId(1)), Err(TaxonomyError::NotFound(_))));
-        assert_eq!(value(&mut conn, "SELECT COUNT(*) AS value FROM categories"), 4);
+        conn.batch_execute("INSERT INTO categories (id, name, color, parent_id) VALUES (5, 'Tools', '#000000', 2);")
+            .unwrap();
+        assert!(matches!(
+            merge(&mut conn, CategoryId(3), CategoryId(2)),
+            Err(TaxonomyError::SubcategoryNameTaken(name)) if name == "Tools"
+        ));
+        assert_eq!(value(&mut conn, "SELECT COUNT(*) AS value FROM categories"), 5);
     }
 }

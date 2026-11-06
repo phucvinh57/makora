@@ -274,6 +274,7 @@ pub struct TaxonomySuggestionRow {
     pub payload: String,
     pub status: String,
     pub created_at: String,
+    pub decided_at: Option<String>,
     pub run_id: Option<i64>,
 }
 

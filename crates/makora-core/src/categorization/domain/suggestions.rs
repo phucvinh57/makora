@@ -20,7 +20,7 @@ pub const DESCRIBE_MIN_MOVED: u32 = 5;
 pub const DESCRIBE_MIN_SHARE: f64 = 0.3;
 /// At most this many descriptions are proposed per generation.
 pub const MAX_DESCRIBED_PER_RUN: usize = 3;
-/// How long a dismissed description suggestion keeps its category from being questioned again.
+/// How long an accepted or dismissed description suggestion keeps its category from being questioned again.
 pub const DESCRIBE_QUIET_DAYS: i64 = 30;
 /// Two categories look alike when the centroids of their filed activities are closer than this.
 pub const MERGE_MIN_SIMILARITY: f32 = 0.9;
@@ -173,7 +173,7 @@ impl CategoryFeedback {
 }
 
 /// The categories whose description to question, most moved first, leaving out `quiet` ones:
-/// those with a pending or recently dismissed description suggestion.
+/// those with a pending or recently decided description suggestion.
 pub fn pick_to_describe(feedback: &[CategoryFeedback], quiet: &HashSet<CategoryId>) -> Vec<CategoryFeedback> {
     let mut picked: Vec<CategoryFeedback> = feedback
         .iter()
@@ -221,7 +221,7 @@ pub fn unordered(a: CategoryId, b: CategoryId) -> (CategoryId, CategoryId) {
 /// Pairs of categories to fold into one: their filed activities look alike, the user moved AI
 /// labels from each to the other, and neither holds the other. The one with less filed time
 /// goes into the other. `corrections` counts labels moved from the first category to the second;
-/// `known` are pairs already proposed and pending or dismissed, never proposed again.
+/// `known` are pairs already proposed and pending or decided, never proposed again.
 pub fn find_merges(
     categories: &[MergeCategory],
     corrections: &HashMap<(CategoryId, CategoryId), u32>,
@@ -313,17 +313,17 @@ impl ClusterPlan {
 }
 
 /// Matches fresh clusters against the earlier "new category" suggestions. A cluster that is
-/// mostly a dismissed suggestion is dropped, so a dismissed group stays dismissed; one that is
-/// mostly a pending suggestion updates it, keeping its name; the rest are new.
+/// mostly a `decided` suggestion, accepted or dismissed, is dropped, so a group is proposed once;
+/// one that is mostly a pending suggestion updates it, keeping its name; the rest are new.
 pub fn reconcile_new(
     clusters: &[Cluster],
     pending: &[(i64, &NewCategoryProposal)],
-    dismissed: &[&NewCategoryProposal],
+    decided: &[&NewCategoryProposal],
 ) -> Vec<ClusterPlan> {
     let mut taken: HashSet<i64> = HashSet::new();
     let mut plans = Vec::new();
     for (position, cluster) in clusters.iter().enumerate() {
-        if dismissed
+        if decided
             .iter()
             .any(|proposal| overlap(&cluster.members, &proposal.members) >= SAME_GROUP_OVERLAP)
         {

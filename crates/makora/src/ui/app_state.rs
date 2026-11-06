@@ -224,6 +224,9 @@ impl AppState {
     /// Starts `request` in the background, unless a run is going, and says how it went in a toast.
     pub fn start_run(&mut self, request: RunRequest, cx: &mut Context<Self>) {
         if self.categorize.running {
+            Toast::info("A run is already going")
+                .description("Try again once it ends.")
+                .show_in_main_window(cx);
             return;
         }
         let mode = request.mode;
@@ -243,7 +246,9 @@ impl AppState {
                         Some(status)
                     }
                     Some((Err(err), status)) => {
-                        state.run_error = Some(UiError::from(err).to_string());
+                        let message = UiError::from(err).to_string();
+                        Toast::error(message.clone()).show_in_main_window(cx);
+                        state.run_error = Some(message);
                         Some(status)
                     }
                     None => {
