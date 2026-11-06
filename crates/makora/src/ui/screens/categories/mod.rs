@@ -9,8 +9,8 @@ use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Task,
-    Window, div, px,
+    App, AppContext, Context, Div, Entity, IntoElement, ParentElement, Render, SharedString, Styled,
+    Subscription, Task, Window, div, px,
 };
 use makora_lib::domain::types::FeedbackStats;
 
@@ -79,8 +79,10 @@ impl Screen for CategoriesScreen {
         let rules = cx.new(RulesTab::new);
         let ai = cx.new(|cx| AiSection::new(window, cx));
         let review = cx.new(|cx| ReviewQueue::new(window, cx));
-        let subscriptions =
-            vec![cx.observe(&AppState::entity(cx), |this, _, cx| this.reload_stats(cx))];
+        let subscriptions = vec![
+            cx.observe(&AppState::entity(cx), |this, _, cx| this.reload_stats(cx)),
+            cx.observe(&rules, |_, _, cx| cx.notify()),
+        ];
         let mut screen = Self {
             tab: Prefs::get(cx).categories_tab,
             rules,
@@ -115,19 +117,23 @@ impl Screen for CategoriesScreen {
     }
 }
 
+fn badge(count: impl std::fmt::Display, cx: &App) -> Div {
+    let theme = cx.theme();
+    div()
+        .ml_1p5()
+        .rounded_full()
+        .bg(theme.primary)
+        .px_1p5()
+        .text_xs()
+        .text_color(theme.primary_foreground)
+        .child(count.to_string())
+}
+
 impl Render for CategoriesScreen {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pending = self.stats.as_ref().map_or(0, |stats| stats.pending_review);
+        let suggested = self.rules.read(cx).suggestion_count();
         let selected = TABS.iter().position(|tab| *tab == self.tab).unwrap_or(0);
-        let theme = cx.theme();
-        let badge = div()
-            .ml_1p5()
-            .rounded_full()
-            .bg(theme.primary)
-            .px_1p5()
-            .text_xs()
-            .text_color(theme.primary_foreground)
-            .child(pending.to_string());
 
         v_flex()
             .gap_4()
@@ -141,11 +147,15 @@ impl Render for CategoriesScreen {
                         .segmented()
                         .selected_index(selected)
                         .child(Tab::new().label("Taxonomy"))
-                        .child(Tab::new().label("Rules"))
+                        .child(
+                            Tab::new()
+                                .label("Rules")
+                                .when(suggested > 0, |tab| tab.child(badge(suggested, cx))),
+                        )
                         .child(
                             Tab::new()
                                 .label("AI review")
-                                .when(pending > 0, |tab| tab.child(badge)),
+                                .when(pending > 0, |tab| tab.child(badge(pending, cx))),
                         )
                         .on_click(cx.listener(|this, ix: &usize, _, cx| {
                             if let Some(tab) = TABS.get(*ix) {

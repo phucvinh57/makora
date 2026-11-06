@@ -12,13 +12,13 @@ use gpui_kit::{
     App, Context, ElementId, IntoElement, ParentElement, Render, SharedString, Styled,
     Subscription, Task, Window, div, px,
 };
-use makora_lib::categorization::application::rules::CategoryRuleView;
+use makora_lib::categorization::application::rules::{CategoryRuleView, RuleSuggestionView};
 use makora_lib::categorization::domain::rules::{PatternField, RuleKind};
 use makora_lib::shared::ids::CategoryId;
 
-use crate::ui::app_state::AppState;
+use crate::ui::app_state::{AppState, Core};
 use crate::ui::data;
-use crate::ui::dialogs::rule::RuleDialog;
+use crate::ui::dialogs::rule::{RuleDialog, RuleDialogInput};
 use crate::ui::dialogs::{self};
 use crate::ui::error::UiError;
 use crate::ui::format::categories::category_paths;
@@ -44,12 +44,63 @@ pub fn rule_usage(activities: i64, seconds: f64) -> String {
     format!("{activities} {noun} · {}", format_seconds(seconds))
 }
 
+/// "Rule files this under Fun, but you pinned 9 of 10 to Work".
+pub fn change_reason(suggestion: &RuleSuggestionView, current: &str, suggested: &str) -> String {
+    format!(
+        "Rule files this under {current}, but you pinned {} of {} to {suggested}",
+        suggestion.activity_count, suggestion.pinned_count
+    )
+}
+
+/// Adds the suggested rule, or changes the rule it corrects, in the background.
+pub(crate) fn apply_suggestion(suggestion: RuleSuggestionView, cx: &mut App) {
+    let core = Core::get(cx);
+    let job = cx.background_executor().spawn(async move {
+        let draft = suggestion.draft();
+        match suggestion.change {
+            Some((id, _)) => core.rules.update(id, &draft).map(|()| "Rule changed"),
+            None => core.rules.create(&draft).map(|_| "Rule added"),
+        }
+    });
+    cx.spawn(async move |cx| {
+        let result = job.await.map_err(UiError::from);
+        cx.update(|cx| match result {
+            Ok(message) => {
+                Toast::success(message).show_in_main_window(cx);
+                AppState::update(cx, |state, cx| state.invalidate_categorization(cx));
+            }
+            Err(err) => Toast::error(err.to_string()).show_in_main_window(cx),
+        });
+    })
+    .detach();
+}
+
+/// Opens the rule dialog with the suggestion filled in, to adjust it before saving.
+fn edit_suggestion(suggestion: &RuleSuggestionView, window: &mut Window, cx: &mut App) {
+    let input = match suggestion.change {
+        Some((id, _)) => RuleDialogInput::Edit(CategoryRuleView {
+            id,
+            kind: suggestion.kind,
+            field: suggestion.field,
+            value: suggestion.value.clone(),
+            category_id: suggestion.category_id,
+            activity_count: 0,
+            total_seconds: 0.,
+        }),
+        None => RuleDialogInput::Prefill(suggestion.draft()),
+    };
+    dialogs::open::<RuleDialog>(input, window, cx);
+}
+
 pub struct RulesTab {
     rules: Option<Vec<CategoryRuleView>>,
+    suggestions: Vec<RuleSuggestionView>,
     error: Option<String>,
     revision: Option<u64>,
     deleting: bool,
     load: Task<()>,
+    suggestions_load: Task<()>,
+    dismiss: Task<()>,
     delete: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -59,15 +110,22 @@ impl RulesTab {
         let subscriptions = vec![cx.observe(&AppState::entity(cx), |this, _, cx| this.reload(cx))];
         let mut tab = Self {
             rules: None,
+            suggestions: Vec::new(),
             error: None,
             revision: None,
             deleting: false,
             load: Task::ready(()),
+            suggestions_load: Task::ready(()),
+            dismiss: Task::ready(()),
             delete: Task::ready(()),
             _subscriptions: subscriptions,
         };
         tab.reload(cx);
         tab
+    }
+
+    pub fn suggestion_count(&self) -> usize {
+        self.suggestions.len()
     }
 
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
@@ -95,6 +153,193 @@ impl RulesTab {
                 }
             },
         );
+        self.suggestions_load = data::fetch(
+            cx,
+            |core| core.rules.suggestions(),
+            |this, result, cx| {
+                match result {
+                    Ok(suggestions) => this.suggestions = suggestions,
+                    Err(err) => tracing::warn!(error = %err, "failed to load rule suggestions"),
+                }
+                cx.notify();
+            },
+        );
+    }
+
+    fn dismiss(&mut self, suggestion: &RuleSuggestionView, window: &mut Window, cx: &mut Context<Self>) {
+        let draft = suggestion.draft();
+        let dismissed = draft.clone();
+        self.suggestions.retain(|s| {
+            !(s.kind == dismissed.kind
+                && s.field == dismissed.field
+                && s.value == dismissed.value
+                && s.category_id == dismissed.category_id)
+        });
+        self.suggestions_load = Task::ready(());
+        self.dismiss = data::fetch_in(
+            window,
+            cx,
+            move |core| core.rules.dismiss_suggestion(&draft).map_err(UiError::from),
+            |this, result, window, cx| {
+                if let Err(err) = result {
+                    Toast::error(err.to_string()).show(window, cx);
+                }
+                this.refresh(cx);
+            },
+        );
+        cx.notify();
+    }
+
+    fn render_suggestion(
+        &self,
+        ix: usize,
+        suggestion: &RuleSuggestionView,
+        paths: &HashMap<CategoryId, String>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let state = AppState::read(cx);
+        let category = state.categories.iter().find(|c| c.id == suggestion.category_id);
+        let path = paths
+            .get(&suggestion.category_id)
+            .cloned()
+            .unwrap_or_else(|| "Unknown category".into());
+        let theme = cx.theme();
+        let dot = category.map_or(theme.muted_foreground, |category| {
+            category_color(&category.color)
+        });
+        let reason = suggestion.change.map(|(_, current)| {
+            let current = paths
+                .get(&current)
+                .map_or("another category", String::as_str);
+            change_reason(suggestion, current, &path)
+        });
+        let add = suggestion.clone();
+        let edit = suggestion.clone();
+        let dismiss = suggestion.clone();
+        let usage = rule_usage(suggestion.activity_count as i64, suggestion.total_seconds);
+
+        v_flex()
+            .gap_1()
+            .rounded_lg()
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.background)
+            .px_3()
+            .py_2()
+            .child(
+                h_flex()
+                    .gap_3()
+                    .child(
+                        Tag::secondary()
+                            .small()
+                            .child(rule_tag(suggestion.kind, suggestion.field)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .font_family(theme.mono_font_family.clone())
+                            .text_sm()
+                            .child(suggestion.value.clone()),
+                    )
+                    .child(
+                        h_flex()
+                            .flex_shrink_0()
+                            .min_w_0()
+                            .gap_1p5()
+                            .text_sm()
+                            .child(div().size_2().flex_shrink_0().rounded_full().bg(dot))
+                            .child(div().truncate().child(path)),
+                    )
+                    .child(
+                        div()
+                            .w(px(128.))
+                            .flex_shrink_0()
+                            .text_right()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(usage),
+                    )
+                    .child(
+                        Button::new(ElementId::Name(SharedString::from(format!(
+                            "apply-suggestion-{ix}"
+                        ))))
+                        .primary()
+                        .xsmall()
+                        .label(if suggestion.change.is_some() {
+                            "Change rule"
+                        } else {
+                            "Add rule"
+                        })
+                        .on_click(move |_, _, cx| apply_suggestion(add.clone(), cx)),
+                    )
+                    .child(
+                        Button::new(ElementId::Name(SharedString::from(format!(
+                            "edit-suggestion-{ix}"
+                        ))))
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Pencil)
+                        .tooltip("Edit before saving")
+                        .on_click(move |_, window, cx| edit_suggestion(&edit, window, cx)),
+                    )
+                    .child(
+                        Button::new(ElementId::Name(SharedString::from(format!(
+                            "dismiss-suggestion-{ix}"
+                        ))))
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::X)
+                        .tooltip("Dismiss")
+                        .on_click(
+                            cx.listener(move |this, _, window, cx| this.dismiss(&dismiss, window, cx)),
+                        ),
+                    ),
+            )
+            .when_some(reason, |this, reason| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.muted_foreground)
+                        .child(reason),
+                )
+            })
+    }
+
+    fn render_suggestions(
+        &self,
+        paths: &HashMap<CategoryId, String>,
+        cx: &mut Context<Self>,
+    ) -> Option<impl IntoElement + use<>> {
+        if self.suggestions.is_empty() {
+            return None;
+        }
+        let rows: Vec<_> = self
+            .suggestions
+            .iter()
+            .enumerate()
+            .map(|(ix, suggestion)| self.render_suggestion(ix, suggestion, paths, cx))
+            .collect();
+        let theme = cx.theme();
+        Some(
+            v_flex()
+                .gap_2()
+                .rounded_lg()
+                .border_1()
+                .border_color(theme.primary.opacity(0.4))
+                .bg(theme.primary.opacity(0.05))
+                .p_3()
+                .child(
+                    v_flex()
+                        .child(div().text_sm().font_medium().child("Suggested rules"))
+                        .child(div().text_xs().text_color(theme.muted_foreground).child(
+                            "From how you filed activity yourself. Adding one files the rest of \
+                             that activity too; your pins stay as they are.",
+                        )),
+                )
+                .children(rows),
+        )
     }
 
     fn delete(&mut self, rule: &CategoryRuleView, window: &mut Window, cx: &mut Context<Self>) {
@@ -187,7 +432,7 @@ impl RulesTab {
                 .icon(IconName::Pencil)
                 .tooltip("Edit rule")
                 .on_click(move |_, window, cx| {
-                    dialogs::open::<RuleDialog>(Some(edit.clone()), window, cx)
+                    dialogs::open::<RuleDialog>(RuleDialogInput::Edit(edit.clone()), window, cx)
                 }),
             )
             .child(
@@ -259,6 +504,9 @@ impl Render for RulesTab {
             .iter()
             .map(|rule| self.render_rule(rule, &paths, cx))
             .collect();
+        let suggestions = (!no_categories)
+            .then(|| self.render_suggestions(&paths, cx))
+            .flatten();
 
         v_flex()
             .gap_4()
@@ -266,6 +514,7 @@ impl Render for RulesTab {
             .when_some(self.error.clone(), |this, error| {
                 this.child(ErrorBanner::new(error))
             })
+            .children(suggestions)
             .child(
                 h_flex().justify_end().child(
                     Button::new("add-rules")
@@ -273,7 +522,9 @@ impl Render for RulesTab {
                         .small()
                         .label("Add rules")
                         .disabled(loading || no_categories)
-                        .on_click(|_, window, cx| dialogs::open::<RuleDialog>(None, window, cx)),
+                        .on_click(|_, window, cx| {
+                            dialogs::open::<RuleDialog>(RuleDialogInput::Add, window, cx)
+                        }),
                 ),
             )
             .when(loading, |this| {
@@ -312,6 +563,24 @@ mod tests {
             "Window title"
         );
         assert_eq!(rule_tag(RuleKind::Pattern, None), "URL");
+    }
+
+    #[test]
+    fn a_change_says_where_the_rule_files_and_where_pins_went() {
+        let suggestion = RuleSuggestionView {
+            kind: RuleKind::Site,
+            field: None,
+            value: "github.com".into(),
+            category_id: CategoryId(1),
+            activity_count: 9,
+            total_seconds: 3600.,
+            pinned_count: 10,
+            change: Some((makora_lib::shared::ids::RuleId(3), CategoryId(2))),
+        };
+        assert_eq!(
+            change_reason(&suggestion, "Fun", "Work > Code"),
+            "Rule files this under Fun, but you pinned 9 of 10 to Work > Code"
+        );
     }
 
     #[test]

@@ -14,7 +14,9 @@ use gpui_kit::{
     MouseButton, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
     Subscription, Task, WeakEntity, Window, div, px,
 };
+use makora_lib::categorization::application::rules::RuleSuggestionView;
 use makora_lib::categorization::domain::classification::ActivityClassification;
+use makora_lib::categorization::domain::rules::RuleKind;
 use makora_lib::domain::types::{AiReviewGroup, AiReviewGroupPage, AiReviewPage, ReviewFilter};
 use makora_lib::shared::ids::{ActivityId, CategoryId};
 use makora_lib::tracking::domain::source_key::KeyKind;
@@ -28,6 +30,7 @@ use crate::ui::error::UiError;
 use crate::ui::format::categories::{UNCATEGORIZED, category_paths};
 use crate::ui::format::duration::format_seconds;
 use crate::ui::route::{HistoryFilters, Route};
+use crate::ui::screens::categories::rules::apply_suggestion;
 use crate::ui::widgets::category_combobox::{
     CategoryChoice, CategoryCombobox, CategoryComboboxEvent,
 };
@@ -82,6 +85,26 @@ pub fn accepted_message(count: usize) -> String {
     }
 }
 
+/// The suggested rule for one source, if its pins now call for one: the app or site itself, or
+/// else the most tracked page of that site.
+pub fn suggestion_for_source<'a>(
+    suggestions: &'a [RuleSuggestionView],
+    kind: KeyKind,
+    key: &str,
+) -> Option<&'a RuleSuggestionView> {
+    let key = key.to_lowercase();
+    let page = format!("{key}/");
+    let whole = suggestions.iter().find(|s| match kind {
+        KeyKind::Exe => s.kind == RuleKind::App && s.value == key,
+        KeyKind::Domain => s.kind == RuleKind::Site && s.value == key,
+    });
+    whole.or_else(|| {
+        suggestions.iter().find(|s| {
+            kind == KeyKind::Domain && s.kind == RuleKind::Page && s.value.starts_with(&page)
+        })
+    })
+}
+
 /// The toast after moving `count` activities: rejected when there is no category.
 pub fn moved_message(count: usize, category: Option<&str>) -> String {
     let count = count_activities(count);
@@ -121,6 +144,7 @@ fn cell(width: f32) -> gpui_kit::Div {
 fn decision_buttons(
     id: impl Into<SharedString>,
     ids: Vec<ActivityId>,
+    source: Option<(KeyKind, String, CategoryId)>,
     noun: String,
     busy: bool,
     queue: WeakEntity<ReviewQueue>,
@@ -140,7 +164,9 @@ fn decision_buttons(
                 .disabled(busy)
                 .on_click(move |_, window, cx| {
                     let ids = accept_ids.clone();
-                    let _ = accept_queue.update(cx, |queue, cx| queue.accept(ids, window, cx));
+                    let source = source.clone();
+                    let _ = accept_queue
+                        .update(cx, |queue, cx| queue.accept(ids, source, window, cx));
                 }),
         )
         .child(
@@ -217,6 +243,7 @@ pub struct ReviewQueue {
     members: HashMap<String, Entity<GroupMembers>>,
     load: Task<()>,
     decision: Task<()>,
+    offer: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -277,6 +304,7 @@ impl ReviewQueue {
             members: HashMap::new(),
             load: Task::ready(()),
             decision: Task::ready(()),
+            offer: Task::ready(()),
             _subscriptions: subscriptions,
         };
         queue.reload(window, cx);
@@ -407,7 +435,15 @@ impl ReviewQueue {
         (groups.len(), ids)
     }
 
-    fn accept(&mut self, ids: Vec<ActivityId>, window: &mut Window, cx: &mut Context<Self>) {
+    /// Accepts the labels of `ids`. With the `source` of a whole group, then offers a rule for
+    /// it when the pins now call for one.
+    fn accept(
+        &mut self,
+        ids: Vec<ActivityId>,
+        source: Option<(KeyKind, String, CategoryId)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.busy {
             return;
         }
@@ -422,10 +458,56 @@ impl ReviewQueue {
                     .map_err(UiError::from)
             },
             move |this, result, window, cx| {
+                let accepted = result.is_ok();
                 this.decided(result, accepted_message(count), window, cx);
+                if let Some((kind, key, category)) = source.filter(|_| accepted) {
+                    this.offer_rule(kind, key, category, window, cx);
+                }
             },
         );
         cx.notify();
+    }
+
+    fn offer_rule(
+        &mut self,
+        kind: KeyKind,
+        key: String,
+        category: CategoryId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.offer = data::fetch_in(
+            window,
+            cx,
+            |core| core.rules.suggestions(),
+            move |_, result, window, cx| {
+                let suggestions = match result {
+                    Ok(suggestions) => suggestions,
+                    Err(err) => {
+                        tracing::warn!(error = %err, "failed to load rule suggestions");
+                        return;
+                    }
+                };
+                let Some(suggestion) = suggestion_for_source(&suggestions, kind, &key)
+                    .filter(|suggestion| suggestion.category_id == category)
+                    .cloned()
+                else {
+                    return;
+                };
+                let path = category_paths(&AppState::read(cx).categories)
+                    .remove(&suggestion.category_id)
+                    .unwrap_or_else(|| "its category".into());
+                let label = if suggestion.change.is_some() {
+                    "Change rule"
+                } else {
+                    "Add rule"
+                };
+                Toast::info("Make this a rule?")
+                    .description(format!("File {} under {path}", suggestion.value))
+                    .action(label, move |_, cx| apply_suggestion(suggestion.clone(), cx))
+                    .show(window, cx);
+            },
+        );
     }
 
     fn set_category(
@@ -643,6 +725,7 @@ impl ReviewQueue {
                     .child(stop_click(cell(ACTIONS_WIDTH)).child(decision_buttons(
                         format!("group-{ix}"),
                         group.activity_ids.clone(),
+                        Some((group.key_kind, group.key.clone(), group.category_id)),
                         format!("all {} in {name}", group.activity_count),
                         self.busy,
                         queue,
@@ -726,7 +809,7 @@ impl Render for ReviewQueue {
                                 .label("Accept selected")
                                 .disabled(busy)
                                 .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.accept(accept_ids.clone(), window, cx)
+                                    this.accept(accept_ids.clone(), None, window, cx)
                                 })),
                         )
                         .child(
@@ -980,6 +1063,7 @@ impl Render for GroupMembers {
                     .child(cell(ACTIONS_WIDTH).child(decision_buttons(
                         format!("member-{}", row.activity_id.0),
                         vec![row.activity_id],
+                        None,
                         "label".into(),
                         busy,
                         self.queue.clone(),
@@ -1048,6 +1132,38 @@ mod tests {
         assert_eq!(
             moved_message(4, Some("Work / Code")),
             "Set 4 activities to Work / Code"
+        );
+    }
+
+    fn suggestion(kind: RuleKind, value: &str) -> RuleSuggestionView {
+        RuleSuggestionView {
+            kind,
+            field: None,
+            value: value.into(),
+            category_id: CategoryId(1),
+            activity_count: 5,
+            total_seconds: 3600.,
+            pinned_count: 5,
+            change: None,
+        }
+    }
+
+    #[test]
+    fn the_offered_rule_is_the_source_itself_or_else_one_of_its_pages() {
+        let found = [
+            suggestion(RuleKind::Page, "github.com/acme"),
+            suggestion(RuleKind::App, "code"),
+            suggestion(RuleKind::Site, "github.com"),
+        ];
+        let value = |kind, key| suggestion_for_source(&found, kind, key).map(|s| s.value.as_str());
+        assert_eq!(value(KeyKind::Domain, "GitHub.com"), Some("github.com"));
+        assert_eq!(value(KeyKind::Domain, "github.co"), None);
+        assert_eq!(value(KeyKind::Exe, "code"), Some("code"));
+        assert_eq!(value(KeyKind::Exe, "github.com"), None);
+        let pages = [suggestion(RuleKind::Page, "github.com/acme")];
+        assert_eq!(
+            suggestion_for_source(&pages, KeyKind::Domain, "github.com").map(|s| s.value.as_str()),
+            Some("github.com/acme")
         );
     }
 }
