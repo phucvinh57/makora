@@ -127,6 +127,17 @@ sequenceDiagram
 
 A new activity from [Tracking](tracking.md) is matched on its own (`rules_store::match_new`) in the tracker's transaction.
 
+### Rule suggestions
+
+`domain/rule_mining.rs` mines the user's pins into **rule suggestions**, computed on demand by `RuleSvc::suggestions`. Only pins count as evidence. Unreviewed AI labels are what a rule would replace, and activity a rule already files adds no evidence.
+
+- Candidates are an app, a site, or a page one or two path segments deep. A candidate qualifies with at least 5 activities and 30 minutes in its top category, and at least 90% of its pinned time there.
+- A page is dropped when a site or shorter page above it qualifies for the same category.
+- When an existing rule already files the candidate under that category, it is dropped. When a rule with the same matcher files it elsewhere, the suggestion becomes a change to that rule.
+- A **dismissal** hides one (matcher, category) pair for good (`rule_suggestion_dismissals`). It is applied after pruning, so dismissing a site also hides its same-category pages.
+
+Accepting a suggestion is an ordinary `create` or `update`, so it is retroactive, and pins keep precedence.
+
 ## The AI run
 
 An AI run labels the unpinned activities no rule matches. A normal run takes those the model has never labeled; a **recheck** takes those whose suggestion is still active, to label them again. A rejected suggestion is never asked about again. The run shows the model, for each activity, the five filed activities most like it, so the model learns from how the person actually files things.

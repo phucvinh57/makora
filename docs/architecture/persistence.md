@@ -55,6 +55,7 @@ erDiagram
     category_rules ||--o{ rule_matches : "wins for"
     categories ||--o{ category_rules : "files under"
     categories ||--o{ ai_labels : "suggested"
+    categories ||--o{ rule_suggestion_dismissals : "not suggested"
     ai_labels {
         int activity_id PK
         int category_id FK
@@ -71,12 +72,21 @@ erDiagram
         text field "'' | url | title | app"
         text value
     }
+    rule_suggestion_dismissals {
+        text kind PK
+        text field PK
+        text value PK
+        int category_id PK
+        text dismissed_at
+    }
     activity_embeddings {
         int activity_id PK
         text model
         blob vector
     }
 ```
+
+`rule_suggestion_dismissals` holds the rule suggestions the user dismissed, one per (matcher, category). They cascade with the category.
 
 `ai_runs` stands alone: trigger, provider, model, status, timestamps, counts, tokens and timings of each run.
 

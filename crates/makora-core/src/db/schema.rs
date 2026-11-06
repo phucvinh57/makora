@@ -68,6 +68,16 @@ diesel::table! {
 }
 
 diesel::table! {
+    rule_suggestion_dismissals (kind, field, value, category_id) {
+        kind -> Text,
+        field -> Text,
+        value -> Text,
+        category_id -> BigInt,
+        dismissed_at -> Text,
+    }
+}
+
+diesel::table! {
     activity_embeddings (activity_id) {
         activity_id -> BigInt,
         model -> Text,
@@ -110,6 +120,7 @@ diesel::joinable!(category_rules -> categories (category_id));
 diesel::joinable!(rule_matches -> activities (activity_id));
 diesel::joinable!(rule_matches -> category_rules (rule_id));
 diesel::joinable!(activity_embeddings -> activities (activity_id));
+diesel::joinable!(rule_suggestion_dismissals -> categories (category_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     activities,
@@ -118,6 +129,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     categories,
     category_rules,
     rule_matches,
+    rule_suggestion_dismissals,
     sessions,
     sources,
 );
