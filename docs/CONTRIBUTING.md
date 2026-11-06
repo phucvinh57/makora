@@ -13,7 +13,7 @@ When reporting a bug, include your OS, desktop environment if relevant, what you
       libwayland-dev libxcb1-dev libx11-xcb-dev libfontconfig-dev libfreetype-dev
   ```
 - **macOS:** Xcode command line tools. Dev rebuilds change the app signature, so you may need to grant Accessibility again.
-- **Windows:** Visual Studio Build Tools with **Desktop development with C++**, and Vulkan. Set a short target path before every build: `$env:CARGO_TARGET_DIR = "C:\mk"`.
+- **Windows:** Visual Studio Build Tools with **Desktop development with C++**, and Vulkan. For direct Cargo builds, set a short target path: `$env:CARGO_TARGET_DIR = "C:\mk"`. The bundler handles this automatically.
 
 ## Build and run
 
@@ -79,11 +79,15 @@ The database is `makora.sqlite` in the app-data directory. Debug builds accept `
 
 `bun run bundle` builds release packages for the host OS (`--target <triple>` to cross-build). Every package puts `makora-bridge` next to the app.
 
+On Windows, the bundler temporarily maps a free drive letter to a build cache under `target/bundle-<letter>/` (or under `CARGO_TARGET_DIR` when set). This keeps llama.cpp's nested Vulkan build within MSVC's path limit. Each drive letter has its own cache because CMake stores absolute paths. The mapping is removed when bundling finishes, and installers still go to `target/packager/`.
+
 | OS      | Tool                                                                                                               | Formats   | Output                                   |
 | ------- | ------------------------------------------------------------------------------------------------------------------ | --------- | ---------------------------------------- |
 | Linux   | [cargo-deb](https://crates.io/crates/cargo-deb), [cargo-generate-rpm](https://crates.io/crates/cargo-generate-rpm) | DEB, RPM  | `target/debian/`, `target/generate-rpm/` |
 | macOS   | [cargo-packager](https://crates.io/crates/cargo-packager)                                                          | app, DMG  | `target/packager/`                       |
 | Windows | cargo-packager                                                                                                     | NSIS, MSI | `target/packager/`                       |
+
+On macOS and Windows, install the packaging tool with `cargo install cargo-packager --version 0.11.8 --locked` (the version used by CI).
 
 - Config lives in `crates/makora/Cargo.toml` under `[package.metadata.{deb,generate-rpm,packager}]`.
 - The Linux desktop file must stay `dev.phucvinh57.makora.desktop` to match the window's app ID.
