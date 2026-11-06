@@ -6,7 +6,7 @@ mod rules;
 mod taxonomy;
 
 use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::{ActiveTheme, v_flex};
+use gpui_kit::component::{ActiveTheme, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription, Task,
@@ -134,7 +134,7 @@ impl Render for CategoriesScreen {
                 "Organize activity with categories, rules and the AI",
             ))
             .child(
-                div().child(
+                h_flex().child(
                     TabBar::new("categories-tabs")
                         .segmented()
                         .selected_index(selected)
