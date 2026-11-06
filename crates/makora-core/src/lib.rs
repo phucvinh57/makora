@@ -6,7 +6,7 @@ pub mod domain;
 pub mod events;
 pub mod ipc;
 pub mod logging;
-pub mod logs;
+pub mod network_log;
 pub mod paths;
 pub mod reporting;
 pub mod settings;

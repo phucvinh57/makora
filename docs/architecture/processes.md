@@ -93,7 +93,7 @@ The front end supplies the `EventSink`. The background process forwards events t
 ```mermaid
 flowchart LR
     Shell["shell.rs<br/>sidebar + route"]
-    Screens["screens/<br/>statistics, categories,<br/>history, insights, settings"]
+    Screens["screens/<br/>statistics, categories,<br/>history, monitoring, settings"]
     Dialogs["dialogs/"]
     State["app_state.rs<br/>Core, revision counters"]
     Data["data.rs<br/>fetch off the UI thread"]

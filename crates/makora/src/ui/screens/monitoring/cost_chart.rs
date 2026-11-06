@@ -10,7 +10,7 @@ use makora_lib::settings::ModelPrice;
 
 use crate::ui::format::ai_usage::{estimate_cost, find_price, format_cost};
 use crate::ui::format::number::to_fixed;
-use crate::ui::screens::insights::usage::UsagePeriod;
+use crate::ui::screens::monitoring::usage::UsagePeriod;
 
 /// A day on the chart's axis: one bar per calendar day, labelled `Nov 5`.
 #[derive(Debug, Clone)]

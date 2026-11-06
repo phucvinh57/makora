@@ -20,7 +20,7 @@ use ureq::Agent;
 
 use crate::ai::llm;
 use crate::events::{CoreEvent, EventSink};
-use crate::logs::NETWORK_TARGET;
+use crate::network_log::NETWORK_TARGET;
 use crate::shared::sync::{lock, RunGuard};
 
 const REGISTRY: &str = "https://registry.ollama.ai";

@@ -10,7 +10,7 @@ use gpui_kit::{App, AppContext, Global, Task};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use crate::ui::route::{CategoriesTab, InsightsTab};
+use crate::ui::route::{CategoriesTab, MonitoringTab};
 
 pub const FILE_NAME: &str = "ui.toml";
 const SAVE_DELAY: Duration = Duration::from_millis(300);
@@ -34,7 +34,7 @@ pub struct UiPrefs {
     pub theme: ThemePreference,
     pub sidebar_collapsed: bool,
     pub categories_tab: CategoriesTab,
-    pub insights_tab: InsightsTab,
+    pub monitoring_tab: MonitoringTab,
 }
 
 pub struct Prefs {
@@ -167,7 +167,7 @@ mod tests {
             theme: ThemePreference::Dark,
             sidebar_collapsed: true,
             categories_tab: CategoriesTab::Review,
-            insights_tab: InsightsTab::Logs,
+            monitoring_tab: MonitoringTab::Masked,
         };
         save(&path, &prefs).unwrap();
         assert_eq!(load(&path), prefs);

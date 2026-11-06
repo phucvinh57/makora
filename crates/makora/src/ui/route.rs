@@ -10,7 +10,7 @@ pub enum Route {
     Statistics,
     Categories(CategoriesTab),
     History(HistoryFilters),
-    Insights(InsightsTab),
+    Monitoring(MonitoringTab),
     Settings,
 }
 
@@ -20,7 +20,7 @@ impl Route {
             Self::Statistics => Section::Statistics,
             Self::Categories(_) => Section::Categories,
             Self::History(_) => Section::History,
-            Self::Insights(_) => Section::Insights,
+            Self::Monitoring(_) => Section::Monitoring,
             Self::Settings => Section::Settings,
         }
     }
@@ -33,7 +33,7 @@ pub enum Section {
     Statistics,
     Categories,
     History,
-    Insights,
+    Monitoring,
     Settings,
 }
 
@@ -42,7 +42,7 @@ impl Section {
         Section::Statistics,
         Section::Categories,
         Section::History,
-        Section::Insights,
+        Section::Monitoring,
         Section::Settings,
     ];
 
@@ -51,7 +51,7 @@ impl Section {
             Self::Statistics => "Statistics",
             Self::Categories => "Categories",
             Self::History => "History",
-            Self::Insights => "Insights",
+            Self::Monitoring => "Monitoring",
             Self::Settings => "Settings",
         }
     }
@@ -68,10 +68,11 @@ pub enum CategoriesTab {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum InsightsTab {
+pub enum MonitoringTab {
     #[default]
+    Network,
+    Masked,
     Usage,
-    Logs,
 }
 
 /// The category sources the history list can be narrowed to.
@@ -124,8 +125,8 @@ mod tests {
             Section::History
         );
         assert_eq!(
-            Route::Insights(InsightsTab::Logs).section(),
-            Section::Insights
+            Route::Monitoring(MonitoringTab::Masked).section(),
+            Section::Monitoring
         );
     }
 

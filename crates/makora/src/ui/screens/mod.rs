@@ -3,7 +3,7 @@
 
 pub mod categories;
 pub mod history;
-pub mod insights;
+pub mod monitoring;
 pub mod settings;
 pub mod statistics;
 

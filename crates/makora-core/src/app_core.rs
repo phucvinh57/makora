@@ -29,7 +29,7 @@ use crate::domain::{HistorySvc, LabelingSvc, SqliteHistory, SqliteLabeling};
 use crate::events::EventSink;
 use crate::ipc::{self, worker::WorkerRunner};
 use crate::logging;
-use crate::logs::{JsonlLogReader, LogReader};
+use crate::network_log::{JsonlNetworkLog, NetworkLog};
 use crate::paths::AppPaths;
 use crate::settings::{SettingsService, SettingsStore, SettingsSvc, TomlSettings};
 use crate::shared::sync::lock;
@@ -61,14 +61,14 @@ pub struct Services {
     pub classification: Arc<dyn ClassificationSvc>,
     pub rules: Arc<dyn RuleSvc>,
     pub usage: Arc<dyn AiUsageSvc>,
-    pub logs: Arc<dyn LogReader>,
+    pub network_log: Arc<dyn NetworkLog>,
     pub embeddings: Arc<dyn EmbeddingSvc>,
     pub anchor: Arc<ScheduleAnchor>,
 }
 
 impl Services {
     pub fn open(paths: AppPaths, events: Arc<dyn EventSink>) -> Result<Self> {
-        let logs: Arc<dyn LogReader> = Arc::new(JsonlLogReader::new(logging::log_dir(&paths.data_dir)));
+        let network_log: Arc<dyn NetworkLog> = Arc::new(JsonlNetworkLog::new(logging::log_dir(&paths.data_dir)));
 
         let db_path = paths.database();
         let db = db::open_sqlite(&db_path)
@@ -95,7 +95,7 @@ impl Services {
             settings_store,
             secrets,
             providers,
-            logs,
+            network_log,
             anchor,
         })
     }
@@ -150,7 +150,7 @@ pub struct ClientCore {
     pub classification: Arc<dyn ClassificationSvc>,
     pub rules: Arc<dyn RuleSvc>,
     pub usage: Arc<dyn AiUsageSvc>,
-    pub logs: Arc<dyn LogReader>,
+    pub network_log: Arc<dyn NetworkLog>,
     pub runner: Arc<dyn CategorizationRunner>,
     pub schedule: Arc<dyn AutoCategorizeSchedule>,
     pub downloads: Arc<dyn ModelDownloads>,
@@ -173,7 +173,7 @@ impl ClientCore {
             classification: services.classification.clone(),
             rules: services.rules.clone(),
             usage: services.usage.clone(),
-            logs: services.logs.clone(),
+            network_log: services.network_log.clone(),
             runner,
             schedule,
             downloads,

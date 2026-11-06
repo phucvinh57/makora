@@ -12,7 +12,7 @@ Reporting answers questions about what the other contexts recorded: where the ti
 | `habits.rs`               | (over sessions)     | Statistics → habits                  | Day profiles, an hour-by-weekday table, observations        |
 | `LabelingSvc`             | `review.rs`         | Categories → review                  | Activities to label, the review queue, feedback counts      |
 | `RuleSvc` (preview)       | `rules.rs`          | Rule dialog                          | What a draft rule would match                               |
-| `AiUsageSvc`              | (over `ai_runs`)    | Insights → usage                     | Tokens, timings and cost per run and model                  |
+| `AiUsageSvc`              | (over `ai_runs`)    | Monitoring → AI usage                | Tokens, timings and cost per run and model                  |
 
 ```mermaid
 flowchart LR

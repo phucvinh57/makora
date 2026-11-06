@@ -3,9 +3,8 @@
 //! Two layers share one registry. The developer log goes to stderr in debug builds, so
 //! `cargo run -p makora` shows events in the terminal; release builds have no terminal at all
 //! (`windows_subsystem = "windows"`), so it goes to `<app-data>/logs/makora.<date>.log` instead.
-//! The app log ([`AppLogLayer`]) always goes to `<app-data>/logs/events.<date>.jsonl`, with the
-//! same filter in every build, for the in-app log viewer. Both rotate daily and keep the last
-//! [`MAX_LOG_FILES`] days.
+//! The network log ([`NetworkLogLayer`]) always goes to `<app-data>/logs/events.<date>.jsonl`
+//! for the Monitoring page. Both rotate daily and keep the last [`MAX_LOG_FILES`] days.
 //!
 //! Must be called in `main` after the single-instance check, like every other process-wide
 //! initializer: a second launch exits at that check and must not touch the log directory the
@@ -19,20 +18,21 @@ use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::filter::Targets;
 use tracing_subscriber::{EnvFilter, Layer};
 
-use crate::logs::{AppLogLayer, EVENTS_FILE_PREFIX, EVENTS_FILE_SUFFIX};
+use crate::network_log::{NetworkLogLayer, EVENTS_FILE_PREFIX, EVENTS_FILE_SUFFIX, NETWORK_TARGET};
 use crate::shared::sync::lock;
 
 pub const LOG_DIR_NAME: &str = "logs";
 
 const LOG_FILE_PREFIX: &str = "makora";
 const LOG_FILE_SUFFIX: &str = "log";
-const MAX_LOG_FILES: usize = 30;
+/// A day more than the Monitoring page's longest period, which can span 31 dates.
+const MAX_LOG_FILES: usize = 31;
 
 const DEV_FILTER: &str = "makora=debug,makora_lib=debug,warn";
 const PROD_FILTER: &str = "makora=info,makora_lib=info,warn";
-const APP_LOG_FILTER: &str = "makora=info,warn";
 
 /// The non-blocking writers' flush guards. Dropping one flushes and stops its background
 /// writer thread, so they live until [`flush`] at exit.
@@ -46,9 +46,9 @@ pub fn log_dir(app_data_dir: &Path) -> PathBuf {
 pub fn init(app_data_dir: &Path) -> Result<()> {
     let dir = log_dir(app_data_dir);
     let (events, events_guard) = daily_writer(&dir, EVENTS_FILE_PREFIX, EVENTS_FILE_SUFFIX)?;
-    let app_log = AppLogLayer::new(events).with_filter(EnvFilter::new(APP_LOG_FILTER));
+    let network_log = NetworkLogLayer::new(events).with_filter(Targets::new().with_target(NETWORK_TARGET, tracing::Level::INFO));
 
-    let registry = tracing_subscriber::registry().with(app_log);
+    let registry = tracing_subscriber::registry().with(network_log);
     if cfg!(debug_assertions) {
         lock(&GUARDS).push(events_guard);
         let dev_log = tracing_subscriber::fmt::layer()
@@ -98,28 +98,4 @@ fn daily_writer(dir: &Path, prefix: &str, suffix: &str) -> Result<(NonBlocking, 
 
 fn filter(default: &str) -> EnvFilter {
     EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::logs::layer::tests::Buffer;
-
-    #[test]
-    fn the_app_log_keeps_makora_info_and_anyone_else_s_warnings() {
-        let buffer = Buffer::default();
-        let app_log = AppLogLayer::new(buffer.clone()).with_filter(EnvFilter::new(APP_LOG_FILTER));
-        let subscriber = tracing_subscriber::registry().with(app_log);
-        tracing::subscriber::with_default(subscriber, || {
-            tracing::debug!(target: "makora_lib::tracking", "focus changed");
-            tracing::info!(target: "makora_lib::settings", "setting changed");
-            tracing::info!(target: "makora::runtime::tray", "window rebuilt");
-            tracing::info!(target: "ureq::pool", "connection reused");
-            tracing::warn!(target: "ureq::pool", "connection dropped");
-        });
-
-        let text = buffer.text();
-        assert!(text.contains("setting changed") && text.contains("window rebuilt") && text.contains("connection dropped"));
-        assert!(!text.contains("focus changed") && !text.contains("connection reused"));
-    }
 }
