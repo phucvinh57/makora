@@ -15,6 +15,8 @@ use makora_lib::domain::types::{ActivityStats, Category};
 use crate::ui::format::stats_date::RangePreset;
 
 use super::breakdown::{busiest_day, category_breakdown};
+use super::habits::{habits_section, time_table_card, timeline_card};
+use crate::ui::motion;
 use crate::ui::format::categories::UNCATEGORIZED_COLOR;
 use crate::ui::format::duration::format_seconds;
 use crate::ui::format::number::to_locale_string;
@@ -25,7 +27,7 @@ use crate::ui::widgets::feedback::EmptyState;
 use crate::ui::widgets::ranked_bar::{RankedBar, bar_fraction};
 use crate::ui::widgets::stat_tile::StatTile;
 
-const NOTHING_TO_SHOW: &str = "Nothing to show for this range.";
+pub(super) const NOTHING_TO_SHOW: &str = "Nothing to show for this range.";
 /// Wide enough for the two breakdown cards side by side (`@4xl`, 56rem).
 const CARDS_SIDE_BY_SIDE: f32 = 896.;
 /// Wide enough for the four tiles in one row (`@3xl`, 48rem).
@@ -33,6 +35,8 @@ const TILES_IN_ONE_ROW: f32 = 768.;
 /// Wide enough for the donut beside its legend (`@2xl`, 42rem).
 const LEGEND_BESIDE_DONUT: f32 = 672.;
 const DONUT_SIZE: f32 = 208.;
+/// Most day labels under the daily chart, so 30 or 90 days stay readable.
+const DAY_LABELS: usize = 7;
 const GAP_3: f32 = 12.;
 const GAP_4: f32 = 16.;
 const GAP_6: f32 = 24.;
@@ -72,7 +76,24 @@ pub fn body(
                 .child(cell(CARDS_SIDE_BY_SIDE, GAP_6).child(category_card(stats, range, categories, cx)))
                 .child(cell(CARDS_SIDE_BY_SIDE, GAP_6).child(top_apps_card(stats))),
         )
-        .child(daily_trend_card(stats, range, cx))
+        .child(
+            wrapping_row(GAP_6)
+                .child(cell(CARDS_SIDE_BY_SIDE, GAP_6).child(daily_trend_card(stats, range, cx)))
+                .child(cell(CARDS_SIDE_BY_SIDE, GAP_6).child(motion::enter(
+                    ("statistics-time-table", range as usize),
+                    time_table_card(stats, cx),
+                    cx,
+                ))),
+        )
+        .children(
+            timeline_card(stats, cx)
+                .map(|card| motion::enter(("statistics-timeline", range as usize), card, cx)),
+        )
+        .child(motion::enter(
+            ("statistics-habits", range as usize),
+            div().child(habits_section(stats, cx)),
+            cx,
+        ))
         .into_any_element()
 }
 
@@ -85,7 +106,7 @@ fn cell(breakpoint: f32, gap: f32) -> Div {
 }
 
 /// Two pairs of tiles: one row of four when wide, two rows of two otherwise.
-fn tile_grid(tiles: Vec<AnyElement>) -> Div {
+pub(super) fn tile_grid(tiles: Vec<AnyElement>) -> Div {
     let mut tiles = tiles.into_iter();
     let pair = |tiles: &mut dyn Iterator<Item = AnyElement>| {
         cell(TILES_IN_ONE_ROW, GAP_3).child(
@@ -225,6 +246,7 @@ struct Day {
 fn daily_trend_card(stats: &ActivityStats, range: RangePreset, cx: &App) -> Card {
     let card = Card::new()
         .small()
+        .h_full()
         .title("Daily activity")
         .description("Total tracked time per day.");
     if stats.daily.is_empty() {
@@ -247,6 +269,7 @@ fn daily_trend_card(stats: &ActivityStats, range: RangePreset, cx: &App) -> Card
             bottom_left: px(0.),
         })
         .max_band_width(px(28.))
+        .band_tick_count(stats.daily.len().min(DAY_LABELS))
         .grid_dashed(false)
         .appear_key(range)
         .name("Tracked time")
@@ -267,5 +290,9 @@ pub fn skeleton() -> impl IntoElement {
                 .child(cell(CARDS_SIDE_BY_SIDE, GAP_6).child(block(256.)))
                 .child(cell(CARDS_SIDE_BY_SIDE, GAP_6).child(block(256.))),
         )
-        .child(block(224.))
+        .child(
+            wrapping_row(GAP_6)
+                .child(cell(CARDS_SIDE_BY_SIDE, GAP_6).child(block(256.)))
+                .child(cell(CARDS_SIDE_BY_SIDE, GAP_6).child(block(256.))),
+        )
 }
