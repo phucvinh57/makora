@@ -1,6 +1,7 @@
 //! Where the time went over today, the last 7 or the last 30 days.
 
 mod breakdown;
+mod habits;
 mod sections;
 
 use std::collections::HashMap;

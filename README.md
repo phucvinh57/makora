@@ -11,6 +11,9 @@ for categorization, emails, phone numbers, keys, ids and the words you list are
 replaced by placeholders before anything is sent, and you can keep chosen apps
 and sites from being sent at all (**Settings → Privacy**).
 
+Statistics also show *when* you work: an hour-by-weekday time table, a timeline
+of each day, and your working habits with a few suggestions.
+
 <video src="https://github.com/user-attachments/assets/74aae38b-3bff-48b9-adc1-353526fdb4bb" controls></video>
 *The demo uses fictional activity data.*
 

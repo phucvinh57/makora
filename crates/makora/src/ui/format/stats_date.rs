@@ -8,12 +8,14 @@ pub enum RangePreset {
     Today,
     SevenDays,
     ThirtyDays,
+    NinetyDays,
 }
 
-pub const RANGE_PRESETS: [(RangePreset, &str); 3] = [
+pub const RANGE_PRESETS: [(RangePreset, &str); 4] = [
     (RangePreset::Today, "Today"),
     (RangePreset::SevenDays, "7 days"),
     (RangePreset::ThirtyDays, "30 days"),
+    (RangePreset::NinetyDays, "90 days"),
 ];
 
 impl RangePreset {
@@ -22,6 +24,7 @@ impl RangePreset {
             Self::Today => 0,
             Self::SevenDays => 6,
             Self::ThirtyDays => 29,
+            Self::NinetyDays => 89,
         }
     }
 }
@@ -72,13 +75,22 @@ mod tests {
             compute_range(RangePreset::ThirtyDays, now).start,
             to_iso_string(local(1, 0))
         );
+        assert_eq!(
+            compute_range(RangePreset::NinetyDays, now).start,
+            to_iso_string(
+                Local
+                    .with_ymd_and_hms(2026, 9, 2, 0, 0, 0)
+                    .single()
+                    .unwrap()
+            )
+        );
     }
 
     #[test]
     fn preset_labels() {
         assert_eq!(
             RANGE_PRESETS.map(|(_, label)| label),
-            ["Today", "7 days", "30 days"]
+            ["Today", "7 days", "30 days", "90 days"]
         );
         assert_eq!(RangePreset::default(), RangePreset::Today);
     }
