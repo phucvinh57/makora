@@ -27,6 +27,8 @@ use crate::categorization::{
 use crate::db::{self, Db};
 use crate::domain::{HistorySvc, LabelingSvc, SqliteHistory, SqliteLabeling};
 use crate::events::EventSink;
+#[cfg(target_os = "linux")]
+use crate::ipc::worker::WorkerRunner;
 use crate::logging;
 use crate::logs::{JsonlLogReader, LogReader};
 use crate::paths::AppPaths;
@@ -153,13 +155,14 @@ pub struct ClientCore {
     pub runner: Arc<dyn CategorizationRunner>,
     pub schedule: Arc<dyn AutoCategorizeSchedule>,
     pub downloads: Arc<dyn ModelDownloads>,
-    pub models: ModelCache,
+    /// The models loaded in this process, when AI runs here.
+    pub models: Option<ModelCache>,
 }
 
 pub struct AppCore {
     pub services: Services,
     pub settings: Arc<dyn SettingsSvc>,
-    pub models: ModelCache,
+    pub models: Option<ModelCache>,
     pub runner: Arc<dyn CategorizationRunner>,
     pub schedule: Arc<dyn AutoCategorizeSchedule>,
     pub downloads: Arc<dyn ModelDownloads>,
@@ -185,8 +188,7 @@ impl AppCore {
         let session_tracker = FocusStateMachine::new(recorder, exclusions).context("initializing session tracker")?;
         let tracker: SharedTracker = Arc::new(Mutex::new(Box::new(session_tracker) as Box<dyn SessionTracker>));
 
-        let models = ModelCache::default();
-        let runner = services.local_runner(Arc::new(AiRunState::default()), models.clone());
+        let (runner, models) = ai_runner(&services);
         let schedule = services.schedule(runner.clone());
         let settings = services.settings_svc(schedule.clone());
         let downloads: Arc<dyn ModelDownloads> =
@@ -253,6 +255,21 @@ impl AppCore {
         }
         logging::flush();
     }
+}
+
+/// On Linux each run is a worker process, so no model stays loaded here; elsewhere runs share this
+/// process with the window.
+#[cfg(target_os = "linux")]
+fn ai_runner(services: &Services) -> (Arc<dyn CategorizationRunner>, Option<ModelCache>) {
+    // This very binary, even after a package upgrade replaced the file on disk.
+    let program = std::path::PathBuf::from("/proc/self/exe");
+    (Arc::new(WorkerRunner::new(program, services.events.clone())), None)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn ai_runner(services: &Services) -> (Arc<dyn CategorizationRunner>, Option<ModelCache>) {
+    let models = ModelCache::default();
+    (services.local_runner(Arc::new(AiRunState::default()), models.clone()), Some(models))
 }
 
 fn record_watch_events(tracker: &SharedTracker, rx: &mpsc::Receiver<WatchEvent>) {

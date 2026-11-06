@@ -608,7 +608,7 @@ impl AiSection {
     fn load_models_loaded(&mut self, cx: &mut Context<Self>) {
         self.loaded_load = data::fetch(
             cx,
-            |core| core.models.is_loaded(),
+            |core| core.models.as_ref().is_some_and(|models| models.is_loaded()),
             |this, loaded, _| this.models_loaded = loaded,
         );
     }
@@ -871,7 +871,11 @@ impl AiSection {
         self.unloading = true;
         self.unload_task = data::fetch(
             cx,
-            |core| core.models.unload(),
+            |core| {
+                if let Some(models) = &core.models {
+                    models.unload();
+                }
+            },
             |this, _, cx| {
                 this.unloading = false;
                 this.load_models_loaded(cx);

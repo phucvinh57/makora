@@ -8,6 +8,8 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use makora_lib::app_core::AppCore;
+use makora_lib::categorization::domain::usage::RunTrigger;
+use makora_lib::ipc::worker;
 use makora_lib::logging;
 use makora_lib::paths::AppPaths;
 use tracing::{error, warn};
@@ -17,6 +19,11 @@ use crate::runtime::events::ChannelEvents;
 use crate::runtime::single_instance::{self, Claim};
 
 pub fn run() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some((recheck, trigger)) = worker::parse_args(&args) {
+        return run_ai_worker(recheck, trigger);
+    }
+
     let (command_tx, command_rx) = commands::channel();
     let instance_issue = match single_instance::claim(command_tx.clone()) {
         Claim::Primary => None,
@@ -58,4 +65,25 @@ pub fn run() -> ExitCode {
 
     runtime::app::launch(core, command_tx, command_rx, event_rx);
     ExitCode::SUCCESS
+}
+
+/// One AI run for the app that started this process; not an instance of the app, so it skips the
+/// single-instance check.
+fn run_ai_worker(recheck: bool, trigger: RunTrigger) -> ExitCode {
+    let paths = match AppPaths::resolve() {
+        Ok(paths) => paths,
+        Err(err) => {
+            eprintln!("makora: cannot resolve the app directories: {err:#}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(err) = logging::init(&paths.data_dir) {
+        eprintln!("makora: failed to start logging: {err:#}");
+    }
+    let result = worker::serve(paths, recheck, trigger);
+    if let Err(err) = &result {
+        error!(error = format!("{err:#}"), "the AI worker failed");
+    }
+    logging::flush();
+    if result.is_ok() { ExitCode::SUCCESS } else { ExitCode::FAILURE }
 }
