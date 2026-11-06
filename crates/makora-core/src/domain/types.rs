@@ -151,6 +151,13 @@ pub struct ActivityStats {
     pub categories: Vec<CategoryStat>,
     pub apps: Vec<AppStat>,
     pub daily: Vec<DailyStat>,
+    /// Seconds per weekday (Monday first) and local hour.
+    pub hour_table: [[f64; 24]; 7],
+    pub days: Vec<DayProfile>,
+    pub habits: Habits,
+    pub observations: Vec<Observation>,
+    /// Empty for ranges longer than a week.
+    pub timeline: Vec<TimelineDay>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -175,6 +182,96 @@ pub struct AppStat {
 pub struct DailyStat {
     pub day: String,
     pub total_seconds: f64,
+}
+
+/// One working day (04:00 to 04:00) with any tracked time. Times of day are wall-clock minutes
+/// from the day's midnight, so 01:30 the next morning is 1530.
+#[derive(Debug, Clone, Serialize)]
+pub struct DayProfile {
+    pub day: String,
+    /// 0 is Monday.
+    pub weekday: u8,
+    pub first_active: u32,
+    pub last_active: u32,
+    pub active_seconds: f64,
+    /// The longest run of sessions with gaps under five minutes, gaps included.
+    pub longest_focus_seconds: f64,
+    pub sessions: u32,
+    #[serde(skip)]
+    pub hours: [f64; 24],
+}
+
+/// Local hours `start..end`, e.g. 9..12 for 09:00 to 12:00.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct HourRange {
+    pub start: u8,
+    pub end: u8,
+}
+
+/// "9–12, 14–18".
+pub fn format_hour_ranges(ranges: &[HourRange]) -> String {
+    ranges
+        .iter()
+        .map(|r| format!("{}–{}", r.start, r.end))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Habits and observations need this many active days to mean anything.
+pub const MIN_DAYS_FOR_HABITS: usize = 3;
+
+/// Minutes from midnight as "9:05"; past midnight wraps, so 1530 is "1:30".
+pub fn format_clock(minute: u32) -> String {
+    format!("{}:{:02}", minute / 60 % 24, minute % 60)
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Habits {
+    pub active_days: usize,
+    /// Hours with at least 15 minutes on a median active day.
+    pub active_hours: Vec<HourRange>,
+    pub typical_start: Option<u32>,
+    pub typical_end: Option<u32>,
+    /// Lower and upper quartile of the first active minute.
+    pub start_quartiles: Option<(u32, u32)>,
+    /// The three busiest hours, as ranges.
+    pub peak_hours: Vec<HourRange>,
+    /// Share of time between 22:00 and 04:00.
+    pub late_share: f64,
+    /// Share of time on working days that fall on a Saturday or Sunday.
+    pub weekend_share: f64,
+    pub longest_focus: Option<LongestFocus>,
+    pub median_focus_seconds: f64,
+    /// Sessions per active hour.
+    pub fragmentation: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LongestFocus {
+    pub day: String,
+    pub seconds: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Observation {
+    pub text: String,
+    pub suggestion: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TimelineDay {
+    pub day: String,
+    pub blocks: Vec<TimelineBlock>,
+}
+
+/// Consecutive time in one category; seconds are wall-clock seconds from local midnight.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TimelineBlock {
+    pub start: f64,
+    pub end: f64,
+    pub category_id: Option<CategoryId>,
+    pub category_name: Option<String>,
+    pub category_color: Option<String>,
 }
 
 /// A page of a list as `LIMIT`/`OFFSET`. A negative page reads as the first and a page size

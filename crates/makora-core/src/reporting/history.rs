@@ -161,6 +161,12 @@ pub struct IntervalRow {
     pub start_time: String,
     #[diesel(sql_type = Text)]
     pub end_time: String,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    pub category_id: Option<i64>,
+    #[diesel(sql_type = Nullable<Text>)]
+    pub category_name: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    pub category_color: Option<String>,
 }
 
 pub trait HistoryRepo {
@@ -258,9 +264,11 @@ impl HistoryRepo for SqliteConnection {
     fn get_intervals(&mut self, window: &Window) -> QueryResult<Vec<IntervalRow>> {
         let sql = format!(
             "{WITH_WINDOW}
-             SELECT {start} AS start_time, {end} AS end_time
-             FROM w JOIN sessions s
-             WHERE {overlaps}",
+             SELECT {start} AS start_time, {end} AS end_time,
+                    cat.id AS category_id, cat.name AS category_name, cat.color AS category_color
+             FROM w JOIN sessions s {JOIN}
+             WHERE {overlaps}
+             ORDER BY s.start_time, s.id",
             start = clipped_start("s"),
             end = clipped_end("s"),
             overlaps = overlaps("s"),
@@ -406,6 +414,29 @@ mod tests {
                 (db_time(FROM), db_time("2026-03-01T01:00:00Z")),
                 (db_time("2026-03-01T23:30:00Z"), db_time(TO)),
             ]
+        );
+    }
+
+    #[test]
+    fn intervals_carry_the_category_of_their_activity() {
+        let mut conn = conn_with(&[("2026-03-01T09:00:00Z", Some("2026-03-01T10:00:00Z"))]);
+        conn.batch_execute(&format!(
+            "INSERT INTO categories (id, name, color) VALUES (7, 'Work', '#ff0000');
+             INSERT INTO activities (id, source_id, path, title, category_id) VALUES (2, 1, '/x', 'x', 7);
+             INSERT INTO sessions (activity_id, start_time, end_time) VALUES (2, '{}', '{}');",
+            db_time("2026-03-01T11:00:00Z"),
+            db_time("2026-03-01T12:00:00Z"),
+        ))
+        .unwrap();
+        let rows: Vec<_> = conn
+            .get_intervals(&window(FROM, TO, LATER))
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.category_id, r.category_name, r.category_color))
+            .collect();
+        assert_eq!(
+            rows,
+            [(None, None, None), (Some(7), Some("Work".to_owned()), Some("#ff0000".to_owned()))]
         );
     }
 }
