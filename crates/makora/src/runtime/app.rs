@@ -42,6 +42,7 @@ pub fn launch(
         .with_quit_mode(QuitMode::Explicit);
     app.on_reopen(|cx| window::show_main_window(None, cx));
     app.run(move |cx| {
+        ui::theme::preset_ui_font(cx);
         gpui_kit::init(cx);
         let autostart = autostart::for_build().unwrap_or_else(|err| {
             warn!(error = format!("{err:#}"), "autostart is unavailable");
