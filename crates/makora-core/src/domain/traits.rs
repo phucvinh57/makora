@@ -3,8 +3,8 @@ use anyhow::Result;
 use crate::shared::time::TimeRange;
 
 use super::types::{
-    ActivityStats, AiReviewGroupPage, AiReviewPage, FeedbackStats, ReviewFilter, SessionFilter, SessionsPage,
-    UncategorizedActivity,
+    ActivitySample, ActivityStats, AiReviewGroupPage, AiReviewPage, FeedbackStats, ReviewFilter, SessionFilter,
+    SessionsPage,
 };
 
 pub trait HistorySvc: Send + Sync {
@@ -16,7 +16,9 @@ pub trait LabelingSvc: Send + Sync {
     /// Activities for the LLM to label, most recently seen first. Normally those with neither a
     /// pin nor an AI label nor a rejected one; with `recheck`, those carrying an AI label the
     /// user has not confirmed.
-    fn get_activities_to_label(&self, recheck: bool) -> Result<Vec<UncategorizedActivity>>;
+    fn get_activities_to_label(&self, recheck: bool) -> Result<Vec<ActivitySample>>;
+    /// The `limit` activities seen most recently, categorized or not.
+    fn get_recent_activities(&self, limit: i64) -> Result<Vec<ActivitySample>>;
     /// AI labels awaiting review, longest-tracked first so the ones that matter come up first.
     /// Filtering by a category includes everything under it.
     fn get_review_page(&self, page: i64, page_size: i64, filter: &ReviewFilter) -> Result<AiReviewPage>;

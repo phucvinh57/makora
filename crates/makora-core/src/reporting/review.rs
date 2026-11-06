@@ -29,6 +29,12 @@ pub struct ActivityToLabelRow {
     pub url: Option<String>,
     #[diesel(sql_type = Text)]
     pub title: String,
+    #[diesel(sql_type = Text)]
+    pub source_kind: KeyKind,
+    #[diesel(sql_type = Text)]
+    pub source_key: String,
+    #[diesel(sql_type = Text)]
+    pub path: String,
 }
 
 /// The `WHERE` clause for pending AI labels (over `activity_category ac`), and its binds. A scope
@@ -124,6 +130,7 @@ pub struct FeedbackSecondsRow {
 
 pub trait ReviewRepo {
     fn get_activities_to_label(&mut self, recheck: bool) -> QueryResult<Vec<ActivityToLabelRow>>;
+    fn get_recent_activities(&mut self, limit: i64) -> QueryResult<Vec<ActivityToLabelRow>>;
     fn get_review_count(&mut self, category: &CategoryScope, activity_ids: Option<&[i64]>) -> QueryResult<i64>;
     fn get_review_page(
         &mut self,
@@ -155,13 +162,27 @@ impl ReviewRepo for SqliteConnection {
             "NOT EXISTS (SELECT 1 FROM ai_labels l WHERE l.activity_id = a.id)"
         };
         sql_query(format!(
-            "SELECT a.id, src.name AS app_name, {ACTIVITY_URL} AS url, a.title
+            "SELECT a.id, src.name AS app_name, {ACTIVITY_URL} AS url, a.title,
+                    src.kind AS source_kind, src.key AS source_key, a.path
              FROM activities a
              JOIN sources src ON src.id = a.source_id
              WHERE a.category_id IS NULL AND {wanted}
                AND NOT EXISTS (SELECT 1 FROM rule_matches m WHERE m.activity_id = a.id)
              ORDER BY (SELECT MAX(start_time) FROM sessions WHERE activity_id = a.id) DESC"
         ))
+        .get_results(self)
+    }
+
+    fn get_recent_activities(&mut self, limit: i64) -> QueryResult<Vec<ActivityToLabelRow>> {
+        sql_query(format!(
+            "SELECT a.id, src.name AS app_name, {ACTIVITY_URL} AS url, a.title,
+                    src.kind AS source_kind, src.key AS source_key, a.path
+             FROM activities a
+             JOIN sources src ON src.id = a.source_id
+             ORDER BY (SELECT MAX(start_time) FROM sessions WHERE activity_id = a.id) DESC
+             LIMIT ?"
+        ))
+        .bind::<BigInt, _>(limit)
         .get_results(self)
     }
 

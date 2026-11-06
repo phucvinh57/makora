@@ -7,14 +7,15 @@ use chrono::Utc;
 use diesel::sqlite::SqliteConnection;
 use diesel::Connection;
 
+use crate::categorization::domain::retrieval::SourceRef;
 use crate::db::Db;
 use crate::reporting::{self, CategoryScope, Window};
 use crate::shared::ids::{raw, ActivityId, CategoryId};
 use crate::taxonomy::store::load_tree;
 
 use super::types::{
-    AiReviewGroup, AiReviewGroupPage, AiReviewPage, AiReviewRow, FeedbackStats, Paging, ReviewFilter,
-    UncategorizedActivity,
+    ActivitySample, AiReviewGroup, AiReviewGroupPage, AiReviewPage, AiReviewRow, FeedbackStats, Paging,
+    ReviewFilter,
 };
 
 pub use super::traits::LabelingSvc;
@@ -30,16 +31,19 @@ impl SqliteLabeling {
 }
 
 impl LabelingSvc for SqliteLabeling {
-    fn get_activities_to_label(&self, recheck: bool) -> Result<Vec<UncategorizedActivity>> {
+    fn get_activities_to_label(&self, recheck: bool) -> Result<Vec<ActivitySample>> {
         let mut conn = self.db.read()?;
         Ok(reporting::review::ReviewRepo::get_activities_to_label(&mut *conn, recheck)?
             .into_iter()
-            .map(|row| UncategorizedActivity {
-                id: row.id.into(),
-                app_name: row.app_name,
-                url: row.url,
-                title: row.title,
-            })
+            .map(sample_of)
+            .collect())
+    }
+
+    fn get_recent_activities(&self, limit: i64) -> Result<Vec<ActivitySample>> {
+        let mut conn = self.db.read()?;
+        Ok(reporting::review::ReviewRepo::get_recent_activities(&mut *conn, limit)?
+            .into_iter()
+            .map(sample_of)
             .collect())
     }
 
@@ -137,5 +141,19 @@ fn to_review_group(row: reporting::review::ReviewGroupRow) -> AiReviewGroup {
             .filter_map(|id| id.parse::<i64>().ok())
             .map(ActivityId::from)
             .collect(),
+    }
+}
+
+fn sample_of(row: reporting::review::ActivityToLabelRow) -> ActivitySample {
+    ActivitySample {
+        id: row.id.into(),
+        app_name: row.app_name,
+        url: row.url,
+        title: row.title,
+        source: SourceRef {
+            kind: row.source_kind,
+            key: row.source_key,
+            path: row.path,
+        },
     }
 }

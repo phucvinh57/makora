@@ -13,6 +13,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 
+use crate::ai::privacy::PrivacySettings;
 use crate::ai::{embedding, llm};
 use crate::categorization::domain::rules::InvalidRule;
 use crate::shared::sync;
@@ -63,6 +64,8 @@ pub struct AiSettings {
     pub providers: Vec<ProviderConfig>,
     /// What remote models charge, for the cost estimate on the usage page.
     pub prices: Vec<ModelPrice>,
+    /// What is taken out of activities before a remote provider sees them.
+    pub privacy: PrivacySettings,
 }
 
 /// What a remote model charges, in US dollars per million tokens. `cached_input` is the price of
@@ -110,6 +113,7 @@ impl Default for AiSettings {
             auto_categorize_hours: DEFAULT_AUTO_CATEGORIZE_HOURS,
             providers: Vec::new(),
             prices: Vec::new(),
+            privacy: PrivacySettings::default(),
         }
     }
 }
@@ -173,6 +177,11 @@ pub trait SettingsStore: Send + Sync {
     /// Sets the price of `price.model` on `price.provider`, replacing the one it had.
     fn set_model_price(&self, price: ModelPrice) -> SettingsResult;
     fn remove_model_price(&self, provider: &str, model: &str) -> SettingsResult;
+    /// Replaces the privacy settings with `privacy`, normalized as on load, except the never-send
+    /// list, which only [`Self::add_never_send`] and [`Self::remove_never_send`] change.
+    fn set_privacy(&self, privacy: PrivacySettings) -> SettingsResult;
+    fn add_never_send(&self, exclusion: Exclusion) -> SettingsResult;
+    fn remove_never_send(&self, exclusion: &Exclusion) -> SettingsResult;
     /// What went wrong reading the settings file at startup, once: later calls get `None`.
     fn take_load_issue(&self) -> Option<String>;
 }
@@ -240,7 +249,8 @@ impl TomlSettings {
             settings.tracking.min_session_seconds = clamped;
         }
 
-        settings.tracking.excluded = normalized_exclusions(std::mem::take(&mut settings.tracking.excluded));
+        settings.tracking.excluded = normalized_exclusions("tracking.excluded", std::mem::take(&mut settings.tracking.excluded));
+        settings.ai.privacy = normalized_privacy(std::mem::take(&mut settings.ai.privacy));
 
         settings.ai.providers = normalized_providers(std::mem::take(&mut settings.ai.providers));
         if let Some(id) = settings.ai.llm_provider.as_deref() {
@@ -318,16 +328,22 @@ fn corrupt_backup_path(path: &Path, now: DateTime<Utc>) -> PathBuf {
 
 /// Puts each entry in its normalized form and drops the ones that cannot be read or repeat an
 /// earlier one, so what the page lists is exactly what is matched.
-fn normalized_exclusions(entries: Vec<Exclusion>) -> Vec<Exclusion> {
+fn normalized_exclusions(setting: &str, entries: Vec<Exclusion>) -> Vec<Exclusion> {
     let mut kept: Vec<Exclusion> = Vec::with_capacity(entries.len());
     for entry in entries {
         match Exclusion::parse(entry.kind, entry.field, &entry.value) {
             Ok(exclusion) if !kept.contains(&exclusion) => kept.push(exclusion),
             Ok(_) => {}
-            Err(err) => warn!(value = %entry.value, error = %err, "tracking.excluded entry is not valid; ignoring"),
+            Err(err) => warn!(setting, value = %entry.value, error = %err, "entry is not valid; ignoring"),
         }
     }
     kept
+}
+
+fn normalized_privacy(privacy: PrivacySettings) -> PrivacySettings {
+    let mut privacy = privacy.normalized();
+    privacy.never_send = normalized_exclusions("ai.privacy.never_send", std::mem::take(&mut privacy.never_send));
+    privacy
 }
 
 /// Drops the providers that cannot be used or repeat an earlier id.
@@ -514,6 +530,29 @@ impl SettingsStore for TomlSettings {
         self.update(|settings| settings.ai.prices.retain(|price| !price.is_for(provider, model)))
     }
 
+    fn set_privacy(&self, privacy: PrivacySettings) -> SettingsResult {
+        let privacy = privacy.normalized();
+        self.update(|settings| {
+            settings.ai.privacy = PrivacySettings {
+                never_send: std::mem::take(&mut settings.ai.privacy.never_send),
+                ..privacy
+            }
+        })
+    }
+
+    fn add_never_send(&self, exclusion: Exclusion) -> SettingsResult {
+        self.update(|settings| {
+            let list = &mut settings.ai.privacy.never_send;
+            if !list.contains(&exclusion) {
+                list.push(exclusion);
+            }
+        })
+    }
+
+    fn remove_never_send(&self, exclusion: &Exclusion) -> SettingsResult {
+        self.update(|settings| settings.ai.privacy.never_send.retain(|entry| entry != exclusion))
+    }
+
     fn take_load_issue(&self) -> Option<String> {
         sync::lock(&self.load_issue).take()
     }
@@ -531,6 +570,9 @@ fn write_atomically(path: &Path, settings: &Settings) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use crate::ai::privacy::{Kind, UrlPolicy};
+    use crate::categorization::domain::rules::RuleKind;
+
     use super::*;
 
     fn scratch_dir(name: &str) -> PathBuf {
@@ -630,6 +672,52 @@ mod tests {
         assert!(matches!(store.set_model_price(price("gpt", Some(f64::NAN))), Err(SettingsError::Invalid(_))));
         assert!(matches!(store.set_model_price(price(" ", None)), Err(SettingsError::Invalid(_))));
         assert!(store.get().ai.prices.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn privacy_settings_default_when_missing_and_round_trip() {
+        let dir = scratch_dir("privacy");
+        let path = dir.join("settings.toml");
+        std::fs::write(&path, "[ai]\nllm_model = \"m\"\n").unwrap();
+        let store = TomlSettings::load(path.clone());
+        assert_eq!(store.get().ai.privacy, PrivacySettings::default());
+
+        let privacy = PrivacySettings {
+            redact: vec![Kind::Secret, Kind::Email],
+            redact_account: true,
+            terms: vec![" Acme Corp ".into(), "acme corp".into(), "Jane".into()],
+            url_policy: UrlPolicy::DomainOnly,
+            never_send: Vec::new(),
+        };
+        store.add_never_send(Exclusion::parse(RuleKind::Site, None, "https://www.MyBank.com").unwrap()).unwrap();
+        store.set_privacy(privacy).unwrap();
+        let reloaded = TomlSettings::load(path).get().ai.privacy;
+        assert_eq!(reloaded.redact, [Kind::Email, Kind::Secret]);
+        assert!(reloaded.redact_account);
+        assert_eq!(reloaded.terms, ["Acme Corp", "Jane"]);
+        assert_eq!(reloaded.url_policy, UrlPolicy::DomainOnly);
+        assert_eq!(reloaded.never_send.len(), 1);
+        assert_eq!(reloaded.never_send[0].value, "mybank.com");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unknown_privacy_values_are_dropped_not_fatal() {
+        let dir = scratch_dir("privacy-unknown");
+        let path = dir.join("settings.toml");
+        std::fs::write(
+            &path,
+            "[ai.privacy]\nredact = [\"email\", \"dna\", \"email\"]\nurl_policy = \"everything\"\nterms = [\" \", \"Jane\"]\n\n[[ai.privacy.never_send]]\nkind = \"site\"\nvalue = \"not a site\"\n",
+        )
+        .unwrap();
+        let store = TomlSettings::load(path);
+        let privacy = store.get().ai.privacy;
+        assert!(store.take_load_issue().is_none());
+        assert_eq!(privacy.redact, [Kind::Email]);
+        assert_eq!(privacy.url_policy, UrlPolicy::StripIds);
+        assert_eq!(privacy.terms, ["Jane"]);
+        assert!(privacy.never_send.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

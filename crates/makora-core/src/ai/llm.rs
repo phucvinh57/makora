@@ -405,6 +405,7 @@ fn run(
             app_name: clean(&activity.app_name),
             url: activity.url.as_deref().map(clean),
             title: clean(&activity.title),
+            source: activity.source.clone(),
         };
         let related: Vec<RelatedActivity> = related(index)
             .into_iter()

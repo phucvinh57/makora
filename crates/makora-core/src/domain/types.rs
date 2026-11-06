@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::categorization::domain::retrieval::SourceRef;
 use crate::shared::ids::{ActivityId, CategoryId, SessionId};
 use crate::tracking::domain::source_key::KeyKind;
 
@@ -21,12 +22,14 @@ pub struct NewCategory {
     pub parent_id: Option<CategoryId>,
 }
 
+/// An activity's identity and text, as a model or the privacy preview sees it.
 #[derive(Debug, Clone)]
-pub struct UncategorizedActivity {
+pub struct ActivitySample {
     pub id: ActivityId,
     pub app_name: String,
     pub url: Option<String>,
     pub title: String,
+    pub source: SourceRef,
 }
 
 /// What the model made of one activity: a category, or `None` when it found none it stands by.

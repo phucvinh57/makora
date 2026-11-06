@@ -3,10 +3,14 @@
 
 use std::sync::Arc;
 
+use anyhow::Result;
 use tracing::info;
 
+use crate::ai::privacy::{PrivacyPreview, PrivacySettings, Redactor};
 use crate::categorization::domain::rules::{PatternField, RuleKind};
+use crate::categorization::ports::ActivityText;
 use crate::categorization::{ActivityIndexer, AutoCategorizeSchedule};
+use crate::domain::LabelingSvc;
 use crate::tracking::domain::exclusion::Exclusion;
 
 use super::{ModelPrice, Settings, SettingsResult, SettingsStore};
@@ -26,12 +30,23 @@ pub trait SettingsSvc: Send + Sync {
     fn set_auto_categorize_hours(&self, hours: u32) -> SettingsResult;
     fn set_model_price(&self, price: ModelPrice) -> SettingsResult;
     fn remove_model_price(&self, provider: &str, model: &str) -> SettingsResult;
+    /// Everything but the never-send list, which has its own calls.
+    fn set_privacy(&self, privacy: PrivacySettings) -> SettingsResult;
+    fn add_never_send(&self, kind: RuleKind, field: Option<PatternField>, value: &str) -> SettingsResult;
+    fn remove_never_send(&self, kind: RuleKind, field: Option<PatternField>, value: &str) -> SettingsResult;
+    /// The most recent activities as a remote provider would get them with `privacy`, beside what
+    /// it gets with no redaction at all.
+    fn privacy_preview(&self, privacy: &PrivacySettings) -> Result<Vec<PrivacyPreview>>;
 }
+
+/// Activities shown in the privacy preview.
+const PRIVACY_PREVIEW_ROWS: i64 = 20;
 
 pub struct SettingsService {
     store: Arc<dyn SettingsStore>,
     indexer: Arc<dyn ActivityIndexer>,
     schedule: Arc<dyn AutoCategorizeSchedule>,
+    labeling: Arc<dyn LabelingSvc>,
 }
 
 impl SettingsService {
@@ -39,8 +54,14 @@ impl SettingsService {
         store: Arc<dyn SettingsStore>,
         indexer: Arc<dyn ActivityIndexer>,
         schedule: Arc<dyn AutoCategorizeSchedule>,
+        labeling: Arc<dyn LabelingSvc>,
     ) -> Self {
-        Self { store, indexer, schedule }
+        Self {
+            store,
+            indexer,
+            schedule,
+            labeling,
+        }
     }
 }
 
@@ -106,6 +127,45 @@ impl SettingsSvc for SettingsService {
         let saved = self.store.remove_model_price(provider, model)?;
         info!(setting = "model_price", provider, model, "price removed");
         Ok(saved)
+    }
+
+    fn set_privacy(&self, privacy: PrivacySettings) -> SettingsResult {
+        let saved = self.store.set_privacy(privacy)?;
+        let privacy = &saved.ai.privacy;
+        let redact: Vec<&str> = privacy.redact.iter().map(|kind| kind.as_str()).collect();
+        info!(
+            setting = "privacy",
+            redact = redact.join(","),
+            redact_account = privacy.redact_account,
+            terms = privacy.terms.len(),
+            url_policy = privacy.url_policy.as_str(),
+            "setting changed"
+        );
+        Ok(saved)
+    }
+
+    fn add_never_send(&self, kind: RuleKind, field: Option<PatternField>, value: &str) -> SettingsResult {
+        let exclusion = Exclusion::parse(kind, field, value)?;
+        let saved = self.store.add_never_send(exclusion.clone())?;
+        info!(setting = "never_send", kind = ?exclusion.kind, "never-send entry added");
+        Ok(saved)
+    }
+
+    fn remove_never_send(&self, kind: RuleKind, field: Option<PatternField>, value: &str) -> SettingsResult {
+        let exclusion = Exclusion::parse(kind, field, value)?;
+        let saved = self.store.remove_never_send(&exclusion)?;
+        info!(setting = "never_send", kind = ?exclusion.kind, "never-send entry removed");
+        Ok(saved)
+    }
+
+    fn privacy_preview(&self, privacy: &PrivacySettings) -> Result<Vec<PrivacyPreview>> {
+        let redactor = Redactor::new(privacy);
+        Ok(self
+            .labeling
+            .get_recent_activities(PRIVACY_PREVIEW_ROWS)?
+            .iter()
+            .map(|sample| redactor.preview(&ActivityText::of(sample)))
+            .collect())
     }
 }
 

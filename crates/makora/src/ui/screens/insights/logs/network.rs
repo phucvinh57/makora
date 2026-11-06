@@ -141,6 +141,12 @@ impl LogsTab {
                                     to_locale_string(host.activities_sent as f64)
                                 )))
                             })
+                            .when(host.redactions > 0, |this| {
+                                this.child(div().text_xs().text_color(muted).child(format!(
+                                    "{} redacted",
+                                    to_locale_string(host.redactions as f64)
+                                )))
+                            })
                             .into_any_element(),
                     ))
                     .child(numeric(

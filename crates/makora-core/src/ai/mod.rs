@@ -10,6 +10,7 @@ pub mod embedding;
 mod gguf;
 pub mod llm;
 pub mod model_download;
+pub mod privacy;
 mod prompt;
 pub mod providers;
 pub mod remote;

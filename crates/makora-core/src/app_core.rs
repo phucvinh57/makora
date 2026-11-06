@@ -149,7 +149,7 @@ impl AppCore {
             events: events.clone(),
         });
         let settings: Arc<dyn SettingsSvc> =
-            Arc::new(SettingsService::new(settings_store.clone(), indexer.clone(), schedule.clone()));
+            Arc::new(SettingsService::new(settings_store.clone(), indexer.clone(), schedule.clone(), labeling.clone()));
 
         let download_state = Arc::new(ModelDownloadState::default());
         let downloads: Arc<dyn ModelDownloads> =

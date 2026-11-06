@@ -43,6 +43,8 @@ pub struct HostTraffic {
     pub bytes_sent: u64,
     pub bytes_received: u64,
     pub activities_sent: u64,
+    /// What was taken out of those activities before they were sent.
+    pub redactions: u64,
     /// RFC 3339.
     pub last_contact: String,
     pub purposes: Vec<String>,
@@ -162,6 +164,7 @@ impl LogReader for JsonlLogReader {
                     bytes_sent: 0,
                     bytes_received: 0,
                     activities_sent: 0,
+                    redactions: 0,
                     last_contact: entry.ts.clone(),
                     purposes: Vec::new(),
                 };
@@ -180,6 +183,7 @@ impl LogReader for JsonlLogReader {
             traffic.bytes_sent += number(fields, "bytes_sent");
             traffic.bytes_received += number(fields, "bytes_received");
             traffic.activities_sent += number(fields, "activities_sent");
+            traffic.redactions += number(fields, "redactions");
             if let Some(purpose) = fields.get("purpose").and_then(Value::as_str) {
                 purposes.insert(purpose.to_string());
             }
@@ -468,7 +472,7 @@ mod tests {
                     net,
                     "sent activities to remote provider",
                     json!({
-                        "host": "api.openai.com", "model": "gpt-4o-mini", "activities_sent": 12, "input_tokens": 900,
+                        "host": "api.openai.com", "model": "gpt-4o-mini", "activities_sent": 12, "input_tokens": 900, "redactions": 4,
                     }),
                 ),
                 line(
@@ -494,6 +498,7 @@ mod tests {
                     bytes_sent: 1500,
                     bytes_received: 2300,
                     activities_sent: 12,
+                    redactions: 4,
                     last_contact: "2026-10-31T09:00:01Z".into(),
                     purposes: vec!["AI categorization".into(), "list models".into()],
                 },
@@ -503,6 +508,7 @@ mod tests {
                     bytes_sent: 0,
                     bytes_received: 5000,
                     activities_sent: 0,
+                    redactions: 0,
                     last_contact: "2026-10-30T15:00:00Z".into(),
                     purposes: vec!["model download".into()],
                 },

@@ -12,6 +12,8 @@ use gpui_kit::{
 };
 use makora_lib::categorization::application::rules::SourceSuggestion;
 use makora_lib::categorization::domain::rules::{PatternField, RuleKind};
+use makora_lib::settings::SettingsSvc;
+use makora_lib::settings::{Settings, SettingsResult};
 use makora_lib::tracking::domain::exclusion::Exclusion;
 use makora_lib::tracking::domain::source_key::KeyKind;
 use tracing::warn;
@@ -29,6 +31,109 @@ use crate::ui::widgets::select_item::SelectItem;
 use crate::ui::widgets::suggest_input::{SuggestInput, SuggestInputEvent, Suggestion};
 
 const SOURCES_STALE_AFTER: Duration = Duration::from_secs(60);
+
+/// Which list of apps, sites, pages and patterns the section edits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExclusionList {
+    /// Never recorded.
+    Tracking,
+    /// Recorded, but sent to a remote AI provider masked: no title or address.
+    NeverSend,
+}
+
+impl ExclusionList {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Tracking => "Excluded from tracking",
+            Self::NeverSend => "Never sent to AI providers",
+        }
+    }
+
+    fn entries(self, settings: &Settings) -> Vec<Exclusion> {
+        match self {
+            Self::Tracking => settings.tracking.excluded.clone(),
+            Self::NeverSend => settings.ai.privacy.never_send.clone(),
+        }
+    }
+
+    fn hint(self, kind: RuleKind) -> &'static str {
+        match self {
+            Self::Tracking => exclusion_hint(kind),
+            Self::NeverSend => never_send_hint(kind),
+        }
+    }
+
+    fn footer(self) -> &'static str {
+        match self {
+            Self::Tracking => {
+                "Matching activity is not recorded from the next time it starts. Already \
+                 recorded history is kept."
+            }
+            Self::NeverSend => {
+                "Matching activity is still tracked and can be labeled by the local model. A \
+                 remote provider gets it with the title, address, site and listed app hidden, and \
+                 never as an example for other activities."
+            }
+        }
+    }
+
+    /// An element id unique to this list, as both lists are on one screen.
+    fn id(self, name: &str) -> SharedString {
+        let list = match self {
+            Self::Tracking => "excluded",
+            Self::NeverSend => "never-send",
+        };
+        format!("{list}-{name}").into()
+    }
+
+    fn add_label(self) -> &'static str {
+        match self {
+            Self::Tracking => "Exclude",
+            Self::NeverSend => "Add",
+        }
+    }
+
+    fn remove_label(self) -> &'static str {
+        match self {
+            Self::Tracking => "Stop excluding",
+            Self::NeverSend => "Allow sending",
+        }
+    }
+
+    fn add(
+        self,
+        settings: &dyn SettingsSvc,
+        kind: RuleKind,
+        field: Option<PatternField>,
+        value: &str,
+    ) -> SettingsResult {
+        match self {
+            Self::Tracking => settings.add_exclusion(kind, field, value),
+            Self::NeverSend => settings.add_never_send(kind, field, value),
+        }
+    }
+
+    fn remove(self, settings: &dyn SettingsSvc, exclusion: &Exclusion) -> SettingsResult {
+        let (kind, field, value) = (exclusion.kind, exclusion.field, &exclusion.value);
+        match self {
+            Self::Tracking => settings.remove_exclusion(kind, field, value),
+            Self::NeverSend => settings.remove_never_send(kind, field, value),
+        }
+    }
+}
+
+pub fn never_send_hint(kind: RuleKind) -> &'static str {
+    match kind {
+        RuleKind::App => {
+            "Activity in this app goes out as [app] with its title hidden. Its browser tabs are matched by site."
+        }
+        RuleKind::Site => "Every page of this website goes out as [site] with its title hidden.",
+        RuleKind::Page => {
+            "This page and everything below it goes out as [site] with its title hidden."
+        }
+        RuleKind::Pattern => "* matches any text and ? matches one character, ignoring case.",
+    }
+}
 
 pub fn exclusion_hint(kind: RuleKind) -> &'static str {
     match kind {
@@ -67,6 +172,7 @@ fn suggests(kind: RuleKind) -> bool {
 }
 
 pub struct ExclusionsSection {
+    list: ExclusionList,
     kind_select: Entity<SelectState<Vec<SelectItem>>>,
     field_select: Entity<SelectState<Vec<SelectItem>>>,
     suggest: Entity<SuggestInput>,
@@ -87,7 +193,7 @@ pub struct ExclusionsSection {
 }
 
 impl ExclusionsSection {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(list: ExclusionList, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let kind = RuleKind::App;
         let field = PatternField::Url;
         let kinds: Vec<SelectItem> = RULE_KINDS
@@ -119,6 +225,7 @@ impl ExclusionsSection {
             cx.observe(&AppState::entity(cx), |_, _, cx| cx.notify()),
         ];
         let mut this = Self {
+            list,
             kind_select,
             field_select,
             suggest,
@@ -243,14 +350,14 @@ impl ExclusionsSection {
         let kind = self.kind;
         let field = (kind == RuleKind::Pattern).then_some(self.field);
         let value = self.value.to_string();
+        let list = self.list;
         self.adding = true;
         cx.notify();
         self.add = data::fetch_in(
             window,
             cx,
             move |core| {
-                core.settings
-                    .add_exclusion(kind, field, &value)
+                list.add(&*core.settings, kind, field, &value)
                     .map_err(UiError::from)
             },
             |this, result, window, cx| {
@@ -275,6 +382,7 @@ impl ExclusionsSection {
     }
 
     fn remove(&mut self, exclusion: Exclusion, window: &mut Window, cx: &mut Context<Self>) {
+        let list = self.list;
         self.removing = true;
         self.remove_error = None;
         cx.notify();
@@ -282,8 +390,7 @@ impl ExclusionsSection {
             window,
             cx,
             move |core| {
-                core.settings
-                    .remove_exclusion(exclusion.kind, exclusion.field, &exclusion.value)
+                list.remove(&*core.settings, &exclusion)
                     .map_err(UiError::from)
             },
             |this, result, _, cx| {
@@ -300,6 +407,7 @@ impl ExclusionsSection {
 
     fn render_list(&self, excluded: &[Exclusion], cx: &mut Context<Self>) -> impl IntoElement {
         let border = cx.theme().border;
+        let list = self.list;
         v_flex()
             .rounded_md()
             .border_1()
@@ -319,12 +427,16 @@ impl ExclusionsSection {
                         &exclusion.value,
                     )))
                     .child(
-                        Button::new(("stop-excluding", ix))
+                        Button::new((list.id("remove"), ix))
                             .ghost()
                             .xsmall()
                             .icon(Icon::new(IconName::X))
-                            .tooltip("Stop excluding")
-                            .accessibility_label(format!("Stop excluding {}", exclusion.value))
+                            .tooltip(self.list.remove_label())
+                            .accessibility_label(format!(
+                                "{} {}",
+                                self.list.remove_label(),
+                                exclusion.value
+                            ))
                             .disabled(self.removing)
                             .on_click(cx.listener(move |this, _, window, cx| {
                                 this.remove(target.clone(), window, cx)
@@ -338,10 +450,11 @@ impl Render for ExclusionsSection {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let danger = cx.theme().danger;
-        let excluded = AppState::read(cx).settings.tracking.excluded.clone();
+        let list = self.list;
+        let excluded = list.entries(&AppState::read(cx).settings);
         let kind = self.kind;
 
-        Card::new().small().title("Excluded from tracking").child(
+        Card::new().small().title(list.title()).child(
             v_flex()
                 .gap_3()
                 .child(
@@ -381,23 +494,18 @@ impl Render for ExclusionsSection {
                                     }
                                 }))
                                 .child(
-                                    Button::new("exclude")
+                                    Button::new(list.id("add"))
                                         .small()
                                         .primary()
                                         .icon(Icon::new(IconName::Plus))
-                                        .label("Exclude")
+                                        .label(list.add_label())
                                         .disabled(!self.can_add())
                                         .on_click(cx.listener(|this, _, window, cx| {
                                             this.submit(window, cx)
                                         })),
                                 ),
                         )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(muted)
-                                .child(exclusion_hint(kind)),
-                        )
+                        .child(div().text_xs().text_color(muted).child(list.hint(kind)))
                         .when_some(self.add_error.clone(), |this, error| {
                             this.child(div().text_xs().text_color(danger).child(error))
                         }),
@@ -405,10 +513,7 @@ impl Render for ExclusionsSection {
                 .when(!excluded.is_empty(), |this| {
                     this.child(self.render_list(&excluded, cx))
                 })
-                .child(div().text_xs().text_color(muted).child(
-                    "Matching activity is not recorded from the next time it starts. Already \
-                     recorded history is kept.",
-                ))
+                .child(div().text_xs().text_color(muted).child(list.footer()))
                 .when_some(self.remove_error.clone(), |this, error| {
                     this.child(div().text_xs().text_color(danger).child(error))
                 }),

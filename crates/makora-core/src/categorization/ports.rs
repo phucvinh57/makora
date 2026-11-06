@@ -9,10 +9,11 @@ use std::time::Duration;
 use anyhow::Result;
 use serde::Serialize;
 
-use crate::domain::types::Category;
+use crate::domain::types::{ActivitySample, Category};
 use crate::shared::ids::{CategoryId, ProviderId};
+use crate::tracking::domain::source_key::url_location;
 
-use super::domain::retrieval::RelatedActivity;
+use super::domain::retrieval::{RelatedActivity, SourceRef};
 
 /// A unit-length vector, so that the dot product of two is their cosine similarity.
 pub type Embedding = Vec<f32>;
@@ -22,6 +23,19 @@ pub struct ActivityText {
     pub app_name: String,
     pub url: Option<String>,
     pub title: String,
+    pub source: SourceRef,
+}
+
+impl ActivityText {
+    /// What a model is told of `sample`: its URL cut down to the domain and path.
+    pub fn of(sample: &ActivitySample) -> Self {
+        Self {
+            app_name: sample.app_name.clone(),
+            url: sample.url.as_deref().and_then(url_location),
+            title: sample.title.clone(),
+            source: sample.source.clone(),
+        }
+    }
 }
 
 /// The language model a run labels with: `provider` is `None` for the local one, or the id of a

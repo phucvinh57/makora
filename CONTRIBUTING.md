@@ -137,8 +137,18 @@ Do not commit real activity data.
 Activities identify an app/site together with its title. A manual pin applies
 to every occurrence of that activity, past and future. Category resolution
 prefers a manual pin, then a matching rule, then an AI suggestion. Rules are
-retroactive and re-evaluated when edited. AI inference is local; model downloads
-use the remote model registry.
+retroactive and re-evaluated when edited. AI inference is local by default;
+model downloads use the remote model registry.
+
+When a remote provider labels activities, `ai/router.rs` passes them through
+the `Redactor` in `crates/makora-core/src/ai/privacy/` first; the local model
+always gets the full text. It replaces what the detectors find with
+placeholders, strips ids from page paths per the URL policy, and masks
+activities on the never-send list. To add a detector, write a finder in
+`privacy/detectors.rs` with positive and near-miss tests, add its `Kind` with a
+placeholder and priority in `privacy/mod.rs`, and a label in
+`crates/makora/src/ui/format/privacy.rs`. The settings preview runs the same
+`Redactor`, so it always shows what would be sent.
 
 Deleting a category also deletes its subcategories and clears associated
 categorization references. Resetting categorization clears manual pins and

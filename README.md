@@ -6,7 +6,10 @@ Makora is a desktop time tracker for Windows, macOS, and Linux. It quietly
 records the apps you use so you can look back at your day, spot patterns, and
 understand how you spend your time. No timers to start. No account to create.
 It is a native Rust app built with [GPUI](https://www.gpui.rs/), and your
-activity stays in a local SQLite database.
+activity stays in a local SQLite database. If you choose a remote AI provider
+for categorization, emails, phone numbers, keys, ids and the words you list are
+replaced by placeholders before anything is sent, and you can keep chosen apps
+and sites from being sent at all (**Settings → Privacy**).
 
 <video src="https://github.com/user-attachments/assets/74aae38b-3bff-48b9-adc1-353526fdb4bb" controls></video>
 *The demo uses fictional activity data.*
