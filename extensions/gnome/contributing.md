@@ -1,26 +1,15 @@
 # Contributing to the GNOME extension
 
-The extension is a small JavaScript module that runs inside GNOME Shell. It
-reports the focused window to Makora over the user's session D-Bus. There is
-no build step.
+The extension is one JavaScript file that runs inside GNOME Shell and reports the focused window to Makora over the session D-Bus. There is no build step.
 
-## Develop locally
-
-From the repository root, install the extension into your user account:
+## Develop
 
 ```sh
-./extensions/gnome/install.sh
+./extensions/gnome/install.sh                   # install for your user
+gnome-extensions enable makora@phucvinh57.dev   # after a first install, log out and in first
 ```
 
-If this is the first install, log out and back in so GNOME Shell discovers the
-new extension. Enable it with:
-
-```sh
-gnome-extensions enable makora@phucvinh57.dev
-```
-
-After editing `extension.js`, run the install script again and disable then
-enable the extension to reload it:
+After editing `extension.js`, reinstall and reload:
 
 ```sh
 ./extensions/gnome/install.sh
@@ -28,57 +17,39 @@ gnome-extensions disable makora@phucvinh57.dev
 gnome-extensions enable makora@phucvinh57.dev
 ```
 
-The DEB and RPM packages ship `metadata.json`, `extension.js`,
-`session-is-gnome-wayland.sh` and `install-system.sh` under
-`/usr/share/makora/gnome-extension/`. Their post-install script
-([`packaging/linux/post-install.sh`](../../packaging/linux/post-install.sh))
-runs `install-system.sh`, which installs the extension under
-`/usr/share/gnome-shell/extensions/makora@phucvinh57.dev/`. If the extension
-adds files, add them to both package asset lists in `crates/makora/Cargo.toml`
-(`[package.metadata.deb]` and `[package.metadata.generate-rpm]`) and to the
-post-remove scripts.
+Supported Shell versions are in [`metadata.json`](metadata.json).
+
+## Packaging
+
+The DEB and RPM packages ship `metadata.json`, `extension.js`, `session-is-gnome-wayland.sh` and `install-system.sh` in `/usr/share/makora/gnome-extension/`. [`post-install.sh`](../../packaging/linux/post-install.sh) runs `install-system.sh`, which installs to `/usr/share/gnome-shell/extensions/makora@phucvinh57.dev/`.
+
+When adding a file, add it to both asset lists in `crates/makora/Cargo.toml` (`[package.metadata.deb]` and `[package.metadata.generate-rpm]`) and to the post-remove scripts.
 
 ## D-Bus protocol
 
-The extension owns `dev.phucvinh57.MakoraShell` on the session bus and exports
-`dev.phucvinh57.MakoraShell.Focus1` at `/dev/phucvinh57/MakoraShell`:
+The extension owns `dev.phucvinh57.MakoraShell` and exports `dev.phucvinh57.MakoraShell.Focus1` at `/dev/phucvinh57/MakoraShell`:
 
-- `FocusChanged(b present, u pid, s app_id, s wm_class, s title)` is emitted
-  when the focused window changes or its title changes.
-- `GetFocusedWindow() -> (b present, u pid, s app_id, s wm_class, s title)`
-  returns the current focus so Makora can start tracking without waiting for a
-  window switch.
-- `Version` is a `u` property containing the protocol version, currently `1`.
+| Member                                                                    | Kind         | Purpose                                                   |
+| ------------------------------------------------------------------------- | ------------ | --------------------------------------------------------- |
+| `FocusChanged(b present, u pid, s app_id, s wm_class, s title)`           | signal       | Focused window or its title changed                       |
+| `GetFocusedWindow() -> (b present, u pid, s app_id, s wm_class, s title)` | method       | Current focus, so tracking starts without a window switch |
+| `Version`                                                                 | property `u` | Protocol version, currently `1`                           |
 
-`present` is false when there is no focused window, which usually means the
-GNOME Activities overview is open. Makora ignores that state and keeps the
-current activity block open. `pid` is zero when GNOME cannot provide a process
-ID; Makora then uses `app_id` to identify the application.
+- `present` is false when nothing is focused, usually the Activities overview. Makora keeps the current block open.
+- `pid` is 0 when GNOME can't provide it. Makora then uses `app_id`.
 
-The matching interface names and signatures are in
-[`crates/makora-core/src/tracking/adapters/platform/linux/gnome.rs`](../../crates/makora-core/src/tracking/adapters/platform/linux/gnome.rs).
-Keep the extension and Rust definitions in sync. If a signature changes, bump
-`PROTOCOL_VERSION` in both places so Makora can detect mismatched versions.
+The Rust side is [`gnome.rs`](../../crates/makora-core/src/tracking/adapters/platform/linux/gnome.rs). Keep both in sync, and bump `PROTOCOL_VERSION` in both when a signature changes.
 
 ## Debugging
 
-Read the current focused window:
-
 ```sh
+# Current focus
 busctl --user call dev.phucvinh57.MakoraShell /dev/phucvinh57/MakoraShell \
     dev.phucvinh57.MakoraShell.Focus1 GetFocusedWindow
-```
 
-Watch focus changes while switching windows:
-
-```sh
+# Watch focus changes
 busctl --user monitor dev.phucvinh57.MakoraShell
-```
 
-GNOME Shell extension errors appear in the user journal:
-
-```sh
+# Extension errors
 journalctl --user -f -o cat /usr/bin/gnome-shell
 ```
-
-Supported GNOME Shell versions are listed in [`metadata.json`](metadata.json). The current extension supports GNOME Shell 45 through 51; GNOME Shell 51 does not require an extension JavaScript API change.
