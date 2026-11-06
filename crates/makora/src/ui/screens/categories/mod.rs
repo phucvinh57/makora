@@ -120,6 +120,7 @@ impl Render for CategoriesScreen {
         let selected = TABS.iter().position(|tab| *tab == self.tab).unwrap_or(0);
         let theme = cx.theme();
         let badge = div()
+            .ml_1p5()
             .rounded_full()
             .bg(theme.primary)
             .px_1p5()
@@ -143,7 +144,7 @@ impl Render for CategoriesScreen {
                         .child(
                             Tab::new()
                                 .label("AI review")
-                                .when(pending > 0, |tab| tab.suffix(badge)),
+                                .when(pending > 0, |tab| tab.child(badge)),
                         )
                         .on_click(cx.listener(|this, ix: &usize, _, cx| {
                             if let Some(tab) = TABS.get(*ix) {
