@@ -9,7 +9,7 @@ use tracing::warn;
 
 use crate::ai::privacy::{PrivacySettings, RedactionReport, Redactor};
 use crate::categorization::domain::retrieval::RelatedActivity;
-use crate::categorization::ports::{ActivityText, Classifier, ClusterName, LlmSpec, Suggester, UsageMeter};
+use crate::categorization::ports::{ActivityText, Classifier, ClusterName, LlmSpec, MovedActivity, Suggester, UsageMeter};
 use crate::domain::types::Category;
 use crate::settings::SettingsStore;
 use crate::shared::ids::{CategoryId, ProviderId};
@@ -18,7 +18,8 @@ use super::llm::LlamaClassifier;
 use super::choices::choices;
 use super::remote::{self, ChatApi, JsonRequest};
 use super::suggest::{
-    naming_grammar, naming_schema, naming_system_prompt, naming_user_prompt, parse_name, sample_lines, NAMING_FIELDS,
+    describe_grammar, describe_lines, describe_schema, describe_system_prompt, naming_grammar, naming_lines, naming_schema,
+    naming_system_prompt, parse_description, parse_name, sample_lines, DESCRIBE_FIELDS, DESCRIBE_MAX_TOKENS, NAMING_FIELDS,
     NAMING_MAX_TOKENS,
 };
 use super::secrets::SecretStore;
@@ -59,53 +60,114 @@ impl Suggester for LlmRouter {
         meter: &UsageMeter,
     ) -> Result<Option<ClusterName>> {
         let choices = choices(taxonomy);
-        let system = naming_system_prompt(&choices);
-        let Some(id) = llm.provider.as_ref().map(ProviderId::as_str) else {
-            let mut lines = vec!["Activities that fit no category:".to_string()];
-            lines.extend(sample_lines(samples));
-            let answer = self.local.complete(
-                &llm.model,
-                &system,
-                &lines,
-                &naming_grammar(&choices),
-                NAMING_MAX_TOKENS as usize,
-                meter,
-            )?;
-            return Ok(remote::json_in(&answer).and_then(|answer| parse_name(&answer, &choices)));
+        let ask = JsonAsk {
+            system: naming_system_prompt(&choices),
+            grammar: naming_grammar(&choices),
+            schema: naming_schema(&choices),
+            max_tokens: NAMING_MAX_TOKENS,
+            fields: NAMING_FIELDS,
+            samples,
+            lines: &|samples| naming_lines(&sample_lines(samples)),
         };
-        let (api, base_url, privacy) = self.remote(id)?;
-        let answer = name_remote(&*api, &base_url, &privacy, &llm.model, &system, &choices, samples, meter)?;
-        Ok(parse_name(&answer, &choices))
+        Ok(self.ask_json(llm, &ask, meter)?.and_then(|answer| parse_name(&answer, &choices)))
+    }
+
+    fn describe_category(
+        &self,
+        llm: &LlmSpec,
+        taxonomy: &[Category],
+        category: &Category,
+        kept: &[ActivityText],
+        moved: &[MovedActivity],
+        meter: &UsageMeter,
+    ) -> Result<Option<String>> {
+        let choices = choices(taxonomy);
+        let path_of = |id: Option<CategoryId>| {
+            id.and_then(|id| choices.iter().find(|choice| choice.id == id))
+                .map_or_else(|| "Uncategorized".to_string(), |choice| choice.path.clone())
+        };
+        let path = path_of(Some(category.id));
+        let destinations: Vec<String> = moved.iter().map(|activity| path_of(activity.to)).collect();
+        let samples: Vec<ActivityText> = kept
+            .iter()
+            .cloned()
+            .chain(moved.iter().map(|activity| activity.text.clone()))
+            .collect();
+        let lines = |samples: &[ActivityText]| {
+            let all = sample_lines(samples);
+            let (kept, moved) = all.split_at(kept.len());
+            let moved: Vec<(String, String)> = moved.iter().cloned().zip(destinations.iter().cloned()).collect();
+            describe_lines(&path, kept, &moved)
+        };
+        let ask = JsonAsk {
+            system: describe_system_prompt(&choices, &path, category.description.as_deref()),
+            grammar: describe_grammar(),
+            schema: describe_schema(),
+            max_tokens: DESCRIBE_MAX_TOKENS,
+            fields: DESCRIBE_FIELDS,
+            samples: &samples,
+            lines: &lines,
+        };
+        Ok(self.ask_json(llm, &ask, meter)?.as_ref().and_then(parse_description))
     }
 }
 
-/// Asks the remote provider to name `samples`, as `privacy` lets them out.
-#[allow(clippy::too_many_arguments)]
-fn name_remote(
+/// One request for a JSON answer about `samples`. `lines` writes the user message from them, after
+/// redaction when they go to a remote provider.
+struct JsonAsk<'a> {
+    system: String,
+    grammar: String,
+    schema: serde_json::Value,
+    max_tokens: u32,
+    fields: &'static str,
+    samples: &'a [ActivityText],
+    lines: &'a dyn Fn(&[ActivityText]) -> Vec<String>,
+}
+
+impl LlmRouter {
+    /// Asks the run's model; `None` when the local model's answer is not JSON.
+    fn ask_json(&self, llm: &LlmSpec, ask: &JsonAsk, meter: &UsageMeter) -> Result<Option<serde_json::Value>> {
+        let Some(id) = llm.provider.as_ref().map(ProviderId::as_str) else {
+            let lines = (ask.lines)(ask.samples);
+            let answer = self.local.complete(
+                &llm.model,
+                &ask.system,
+                &lines,
+                &ask.grammar,
+                ask.max_tokens as usize,
+                meter,
+            )?;
+            return Ok(remote::json_in(&answer));
+        };
+        let (api, base_url, privacy) = self.remote(id)?;
+        ask_remote(&*api, &base_url, &privacy, &llm.model, ask, meter).map(Some)
+    }
+}
+
+/// Sends `ask` to a remote provider, its samples redacted as `privacy` says.
+fn ask_remote(
     api: &dyn ChatApi,
     base_url: &str,
     privacy: &PrivacySettings,
     model: &str,
-    system: &str,
-    choices: &[super::choices::Choice],
-    samples: &[ActivityText],
+    ask: &JsonAsk,
     meter: &UsageMeter,
 ) -> Result<serde_json::Value> {
     let redactor = Redactor::new(privacy);
     let report = RedactionReport::default();
-    let redacted: Vec<ActivityText> = samples
+    let redacted: Vec<ActivityText> = ask
+        .samples
         .iter()
         .map(|sample| redactor.redact_activity(sample, &report))
         .collect();
-    let user = naming_user_prompt(&sample_lines(&redacted));
-    let schema = naming_schema(choices);
+    let user = (ask.lines)(&redacted).join("\n");
     let request = JsonRequest {
-        system,
+        system: &ask.system,
         user: &user,
-        schema: &schema,
-        max_tokens: NAMING_MAX_TOKENS,
+        schema: &ask.schema,
+        max_tokens: ask.max_tokens,
         purpose: "Category suggestions",
-        fields: NAMING_FIELDS,
+        fields: ask.fields,
         activities_sent: redacted.len(),
     };
     remote::complete_json(api, base_url, model, &request, meter, &report)
@@ -293,14 +355,21 @@ mod tests {
         let choices = choices(&taxonomy);
         let samples = [page("mail.google.com", "/mail/u/0", "Re: lunch - jane.doe@acme.com")];
         let api = RecordingApi::default();
-        let answer = name_remote(
+        let ask = JsonAsk {
+            system: naming_system_prompt(&choices),
+            grammar: String::new(),
+            schema: naming_schema(&choices),
+            max_tokens: NAMING_MAX_TOKENS,
+            fields: NAMING_FIELDS,
+            samples: &samples,
+            lines: &|samples| naming_lines(&sample_lines(samples)),
+        };
+        let answer = ask_remote(
             &api,
             "https://api.example.com/v1",
             &PrivacySettings::default(),
             "model",
-            &naming_system_prompt(&choices),
-            &choices,
-            &samples,
+            &ask,
             &UsageMeter::default(),
         )
         .unwrap();

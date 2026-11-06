@@ -1,6 +1,7 @@
 //! Taxonomy suggestions at the top of the Taxonomy tab: new categories for groups of activities
-//! the model found none for. Accepting one, or changing what a category means, offers a run over
-//! just the activities it concerns.
+//! the model found none for, and sharper descriptions for categories the model keeps getting
+//! wrong. Accepting one, or changing what a category means, offers a run over just the activities
+//! it concerns.
 
 use std::collections::HashMap;
 
@@ -14,13 +15,14 @@ use gpui_kit::{
 };
 use makora_lib::categorization::application::ai_run::{RunMode, RunRequest};
 use makora_lib::categorization::application::suggestions::SuggestionView;
-use makora_lib::categorization::domain::suggestions::{NewCategoryProposal, TaxonomySuggestion};
+use makora_lib::categorization::domain::suggestions::{DescribeProposal, NewCategoryProposal, TaxonomySuggestion};
 use makora_lib::domain::types::{Category, NewCategory};
 use makora_lib::shared::ids::{ActivityId, CategoryId};
 
 use crate::ui::app_state::{AppState, Core};
 use crate::ui::data;
 use crate::ui::dialogs::add_category::{AddCategoryData, AddCategoryDialog};
+use crate::ui::dialogs::edit_category::{EditCategoryData, EditCategoryDialog};
 use crate::ui::dialogs::{self};
 use crate::ui::error::UiError;
 use crate::ui::format::categories::{DEFAULT_CATEGORY_COLOR, category_paths};
@@ -35,6 +37,15 @@ pub fn group_label(proposal: &NewCategoryProposal) -> String {
         Some(title) => format!("Group of {count} activities like “{title}”"),
         None => format!("Group of {count} activities"),
     }
+}
+
+/// "You moved 5 of its 12 AI labels elsewhere lately."
+pub fn moved_line(proposal: &DescribeProposal) -> String {
+    let noun = if proposal.reviewed == 1 { "label" } else { "labels" };
+    format!(
+        "You moved {} of its {} AI {noun} elsewhere lately.",
+        proposal.corrected, proposal.reviewed
+    )
 }
 
 /// Offers a run over `members`, the activities a just-created category was made for.
@@ -93,6 +104,7 @@ pub struct TaxonomySuggestions {
     revision: Option<(u64, u64)>,
     load: Task<()>,
     dismiss: Task<()>,
+    apply: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -104,6 +116,7 @@ impl TaxonomySuggestions {
             revision: None,
             load: Task::ready(()),
             dismiss: Task::ready(()),
+            apply: Task::ready(()),
             _subscriptions: subscriptions,
         };
         this.reload(cx);
@@ -151,6 +164,120 @@ impl TaxonomySuggestions {
             },
         );
         cx.notify();
+    }
+
+    /// Saves the proposed description, marks the suggestion accepted and offers a re-check.
+    fn apply_description(&mut self, id: i64, proposal: &DescribeProposal, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(category) = AppState::read(cx)
+            .categories
+            .iter()
+            .find(|category| category.id == proposal.category_id)
+            .cloned()
+        else {
+            return;
+        };
+        let draft = NewCategory {
+            name: category.name,
+            color: category.color,
+            description: Some(proposal.proposed.clone()),
+            parent_id: category.parent_id,
+        };
+        let category_id = category.id;
+        self.suggestions.retain(|suggestion| suggestion.id != id);
+        self.apply = data::fetch_in(
+            window,
+            cx,
+            move |core| {
+                core.categories.update(category_id, &draft).map_err(UiError::from)?;
+                core.suggestions.accept(id).map_err(UiError::from)
+            },
+            move |this, result, window, cx| {
+                match result {
+                    Ok(()) => {
+                        AppState::update(cx, |state, cx| state.invalidate_categorization(cx));
+                        offer_recheck(category_id, cx);
+                    }
+                    Err(err) => Toast::error(err.to_string()).show(window, cx),
+                }
+                this.refresh(cx);
+            },
+        );
+        cx.notify();
+    }
+
+    fn render_describe(
+        &self,
+        id: i64,
+        proposal: &DescribeProposal,
+        paths: &HashMap<CategoryId, String>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let Some(path) = paths.get(&proposal.category_id).cloned() else {
+            return div().into_any_element();
+        };
+        let current = proposal.current.clone().unwrap_or_else(|| "No description".to_string());
+        let button = |kind: &str| ElementId::Name(SharedString::from(format!("{kind}-suggestion-{id}")));
+        let (apply, edit) = (proposal.clone(), proposal.clone());
+
+        suggestion_row(cx)
+            .child(
+                h_flex()
+                    .gap_3()
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_2()
+                            .child(div().truncate().text_sm().font_medium().child(path))
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(moved_line(proposal)),
+                            ),
+                    )
+                    .child(
+                        Button::new(button("apply"))
+                            .primary()
+                            .xsmall()
+                            .label("Apply")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.apply_description(id, &apply, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new(button("edit"))
+                            .outline()
+                            .xsmall()
+                            .label("Edit…")
+                            .on_click(move |_, window, cx| edit_description(id, &edit, window, cx)),
+                    )
+                    .child(
+                        Button::new(button("dismiss"))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::X)
+                            .tooltip("Dismiss")
+                            .on_click(cx.listener(move |this, _, window, cx| this.dismiss(id, window, cx))),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .text_xs()
+                    .child(div().flex_shrink_0().w_16().text_color(muted).child("Now"))
+                    .child(div().flex_1().min_w_0().text_color(muted).child(current)),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .text_xs()
+                    .child(div().flex_shrink_0().w_16().text_color(muted).child("Suggested"))
+                    .child(div().flex_1().min_w_0().child(proposal.proposed.clone())),
+            )
+            .into_any_element()
     }
 
     fn render_new(
@@ -221,6 +348,31 @@ impl TaxonomySuggestions {
     }
 }
 
+/// Opens the edit dialog with the proposed description in place; once saved, marks the suggestion
+/// accepted.
+fn edit_description(id: i64, proposal: &DescribeProposal, window: &mut Window, cx: &mut App) {
+    let Some(mut category) = AppState::read(cx)
+        .categories
+        .iter()
+        .find(|category| category.id == proposal.category_id)
+        .cloned()
+    else {
+        return;
+    };
+    category.description = Some(proposal.proposed.clone());
+    let data = EditCategoryData::from(category).on_saved(move |cx| {
+        let core = Core::get(cx);
+        cx.background_executor()
+            .spawn(async move {
+                if let Err(err) = core.suggestions.accept(id) {
+                    tracing::warn!(error = %err, "could not mark the suggestion accepted");
+                }
+            })
+            .detach();
+    });
+    dialogs::open::<EditCategoryDialog>(data, window, cx);
+}
+
 /// Opens the add-category dialog filled in from `proposal`; once the category exists, marks the
 /// suggestion accepted and offers to label its activities.
 fn create_category(id: i64, proposal: &NewCategoryProposal, window: &mut Window, cx: &mut App) {
@@ -258,25 +410,39 @@ impl Render for TaxonomySuggestions {
             return div().into_any_element();
         }
         let paths = category_paths(&AppState::read(cx).categories);
-        let rows: Vec<AnyElement> = self
-            .suggestions
-            .clone()
-            .iter()
-            .filter_map(|view| match &view.suggestion {
-                TaxonomySuggestion::New(proposal) => Some(self.render_new(view.id, proposal, &paths, cx)),
-                _ => None,
-            })
-            .collect();
-        if rows.is_empty() {
-            return div().into_any_element();
+        let mut new_rows: Vec<AnyElement> = Vec::new();
+        let mut describe_rows: Vec<AnyElement> = Vec::new();
+        for view in self.suggestions.clone() {
+            match &view.suggestion {
+                TaxonomySuggestion::New(proposal) => new_rows.push(self.render_new(view.id, proposal, &paths, cx)),
+                TaxonomySuggestion::Describe(proposal) => {
+                    describe_rows.push(self.render_describe(view.id, proposal, &paths, cx))
+                }
+                TaxonomySuggestion::Merge(_) => {}
+            }
         }
         v_flex()
-            .child(SuggestionCard::new(
-                "Suggested categories",
-                "From activity the AI could not file under any category. Creating one does not file \
-                 anything until you say so.",
-            )
-            .children(rows))
+            .gap_3()
+            .when(!new_rows.is_empty(), |this| {
+                this.child(
+                    SuggestionCard::new(
+                        "Suggested categories",
+                        "From activity the AI could not file under any category. Creating one does \
+                         not file anything until you say so.",
+                    )
+                    .children(new_rows),
+                )
+            })
+            .when(!describe_rows.is_empty(), |this| {
+                this.child(
+                    SuggestionCard::new(
+                        "Sharper descriptions",
+                        "The AI files by name and description, and keeps filing activities here that \
+                         you move elsewhere. A clearer description helps it.",
+                    )
+                    .children(describe_rows),
+                )
+            })
             .into_any_element()
     }
 }
@@ -284,6 +450,18 @@ impl Render for TaxonomySuggestions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_moved_line_counts_labels() {
+        let proposal = DescribeProposal {
+            category_id: CategoryId(1),
+            current: None,
+            proposed: "Sharper.".into(),
+            corrected: 5,
+            reviewed: 12,
+        };
+        assert_eq!(moved_line(&proposal), "You moved 5 of its 12 AI labels elsewhere lately.");
+    }
 
     #[test]
     fn an_unnamed_group_is_called_after_its_first_title() {

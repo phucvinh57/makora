@@ -12,6 +12,15 @@ use crate::shared::ids::{ActivityId, CategoryId};
 pub const SAME_GROUP_OVERLAP: f64 = 0.5;
 /// At most this many clusters are named per generation, to bound what it costs.
 pub const MAX_NAMED_PER_RUN: usize = 5;
+/// A category's description is questioned once the user has moved at least this many of its AI
+/// labels out of it...
+pub const DESCRIBE_MIN_MOVED: u32 = 5;
+/// ...and they are at least this share of the labels the user reviewed.
+pub const DESCRIBE_MIN_SHARE: f64 = 0.3;
+/// At most this many descriptions are proposed per generation.
+pub const MAX_DESCRIBED_PER_RUN: usize = 3;
+/// How long a dismissed description suggestion keeps its category from being questioned again.
+pub const DESCRIBE_QUIET_DAYS: i64 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SuggestionKind {
@@ -130,6 +139,45 @@ impl TaxonomySuggestion {
             SuggestionKind::Merge => Self::Merge(serde_json::from_str(payload)?),
         })
     }
+}
+
+/// How the user answered the AI labels of one category: kept them there, moved them to another
+/// category, or rejected them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CategoryFeedback {
+    pub category_id: CategoryId,
+    pub confirmed: u32,
+    pub corrected: u32,
+    pub rejected: u32,
+}
+
+impl CategoryFeedback {
+    pub fn moved(&self) -> u32 {
+        self.corrected + self.rejected
+    }
+
+    pub fn reviewed(&self) -> u32 {
+        self.confirmed + self.moved()
+    }
+
+    /// Whether the model gets this category wrong often enough that its description needs work.
+    pub fn needs_description(&self) -> bool {
+        let moved = self.moved();
+        moved >= DESCRIBE_MIN_MOVED && f64::from(moved) >= DESCRIBE_MIN_SHARE * f64::from(self.reviewed())
+    }
+}
+
+/// The categories whose description to question, most moved first, leaving out `quiet` ones:
+/// those with a pending or recently dismissed description suggestion.
+pub fn pick_to_describe(feedback: &[CategoryFeedback], quiet: &HashSet<CategoryId>) -> Vec<CategoryFeedback> {
+    let mut picked: Vec<CategoryFeedback> = feedback
+        .iter()
+        .filter(|entry| entry.needs_description() && !quiet.contains(&entry.category_id))
+        .copied()
+        .collect();
+    picked.sort_by(|a, b| b.moved().cmp(&a.moved()).then(a.category_id.cmp(&b.category_id)));
+    picked.truncate(MAX_DESCRIBED_PER_RUN);
+    picked
 }
 
 /// The share of the smaller of `a` and `b` that is in both; 0 when either is empty.
@@ -272,6 +320,38 @@ mod tests {
         let plans = reconcile_new(&[cluster(&[1, 2]), cluster(&[3, 4])], &[(7, &pending)], &[]);
         assert_eq!(plans[0], ClusterPlan::Update { cluster: 0, id: 7, name: false });
         assert_eq!(plans[1], ClusterPlan::Insert { cluster: 1 });
+    }
+
+    fn feedback(id: i64, confirmed: u32, corrected: u32, rejected: u32) -> CategoryFeedback {
+        CategoryFeedback {
+            category_id: CategoryId(id),
+            confirmed,
+            corrected,
+            rejected,
+        }
+    }
+
+    #[test]
+    fn a_description_is_questioned_at_five_moved_and_thirty_percent() {
+        assert!(feedback(1, 10, 3, 2).needs_description());
+        assert!(!feedback(1, 10, 2, 2).needs_description());
+        assert!(!feedback(1, 12, 3, 2).needs_description());
+        assert!(feedback(1, 0, 0, 5).needs_description());
+    }
+
+    #[test]
+    fn the_most_moved_categories_are_picked_unless_quiet() {
+        let all = [
+            feedback(1, 0, 5, 0),
+            feedback(2, 0, 9, 0),
+            feedback(3, 0, 7, 0),
+            feedback(4, 0, 6, 0),
+            feedback(5, 0, 8, 0),
+            feedback(6, 100, 5, 0),
+        ];
+        let quiet = HashSet::from([CategoryId(5)]);
+        let picked: Vec<i64> = pick_to_describe(&all, &quiet).iter().map(|entry| entry.category_id.0).collect();
+        assert_eq!(picked, [2, 3, 4]);
     }
 
     #[test]

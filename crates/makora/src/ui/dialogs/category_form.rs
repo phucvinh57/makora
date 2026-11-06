@@ -33,10 +33,12 @@ const NO_PARENT: &str = "none";
 
 /// Called with the category just created, in the main window, once `AppState::categories` lists it.
 pub type OnCreated = Rc<dyn Fn(&Category, &mut Window, &mut App)>;
+/// Called once an edited category is saved.
+pub type OnSaved = Rc<dyn Fn(&mut App)>;
 
 pub enum Submit {
     Create { on_created: Option<OnCreated> },
-    Update(CategoryId),
+    Update { id: CategoryId, on_saved: Option<OnSaved> },
 }
 
 pub struct CategoryForm {
@@ -154,7 +156,7 @@ impl CategoryForm {
             }),
         ];
         let saved_meaning = match &submit {
-            Submit::Update(id) => AppState::read(cx)
+            Submit::Update { id, .. } => AppState::read(cx)
                 .categories
                 .iter()
                 .find(|category| category.id == *id)
@@ -190,7 +192,7 @@ impl CategoryForm {
 
     fn title(&self, cx: &App) -> String {
         match &self.submit {
-            Submit::Update(_) => "Edit category".into(),
+            Submit::Update { .. } => "Edit category".into(),
             Submit::Create { .. } => {
                 let path = self
                     .parent_id
@@ -222,7 +224,7 @@ impl CategoryForm {
         self.pending = true;
         self.error = None;
         let update = match &self.submit {
-            Submit::Update(id) => Some(*id),
+            Submit::Update { id, .. } => Some(*id),
             Submit::Create { .. } => None,
         };
         let meaning_changed = self
@@ -245,11 +247,14 @@ impl CategoryForm {
                         if meaning_changed {
                             offer_recheck(saved.id, cx);
                         }
-                        if let Submit::Create {
-                            on_created: Some(on_created),
-                        } = &this.submit
-                        {
-                            when_listed(saved, on_created.clone(), cx);
+                        match &this.submit {
+                            Submit::Create {
+                                on_created: Some(on_created),
+                            } => when_listed(saved, on_created.clone(), cx),
+                            Submit::Update {
+                                on_saved: Some(on_saved), ..
+                            } => on_saved(cx),
+                            _ => {}
                         }
                     }
                     Err(err) => this.error = Some(err.to_string()),
@@ -266,7 +271,7 @@ impl Render for CategoryForm {
         let danger = cx.theme().danger;
         let can_submit = self.draft(cx).is_some() && !self.pending;
         let submit_label = match self.submit {
-            Submit::Update(_) => "Save",
+            Submit::Update { .. } => "Save",
             Submit::Create { .. } => "Add category",
         };
 

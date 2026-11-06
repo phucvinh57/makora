@@ -1,25 +1,27 @@
 //! Taxonomy suggestions: generating them at the end of an AI run, and listing, accepting and
 //! dismissing them from the UI. Generation clusters the activities the model found no category
-//! for and asks the model to name each new group.
+//! for and asks the model to name each new group, and asks for a sharper description of each
+//! category whose AI labels the user keeps moving out.
 
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
-use chrono::Utc;
+use chrono::{DateTime, Duration, Utc};
 use diesel::Connection;
 use tracing::{info, warn};
 
 use crate::categorization::domain::clustering::{cluster, samples, ClusterThresholds, Point};
 use crate::categorization::domain::retrieval::SourceRef;
 use crate::categorization::domain::suggestions::{
-    reconcile_new, ClusterPlan, NewCategoryProposal, SuggestionKind, SuggestionStatus, TaxonomySuggestion, MAX_NAMED_PER_RUN,
+    pick_to_describe, reconcile_new, CategoryFeedback, ClusterPlan, DescribeProposal, NewCategoryProposal, SuggestionKind,
+    SuggestionStatus, TaxonomySuggestion, DESCRIBE_QUIET_DAYS, MAX_NAMED_PER_RUN,
 };
-use crate::categorization::ports::{ActivityText, LlmSpec, Suggester, UsageMeter};
+use crate::categorization::ports::{ActivityText, LlmSpec, MovedActivity, Suggester, UsageMeter};
 use crate::db::models::{NewTaxonomySuggestionRow, TaxonomySuggestionRow};
 use crate::db::taxonomy_suggestions::TaxonomySuggestionsRepo;
 use crate::db::Db;
 use crate::domain::types::Category;
-use crate::reporting::suggestions::SuggestionsReportRepo;
+use crate::reporting::suggestions::{SampleRow, SuggestionsReportRepo};
 use crate::reporting::Window;
 use crate::shared::ids::{ActivityId, CategoryId};
 use crate::shared::time;
@@ -31,6 +33,10 @@ use super::embeddings::decode;
 const NAMING_SAMPLES: usize = 5;
 /// How many titles a suggestion shows.
 const SHOWN_TITLES: usize = 3;
+/// How many kept and how many moved activities stand for a category when the model describes it.
+const DESCRIBE_SAMPLES: i64 = 5;
+/// How far back the user's answers count toward a description suggestion.
+const FEEDBACK_DAYS: i64 = 30;
 
 /// An activity the model found no category for, ready to cluster.
 #[derive(Debug, Clone)]
@@ -44,6 +50,15 @@ pub struct UnlabeledActivity {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SuggestionView {
     pub id: i64,
+    pub suggestion: TaxonomySuggestion,
+}
+
+/// A stored suggestion, as generation matches against it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredSuggestion {
+    pub id: i64,
+    pub status: SuggestionStatus,
+    pub created_at: Option<DateTime<Utc>>,
     pub suggestion: TaxonomySuggestion,
 }
 
@@ -61,6 +76,8 @@ pub trait TaxonomySuggestionSvc: Send + Sync {
     /// Marks a "new category" suggestion accepted once its category exists, and returns its
     /// members still unfiled, for a run over them.
     fn accept_new(&self, id: i64) -> Result<Vec<ActivityId>>;
+    /// Marks a suggestion accepted once the change it proposed is made.
+    fn accept(&self, id: i64) -> Result<()>;
     fn dismiss(&self, id: i64) -> Result<()>;
     /// How many still-unfiled activities the model found no category for.
     fn count_unlabeled(&self) -> Result<usize>;
@@ -69,7 +86,11 @@ pub trait TaxonomySuggestionSvc: Send + Sync {
     /// `embedding_model`.
     fn get_unlabeled(&self, embedding_model: &str) -> Result<Vec<UnlabeledActivity>>;
     /// The pending and the dismissed suggestions, for generation to match against.
-    fn get_for_generation(&self) -> Result<Vec<(i64, SuggestionStatus, TaxonomySuggestion)>>;
+    fn get_for_generation(&self) -> Result<Vec<StoredSuggestion>>;
+    /// Per category, how the user answered the AI labels of activities seen since `since`.
+    fn get_feedback(&self, since: DateTime<Utc>) -> Result<Vec<CategoryFeedback>>;
+    /// What the user kept in `category` and what they moved out of it since `since`.
+    fn get_describe_samples(&self, category: CategoryId, since: DateTime<Utc>) -> Result<(Vec<ActivityText>, Vec<MovedActivity>)>;
     /// Writes what generation decided, linked to `run_id`. Returns how many are new.
     fn save(&self, writes: &[SuggestionWrite], run_id: Option<i64>) -> Result<usize>;
 }
@@ -155,6 +176,15 @@ impl TaxonomySuggestionSvc for SqliteTaxonomySuggestions {
         .map_err(|err: diesel::result::Error| err.into())
     }
 
+    fn accept(&self, id: i64) -> Result<()> {
+        self.db.write().set_status(
+            id,
+            SuggestionStatus::Pending.as_str(),
+            SuggestionStatus::Accepted.as_str(),
+        )?;
+        Ok(())
+    }
+
     fn dismiss(&self, id: i64) -> Result<()> {
         self.db.write().set_status(
             id,
@@ -180,28 +210,62 @@ impl TaxonomySuggestionSvc for SqliteTaxonomySuggestions {
                         vector: decode(&row.vector)?,
                         seconds: row.total_seconds,
                     },
-                    text: ActivityText {
-                        app_name: row.app_name,
-                        url: row.url.as_deref().and_then(url_location),
-                        title: row.title,
-                        source: SourceRef {
-                            kind: row.source_kind,
-                            key: row.source_key,
-                            path: row.path,
-                        },
-                    },
+                    text: activity_text(row.app_name, row.url, row.title, row.source_kind, row.source_key, row.path),
                 })
             })
             .collect()
     }
 
-    fn get_for_generation(&self) -> Result<Vec<(i64, SuggestionStatus, TaxonomySuggestion)>> {
+    fn get_for_generation(&self) -> Result<Vec<StoredSuggestion>> {
         let mut conn = self.db.read()?;
         let rows = conn.get_list(&[SuggestionStatus::Pending.as_str(), SuggestionStatus::Dismissed.as_str()])?;
         Ok(rows
             .iter()
-            .filter_map(|row| decode_row(row).map(|(status, suggestion)| (row.id, status, suggestion)))
+            .filter_map(|row| {
+                decode_row(row).map(|(status, suggestion)| StoredSuggestion {
+                    id: row.id,
+                    status,
+                    created_at: time::parse_db(&row.created_at),
+                    suggestion,
+                })
+            })
             .collect())
+    }
+
+    fn get_feedback(&self, since: DateTime<Utc>) -> Result<Vec<CategoryFeedback>> {
+        let mut conn = self.db.read()?;
+        let count = |value: i64| u32::try_from(value).unwrap_or(0);
+        Ok(conn
+            .get_feedback_by_category(&time::to_db(since))?
+            .into_iter()
+            .map(|row| CategoryFeedback {
+                category_id: row.category_id.into(),
+                confirmed: count(row.confirmed),
+                corrected: count(row.corrected),
+                rejected: count(row.rejected),
+            })
+            .collect())
+    }
+
+    fn get_describe_samples(&self, category: CategoryId, since: DateTime<Utc>) -> Result<(Vec<ActivityText>, Vec<MovedActivity>)> {
+        let mut conn = self.db.read()?;
+        let since = time::to_db(since);
+        let (kept, moved) = (*conn).transaction(|conn| {
+            let kept = conn.get_kept_samples(category.into(), DESCRIBE_SAMPLES)?;
+            let moved = conn.get_moved_out_samples(category.into(), &since, DESCRIBE_SAMPLES)?;
+            diesel::QueryResult::Ok((kept, moved))
+        })?;
+        let text = |row: SampleRow| activity_text(row.app_name, row.url, row.title, row.source_kind, row.source_key, row.path);
+        Ok((
+            kept.into_iter().map(text).collect(),
+            moved
+                .into_iter()
+                .map(|row| {
+                    let to = row.moved_to.map(CategoryId);
+                    MovedActivity { text: text(row), to }
+                })
+                .collect(),
+        ))
     }
 
     fn save(&self, writes: &[SuggestionWrite], run_id: Option<i64>) -> Result<usize> {
@@ -235,9 +299,26 @@ impl TaxonomySuggestionSvc for SqliteTaxonomySuggestions {
     }
 }
 
-/// Clusters the activities the model found no category for and decides which groups to
-/// propose, naming the new ones with `llm`. A group the model cannot name is still proposed,
-/// unnamed. `cancelled` is checked before each request.
+fn activity_text(
+    app_name: String,
+    url: Option<String>,
+    title: String,
+    kind: crate::tracking::domain::source_key::KeyKind,
+    key: String,
+    path: String,
+) -> ActivityText {
+    ActivityText {
+        app_name,
+        url: url.as_deref().and_then(url_location),
+        title,
+        source: SourceRef { kind, key, path },
+    }
+}
+
+/// Decides which suggestions to make, asking `llm` for names and descriptions: new categories
+/// for the groups of activities the model found no category for, and sharper descriptions for
+/// the categories the user keeps moving activities out of. `cancelled` is checked before each
+/// request.
 #[allow(clippy::too_many_arguments)]
 pub fn generate(
     suggestions: &dyn TaxonomySuggestionSvc,
@@ -245,6 +326,25 @@ pub fn generate(
     llm: &LlmSpec,
     embedding_model: &str,
     taxonomy: &[Category],
+    meter: &UsageMeter,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<SuggestionWrite>> {
+    let existing = suggestions.get_for_generation()?;
+    let mut writes = propose_new(suggestions, suggester, llm, embedding_model, taxonomy, &existing, meter, cancelled)?;
+    writes.extend(propose_descriptions(suggestions, suggester, llm, taxonomy, &existing, meter, cancelled)?);
+    Ok(writes)
+}
+
+/// Clusters the activities the model found no category for and decides which groups to
+/// propose, naming the new ones. A group the model cannot name is still proposed, unnamed.
+#[allow(clippy::too_many_arguments)]
+fn propose_new(
+    suggestions: &dyn TaxonomySuggestionSvc,
+    suggester: &dyn Suggester,
+    llm: &LlmSpec,
+    embedding_model: &str,
+    taxonomy: &[Category],
+    existing: &[StoredSuggestion],
     meter: &UsageMeter,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Vec<SuggestionWrite>> {
@@ -257,13 +357,12 @@ pub fn generate(
     let texts: HashMap<ActivityId, &ActivityText> =
         unlabeled.iter().map(|activity| (activity.point.id, &activity.text)).collect();
 
-    let existing = suggestions.get_for_generation()?;
     let mut pending: Vec<(i64, &NewCategoryProposal)> = Vec::new();
     let mut dismissed: Vec<&NewCategoryProposal> = Vec::new();
-    for (id, status, suggestion) in &existing {
-        if let TaxonomySuggestion::New(proposal) = suggestion {
-            match status {
-                SuggestionStatus::Pending => pending.push((*id, proposal)),
+    for stored in existing {
+        if let TaxonomySuggestion::New(proposal) = &stored.suggestion {
+            match stored.status {
+                SuggestionStatus::Pending => pending.push((stored.id, proposal)),
                 SuggestionStatus::Dismissed => dismissed.push(proposal),
                 SuggestionStatus::Accepted => {}
             }
@@ -317,6 +416,61 @@ pub fn generate(
     Ok(writes)
 }
 
+/// Asks for a sharper description of each category whose AI labels the user moved out often
+/// enough lately, unless one is pending or was dismissed lately.
+fn propose_descriptions(
+    suggestions: &dyn TaxonomySuggestionSvc,
+    suggester: &dyn Suggester,
+    llm: &LlmSpec,
+    taxonomy: &[Category],
+    existing: &[StoredSuggestion],
+    meter: &UsageMeter,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Vec<SuggestionWrite>> {
+    let now = Utc::now();
+    let quiet_since = now - Duration::days(DESCRIBE_QUIET_DAYS);
+    let quiet: HashSet<CategoryId> = existing
+        .iter()
+        .filter_map(|stored| match &stored.suggestion {
+            TaxonomySuggestion::Describe(proposal) => {
+                let recent = stored.created_at.is_none_or(|at| at >= quiet_since);
+                let blocks = match stored.status {
+                    SuggestionStatus::Pending => true,
+                    SuggestionStatus::Dismissed => recent,
+                    SuggestionStatus::Accepted => false,
+                };
+                blocks.then_some(proposal.category_id)
+            }
+            _ => None,
+        })
+        .collect();
+    let since = now - Duration::days(FEEDBACK_DAYS);
+    let mut writes = Vec::new();
+    for feedback in pick_to_describe(&suggestions.get_feedback(since)?, &quiet) {
+        if cancelled() {
+            break;
+        }
+        let Some(category) = taxonomy.iter().find(|category| category.id == feedback.category_id) else {
+            continue;
+        };
+        let (kept, moved) = suggestions.get_describe_samples(category.id, since)?;
+        match suggester.describe_category(llm, taxonomy, category, &kept, &moved, meter) {
+            Ok(Some(proposed)) if Some(&proposed) != category.description.as_ref() => {
+                writes.push(SuggestionWrite::Insert(TaxonomySuggestion::Describe(DescribeProposal {
+                    category_id: category.id,
+                    current: category.description.clone(),
+                    proposed,
+                    corrected: feedback.moved(),
+                    reviewed: feedback.reviewed(),
+                })));
+            }
+            Ok(_) => info!(category = %category.id, "the model proposed no new description"),
+            Err(err) => warn!(error = format!("{err:#}"), category = %category.id, "describing a category failed"),
+        }
+    }
+    Ok(writes)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -330,7 +484,8 @@ mod tests {
     #[derive(Default)]
     struct Store {
         unlabeled: Vec<UnlabeledActivity>,
-        existing: Vec<(i64, SuggestionStatus, TaxonomySuggestion)>,
+        existing: Vec<StoredSuggestion>,
+        feedback: Vec<CategoryFeedback>,
     }
 
     impl TaxonomySuggestionSvc for Store {
@@ -338,6 +493,9 @@ mod tests {
             unimplemented!()
         }
         fn accept_new(&self, _: i64) -> Result<Vec<ActivityId>> {
+            unimplemented!()
+        }
+        fn accept(&self, _: i64) -> Result<()> {
             unimplemented!()
         }
         fn dismiss(&self, _: i64) -> Result<()> {
@@ -349,15 +507,22 @@ mod tests {
         fn get_unlabeled(&self, _: &str) -> Result<Vec<UnlabeledActivity>> {
             Ok(self.unlabeled.clone())
         }
-        fn get_for_generation(&self) -> Result<Vec<(i64, SuggestionStatus, TaxonomySuggestion)>> {
+        fn get_for_generation(&self) -> Result<Vec<StoredSuggestion>> {
             Ok(self.existing.clone())
+        }
+        fn get_feedback(&self, _: DateTime<Utc>) -> Result<Vec<CategoryFeedback>> {
+            Ok(self.feedback.clone())
+        }
+        fn get_describe_samples(&self, _: CategoryId, _: DateTime<Utc>) -> Result<(Vec<ActivityText>, Vec<MovedActivity>)> {
+            Ok((vec![activity(1, 1.).text], vec![MovedActivity { text: activity(2, 1.).text, to: None }]))
         }
         fn save(&self, _: &[SuggestionWrite], _: Option<i64>) -> Result<usize> {
             unimplemented!()
         }
     }
 
-    /// Names every group "Games", and keeps the titles it was shown.
+    /// Names every group "Games" and describes every category as "Sharper.", and keeps the
+    /// titles it was shown.
     #[derive(Default)]
     struct Namer(Mutex<Vec<Vec<String>>>);
 
@@ -369,6 +534,20 @@ mod tests {
                 description: Some("Playing games.".into()),
                 parent: None,
             }))
+        }
+
+        fn describe_category(
+            &self,
+            _: &LlmSpec,
+            _: &[Category],
+            _: &Category,
+            kept: &[ActivityText],
+            moved: &[MovedActivity],
+            _: &UsageMeter,
+        ) -> Result<Option<String>> {
+            let titles = kept.iter().chain(moved.iter().map(|activity| &activity.text));
+            lock(&self.0).push(titles.map(|sample| sample.title.clone()).collect());
+            Ok(Some("Sharper.".into()))
         }
     }
 
@@ -401,7 +580,44 @@ mod tests {
     }
 
     fn run(store: &Store, namer: &Namer) -> Vec<SuggestionWrite> {
-        generate(store, namer, &llm(), "e", &[], &UsageMeter::default(), &|| false).unwrap()
+        generate(store, namer, &llm(), "e", &taxonomy(), &UsageMeter::default(), &|| false).unwrap()
+    }
+
+    fn taxonomy() -> Vec<Category> {
+        [(1, "Work"), (2, "Fun")]
+            .into_iter()
+            .map(|(id, name)| Category {
+                id: CategoryId(id),
+                name: name.into(),
+                color: String::new(),
+                parent_id: None,
+                description: Some("Vague.".into()),
+            })
+            .collect()
+    }
+
+    fn describe(category: i64, status: SuggestionStatus, days_ago: i64) -> StoredSuggestion {
+        StoredSuggestion {
+            id: category * 100,
+            status,
+            created_at: Some(Utc::now() - Duration::days(days_ago)),
+            suggestion: TaxonomySuggestion::Describe(DescribeProposal {
+                category_id: CategoryId(category),
+                current: None,
+                proposed: "Earlier.".into(),
+                corrected: 5,
+                reviewed: 5,
+            }),
+        }
+    }
+
+    fn moved_out(category: i64) -> CategoryFeedback {
+        CategoryFeedback {
+            category_id: CategoryId(category),
+            confirmed: 2,
+            corrected: 4,
+            rejected: 1,
+        }
     }
 
     #[test]
@@ -442,7 +658,13 @@ mod tests {
         };
         let store = Store {
             unlabeled: (1..=6).map(|id| activity(id, 1.)).collect(),
-            existing: vec![(9, SuggestionStatus::Pending, TaxonomySuggestion::New(earlier))],
+            existing: vec![StoredSuggestion {
+                id: 9,
+                status: SuggestionStatus::Pending,
+                created_at: None,
+                suggestion: TaxonomySuggestion::New(earlier),
+            }],
+            ..Store::default()
         };
         let namer = Namer::default();
         let writes = run(&store, &namer);
@@ -452,5 +674,42 @@ mod tests {
         assert_eq!(proposal.name.as_deref(), Some("Play"));
         assert_eq!(proposal.members.len(), 6);
         assert!(lock(&namer.0).is_empty());
+    }
+
+    #[test]
+    fn a_category_the_user_keeps_correcting_gets_a_sharper_description() {
+        let store = Store {
+            feedback: vec![moved_out(1)],
+            ..Store::default()
+        };
+        let namer = Namer::default();
+        let writes = run(&store, &namer);
+        let [SuggestionWrite::Insert(TaxonomySuggestion::Describe(proposal))] = writes.as_slice() else {
+            panic!("expected one description: {writes:?}");
+        };
+        assert_eq!(proposal.category_id, CategoryId(1));
+        assert_eq!((proposal.current.as_deref(), proposal.proposed.as_str()), (Some("Vague."), "Sharper."));
+        assert_eq!((proposal.corrected, proposal.reviewed), (5, 7));
+        assert_eq!(lock(&namer.0)[0], ["game 1", "game 2"]);
+    }
+
+    #[test]
+    fn a_pending_or_lately_dismissed_description_holds_off_another() {
+        let store = Store {
+            feedback: vec![moved_out(1), moved_out(2)],
+            existing: vec![
+                describe(1, SuggestionStatus::Pending, 60),
+                describe(2, SuggestionStatus::Dismissed, 10),
+            ],
+            ..Store::default()
+        };
+        assert!(run(&store, &Namer::default()).is_empty());
+
+        let store = Store {
+            feedback: vec![moved_out(2)],
+            existing: vec![describe(2, SuggestionStatus::Dismissed, 40)],
+            ..Store::default()
+        };
+        assert_eq!(run(&store, &Namer::default()).len(), 1);
     }
 }

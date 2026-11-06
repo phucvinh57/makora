@@ -142,7 +142,7 @@ fn category_card(
                                 .icon(IconName::Pencil)
                                 .tooltip("Edit category")
                                 .on_click(move |_, window, cx| {
-                                    dialogs::open::<EditCategoryDialog>(edit.clone(), window, cx)
+                                    dialogs::open::<EditCategoryDialog>(edit.clone().into(), window, cx)
                                 }),
                         )
                         .child(

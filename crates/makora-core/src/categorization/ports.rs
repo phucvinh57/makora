@@ -87,6 +87,26 @@ pub trait Suggester: Send + Sync {
         samples: &[ActivityText],
         meter: &UsageMeter,
     ) -> Result<Option<ClusterName>>;
+
+    /// A sharper description for `category`, from activities the user `kept` in it and those
+    /// they `moved` out. `None` when the model's answer is unusable.
+    fn describe_category(
+        &self,
+        llm: &LlmSpec,
+        taxonomy: &[Category],
+        category: &Category,
+        kept: &[ActivityText],
+        moved: &[MovedActivity],
+        meter: &UsageMeter,
+    ) -> Result<Option<String>>;
+}
+
+/// An activity the user moved out of a category the model filed it under, and the category they
+/// put it in; `None` when they left it uncategorized.
+#[derive(Debug, Clone)]
+pub struct MovedActivity {
+    pub text: ActivityText,
+    pub to: Option<CategoryId>,
 }
 
 /// The tokens one request to a language model took. `cached_input` is the part of `input` served
