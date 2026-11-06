@@ -15,11 +15,10 @@ use gpui_kit::{
     SharedString, Styled, Subscription, Task, Window, div, px,
 };
 use makora_lib::ai::llm::ModelRole;
-use makora_lib::categorization::application::ai_run::AiRunOutcome;
-use makora_lib::categorization::domain::usage::RunTrigger;
+use makora_lib::categorization::application::ai_run::{AiRunOutcome, RunMode, RunRequest};
 use makora_lib::settings::{AUTO_CATEGORIZE_HOURS_OPTIONS, AiSettings, ProviderConfig, Settings};
 
-use crate::ui::app_state::{AppState, CategorizeTask};
+use crate::ui::app_state::AppState;
 use crate::ui::data;
 use crate::ui::dialogs::add_model::{AddModelData, AddModelDialog};
 use crate::ui::dialogs::reset_categorization::ResetCategorizationDialog;
@@ -113,7 +112,8 @@ pub fn describe_next_run(next: DateTime<Utc>, now: DateTime<Utc>, running: bool)
 }
 
 /// The toast after a run: its title and what it did.
-pub fn run_summary(outcome: &AiRunOutcome, recheck: bool) -> (&'static str, String) {
+pub fn run_summary(outcome: &AiRunOutcome, mode: RunMode) -> (&'static str, String) {
+    let recheck = mode == RunMode::Recheck;
     let title = if outcome.stopped {
         "AI categorization stopped"
     } else if recheck {
@@ -261,8 +261,6 @@ pub struct AiSection {
     pending_review: Option<i64>,
     setting_model: bool,
     /// While the run call is out: whether it is a re-check.
-    run_pending: Option<bool>,
-    run_error: Option<String>,
     stopping: bool,
     saving_period: bool,
     period_error: Option<String>,
@@ -287,7 +285,6 @@ pub struct AiSection {
     installed_load: Task<()>,
     next_run_load: Task<()>,
     models_load: Task<()>,
-    run: Task<()>,
     _polls: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -354,8 +351,6 @@ impl AiSection {
             pending_provider: None,
             pending_review: None,
             setting_model: false,
-            run_pending: None,
-            run_error: None,
             stopping: false,
             saving_period: false,
             period_error: None,
@@ -378,7 +373,6 @@ impl AiSection {
             installed_load: Task::ready(()),
             next_run_load: Task::ready(()),
             models_load: Task::ready(()),
-            run: Task::ready(()),
             _polls: polls,
             _subscriptions: subscriptions,
         };
@@ -600,7 +594,7 @@ impl AiSection {
     }
 
     fn running(&self, cx: &App) -> bool {
-        self.run_pending.is_some() || AppState::read(cx).categorize.running
+        AppState::read(cx).categorize.running
     }
 
     fn downloading(cx: &App) -> bool {
@@ -784,45 +778,8 @@ impl AiSection {
         cx.notify();
     }
 
-    fn run(&mut self, recheck: bool, window: &mut Window, cx: &mut Context<Self>) {
-        self.run_pending = Some(recheck);
-        self.run_error = None;
-        AppState::update(cx, |state, cx| state.mark_categorize_started(recheck, cx));
-        let job = data::blocking(cx, move |core| {
-            let outcome = core
-                .runner
-                .run(recheck, RunTrigger::Manual)
-                .map_err(UiError::from);
-            (outcome, core.runner.status())
-        });
-        self.run = cx.spawn_in(window, async move |this, cx| {
-            let result = job.await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.run_pending = None;
-                let status = match result {
-                    Some((Ok(outcome), status)) => {
-                        let (title, description) = run_summary(&outcome, recheck);
-                        Toast::success(title)
-                            .description(description)
-                            .show(window, cx);
-                        Some(status)
-                    }
-                    Some((Err(err), status)) => {
-                        this.run_error = Some(err.to_string());
-                        Some(status)
-                    }
-                    None => {
-                        this.run_error = Some("The run stopped unexpectedly.".into());
-                        None
-                    }
-                };
-                AppState::update(cx, |state, cx| {
-                    state.categorize = status.map_or_else(CategorizeTask::default, Into::into);
-                    state.invalidate_categorization(cx);
-                });
-                cx.notify();
-            });
-        });
+    fn run(&mut self, request: RunRequest, cx: &mut Context<Self>) {
+        AppState::update(cx, |state, cx| state.start_run(request, cx));
         cx.notify();
     }
 
@@ -956,11 +913,8 @@ impl Render for AiSection {
         let no_categories = state.has_no_categories();
         let disabled = self.models_disabled(cx);
         let running = self.running(cx);
-        let rechecking = running
-            && match self.run_pending {
-                Some(recheck) => recheck,
-                None => status.recheck,
-            };
+        let rechecking = running && status.mode == RunMode::Recheck;
+        let run_error = state.run_error.clone();
         let progress = (status.running && status.total > 0).then_some((status.done, status.total));
         let saved_provider = Self::saved_provider(cx);
         let shown_provider = self.shown_provider(cx);
@@ -1042,7 +996,7 @@ impl Render for AiSection {
                                 .label(run_label("Categorize", running && !rechecking))
                                 .disabled(!can_run)
                                 .on_click(
-                                    cx.listener(|this, _, window, cx| this.run(false, window, cx)),
+                                    cx.listener(|this, _, _, cx| this.run(RunRequest::label(), cx)),
                                 ),
                         )
                         .when(running, |this| {
@@ -1064,7 +1018,7 @@ impl Render for AiSection {
                                          latest pins and rules",
                                 )
                                 .on_click(
-                                    cx.listener(|this, _, window, cx| this.run(true, window, cx)),
+                                    cx.listener(|this, _, _, cx| this.run(RunRequest::recheck(), cx)),
                                 ),
                         )
                         .child(div().flex_1())
@@ -1081,7 +1035,7 @@ impl Render for AiSection {
                 .when_some(blocker, |this, blocker| {
                     this.child(div().text_xs().text_color(muted).child(blocker))
                 })
-                .when_some(self.run_error.clone(), |this, error| {
+                .when_some(run_error, |this, error| {
                     this.child(div().text_xs().text_color(theme.danger).child(error))
                 }),
         )
@@ -1219,16 +1173,16 @@ mod tests {
             stopped: false,
             usage: RunUsage::default(),
         };
-        let (title, description) = run_summary(&outcome, false);
+        let (title, description) = run_summary(&outcome, RunMode::Label);
         assert_eq!(title, "AI categorization finished");
         assert!(description.starts_with("4 activities labeled, 1 left uncategorized."));
-        let (title, description) = run_summary(&outcome, true);
+        let (title, description) = run_summary(&outcome, RunMode::Recheck);
         assert_eq!(title, "AI labels re-checked");
         assert!(description.starts_with("2 labels changed, 1 cleared as uncertain."));
         let stopped = AiRunOutcome {
             stopped: true,
             ..outcome
         };
-        assert_eq!(run_summary(&stopped, true).0, "AI categorization stopped");
+        assert_eq!(run_summary(&stopped, RunMode::Recheck).0, "AI categorization stopped");
     }
 }

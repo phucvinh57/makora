@@ -12,7 +12,7 @@ use notify_rust::{Notification, NotificationResponse};
 use tracing::{info, warn};
 
 use crate::ai::llm;
-use crate::categorization::application::ai_run::AiRunError;
+use crate::categorization::application::ai_run::{AiRunError, RunMode, RunRequest};
 use crate::categorization::application::runner::CategorizationRunner;
 use crate::categorization::domain::usage::RunTrigger;
 use crate::domain::LabelingSvc;
@@ -134,7 +134,7 @@ impl ScheduledCategorization {
         if !matches!(self.categories.get_list(), Ok(list) if !list.is_empty()) {
             return;
         }
-        match self.labeling.get_activities_to_label(false) {
+        match self.labeling.get_activities_to_label(false, None) {
             Ok(pending) if pending.is_empty() => {
                 self.anchor.set(Utc::now());
                 return;
@@ -147,8 +147,8 @@ impl ScheduledCategorization {
         }
 
         info!(hours, "starting scheduled AI categorization");
-        self.events.emit(CoreEvent::CategorizeStarted { recheck: false });
-        match self.runner.run(false, RunTrigger::Scheduled) {
+        self.events.emit(CoreEvent::CategorizeStarted { mode: RunMode::Label });
+        match self.runner.run(&RunRequest::label(), RunTrigger::Scheduled) {
             Ok(outcome) => {
                 if outcome.labeled > 0 {
                     notify(self.events.clone(), outcome.labeled);

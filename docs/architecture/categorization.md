@@ -140,7 +140,7 @@ Accepting a suggestion is an ordinary `create` or `update`, so it is retroactive
 
 ## The AI run
 
-An AI run labels the unpinned activities no rule matches. A normal run takes those the model has never labeled; a **recheck** takes those whose suggestion is still active, to label them again. A rejected suggestion is never asked about again. The run shows the model, for each activity, the five filed activities most like it, so the model learns from how the person actually files things.
+An AI run labels the unpinned activities no rule matches. A run is asked for with a `RunRequest`: its `RunMode` and, for a **scoped run**, the activity ids it may take. A normal run (`Label`) takes those the model has never labeled; a **recheck** takes those whose suggestion is still active, to label them again. A scoped run takes only those of them among its ids, and does not count as the schedule's run. A rejected suggestion is never asked about again. The run shows the model, for each activity, the five filed activities most like it, so the model learns from how the person actually files things.
 
 ```mermaid
 sequenceDiagram

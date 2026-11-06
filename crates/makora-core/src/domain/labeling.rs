@@ -31,9 +31,10 @@ impl SqliteLabeling {
 }
 
 impl LabelingSvc for SqliteLabeling {
-    fn get_activities_to_label(&self, recheck: bool) -> Result<Vec<ActivitySample>> {
+    fn get_activities_to_label(&self, recheck: bool, only: Option<&[ActivityId]>) -> Result<Vec<ActivitySample>> {
+        let only = only.map(raw);
         let mut conn = self.db.read()?;
-        Ok(reporting::review::ReviewRepo::get_activities_to_label(&mut *conn, recheck)?
+        Ok(reporting::review::ReviewRepo::get_activities_to_label(&mut *conn, recheck, only.as_deref())?
             .into_iter()
             .map(sample_of)
             .collect())

@@ -7,7 +7,7 @@
 //! [`AiRunState`] also lets a window opened mid-run find out one is still going and resync
 //! its progress bar. Nothing here knows about the UI: progress is reported through a callback.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use chrono::Utc;
@@ -41,15 +41,70 @@ pub enum AiRunError {
 pub struct AiRunState {
     running: AtomicBool,
     cancel: AtomicBool,
-    recheck: AtomicBool,
+    mode: AtomicU8,
     done: AtomicUsize,
     total: AtomicUsize,
+}
+
+/// What a run asks the model about.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RunMode {
+    /// Activities the model has never labeled.
+    #[default]
+    Label,
+    /// Activities whose AI label the user has not confirmed, to label them again.
+    Recheck,
+}
+
+impl RunMode {
+    fn to_u8(self) -> u8 {
+        match self {
+            Self::Label => 0,
+            Self::Recheck => 1,
+        }
+    }
+
+    fn from_u8(value: u8) -> Self {
+        match value {
+            1 => Self::Recheck,
+            _ => Self::Label,
+        }
+    }
+}
+
+/// A run: its mode, and with `only` just those of the activities it would take.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunRequest {
+    pub mode: RunMode,
+    pub only: Option<Vec<ActivityId>>,
+}
+
+impl RunRequest {
+    pub fn label() -> Self {
+        Self::default()
+    }
+
+    pub fn recheck() -> Self {
+        Self {
+            mode: RunMode::Recheck,
+            only: None,
+        }
+    }
+
+    pub fn scoped(mode: RunMode, only: Vec<ActivityId>) -> Self {
+        Self { mode, only: Some(only) }
+    }
+
+    /// A run over everything there is to label, which is what the schedule counts.
+    pub fn is_full_label(&self) -> bool {
+        self.mode == RunMode::Label && self.only.is_none()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AiRunStatus {
     pub running: bool,
-    pub recheck: bool,
+    pub mode: RunMode,
     pub done: usize,
     pub total: usize,
 }
@@ -90,7 +145,7 @@ impl AiRunState {
     pub fn status(&self) -> AiRunStatus {
         AiRunStatus {
             running: self.running.load(Ordering::Acquire),
-            recheck: self.recheck.load(Ordering::Acquire),
+            mode: RunMode::from_u8(self.mode.load(Ordering::Acquire)),
             done: self.done.load(Ordering::Acquire),
             total: self.total.load(Ordering::Acquire),
         }
@@ -100,20 +155,20 @@ impl AiRunState {
         self.cancel.store(true, Ordering::Release);
     }
 
-    /// Labels uncategorized activities, or with `recheck` re-labels the AI labels the user has
-    /// not confirmed. Blocks until the run ends; `on_progress` is called after every activity.
-    /// A run with something to label is recorded, with what it cost, however it ends.
+    /// Labels the activities `request` names. Blocks until the run ends; `on_progress` is called
+    /// after every activity. A run with something to label is recorded, with what it cost,
+    /// however it ends.
     pub fn run(
         &self,
         deps: &AiRunDeps<'_>,
         models: &AiModels,
-        recheck: bool,
+        request: &RunRequest,
         trigger: RunTrigger,
         on_progress: &mut dyn FnMut(AiRunProgress),
     ) -> Result<AiRunOutcome, AiRunError> {
         let _running = RunGuard::start(&self.running).ok_or(AiRunError::AlreadyRunning)?;
         self.cancel.store(false, Ordering::Release);
-        self.recheck.store(recheck, Ordering::Release);
+        self.mode.store(request.mode.to_u8(), Ordering::Release);
         self.done.store(0, Ordering::Release);
         self.total.store(0, Ordering::Release);
 
@@ -121,7 +176,9 @@ impl AiRunState {
         if taxonomy.is_empty() {
             return Err(AiRunError::NoCategories);
         }
-        let pending = deps.labeling.get_activities_to_label(recheck)?;
+        let pending = deps
+            .labeling
+            .get_activities_to_label(request.mode == RunMode::Recheck, request.only.as_deref())?;
 
         let total = pending.len();
         info!(total, provider = models.llm.provider.as_ref().map_or("local", ProviderId::as_str), model = %models.llm.model, categories = taxonomy.len(), "categorizing activities");

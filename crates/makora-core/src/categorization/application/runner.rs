@@ -6,7 +6,7 @@ use std::sync::Arc;
 use chrono::Utc;
 
 use crate::categorization::application::ai_run::{
-    AiModels, AiRunDeps, AiRunError, AiRunOutcome, AiRunState, AiRunStatus,
+    AiModels, AiRunDeps, AiRunError, AiRunOutcome, AiRunState, AiRunStatus, RunRequest,
 };
 use crate::categorization::application::schedule::ScheduleAnchor;
 use crate::categorization::domain::usage::RunTrigger;
@@ -19,10 +19,9 @@ use crate::shared::ids::ProviderId;
 use crate::taxonomy::CategorySvc;
 
 pub trait CategorizationRunner: Send + Sync {
-    /// Labels uncategorized activities, or with `recheck` re-labels the AI labels the user has
-    /// not confirmed. Blocks until the run ends. A finished labeling run counts as the scheduler's
-    /// run.
-    fn run(&self, recheck: bool, trigger: RunTrigger) -> Result<AiRunOutcome, AiRunError>;
+    /// Runs `request`. Blocks until the run ends. A finished run over everything there is to
+    /// label counts as the scheduler's run.
+    fn run(&self, request: &RunRequest, trigger: RunTrigger) -> Result<AiRunOutcome, AiRunError>;
     fn status(&self) -> AiRunStatus;
     fn cancel(&self);
 }
@@ -43,7 +42,7 @@ pub struct AiCategorizationRunner {
 }
 
 impl CategorizationRunner for AiCategorizationRunner {
-    fn run(&self, recheck: bool, trigger: RunTrigger) -> Result<AiRunOutcome, AiRunError> {
+    fn run(&self, request: &RunRequest, trigger: RunTrigger) -> Result<AiRunOutcome, AiRunError> {
         let settings = self.settings.get();
         let deps = AiRunDeps {
             categories: &*self.categories,
@@ -62,7 +61,7 @@ impl CategorizationRunner for AiCategorizationRunner {
             },
             embedding: settings.ai.embedding_model,
         };
-        let outcome = self.state.run(&deps, &models, recheck, trigger, &mut |progress| {
+        let outcome = self.state.run(&deps, &models, request, trigger, &mut |progress| {
             self.events.emit(CoreEvent::CategorizeProgress {
                 done: progress.done,
                 total: progress.total,
@@ -72,7 +71,7 @@ impl CategorizationRunner for AiCategorizationRunner {
             self.events.emit(CoreEvent::CategorizeFinished);
         }
         let outcome = outcome?;
-        if !recheck {
+        if request.is_full_label() {
             self.anchor.set(Utc::now());
         }
         Ok(outcome)

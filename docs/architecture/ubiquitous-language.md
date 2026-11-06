@@ -38,6 +38,7 @@ These words mean the same thing in the code, the UI and these docs. When a type 
 | **Verdict**           | One answer from a run: an activity and the category the model chose, or none (`AiVerdict`).                                                             |
 | **AI run**            | One pass of the model over the activities that need a label. Started **manually** or by the **schedule**. Recorded in `ai_runs` with its usage.          |
 | **Recheck**           | A run that labels again the activities whose suggestion is still active, instead of the unlabeled ones.                                           |
+| **Scoped run**        | A run limited to a set of activities, such as the members of a new category or the AI labels in a category whose description changed.             |
 | **Embedding**         | A unit-length vector for an activity's text (`[app] \| [domain/path] + \|[title]`), so similar activities can be found by dot product.                           |
 | **Related activities**| The filed activities most similar to the one being labeled (5 of them), shown to the model as examples.                                                 |
 | **Review queue**      | Activities whose resolved category is a suggestion, waiting for the person to accept, change or reject.                                                 |

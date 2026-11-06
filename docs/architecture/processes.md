@@ -54,7 +54,7 @@ sequenceDiagram
     participant W as Window
     participant B as Background
     B->>W: Show(route) / Quit
-    W->>B: Call { id, Run { recheck } }
+    W->>B: Call { id, Run { request } }
     B-->>W: Event(CategorizeStarted)
     B-->>W: Event(CategorizeProgress)
     B-->>W: Reply { id, Run(outcome) }
@@ -67,12 +67,12 @@ The window reads and writes the database and the settings file itself. It only a
 
 | `Call`                          | `Reply`                       |
 | ------------------------------- | ----------------------------- |
-| `Run { recheck }`, `CancelRun`, `RunStatus` | `Run(Result<AiRunOutcome, RunFailure>)`, `RunStatus`, `Done` |
+| `Run { request }`, `CancelRun`, `RunStatus` | `Run(Result<AiRunOutcome, RunFailure>)`, `RunStatus`, `Done` |
 | `Download { model }`, `CancelDownload`, `DownloadStatus` | `Download(Result<bool, DownloadFailure>)`, `DownloadStatus`, `Done` |
 
 ## Background ↔ worker
 
-`crates/makora-core/src/ipc/worker.rs`. `WorkerRunner` is the background process's `CategorizationRunner`: it starts `makora --ai-worker`, relays the worker's progress as `CoreEvent`s, and returns its outcome. When the run ends the process exits, and the models, llama.cpp and the GPU driver go with it.
+`crates/makora-core/src/ipc/worker.rs`. `WorkerRunner` is the background process's `CategorizationRunner`: it starts `makora --ai-worker`, tells it what to run in a first `ToWorker::Start { request, trigger }` on its stdin (a scoped run's activity ids would not fit a command line), relays the worker's progress as `CoreEvent`s, and returns its outcome. A later `ToWorker::Cancel`, or stdin closing, stops the run. When the run ends the process exits, and the models, llama.cpp and the GPU driver go with it.
 
 ## Integration events
 

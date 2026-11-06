@@ -7,7 +7,8 @@ use async_channel::Receiver;
 use gpui_kit::{App, AppContext, Context, Entity, Global, Task};
 use makora_lib::ai::model_download::ModelDownloadStatus;
 use makora_lib::app_core::ClientCore;
-use makora_lib::categorization::application::ai_run::AiRunStatus;
+use makora_lib::categorization::application::ai_run::{AiRunStatus, RunMode, RunRequest};
+use makora_lib::categorization::domain::usage::RunTrigger;
 use makora_lib::domain::types::Category;
 use makora_lib::events::CoreEvent;
 use makora_lib::settings::Settings;
@@ -15,7 +16,10 @@ use tracing::warn;
 
 use crate::runtime::commands::{self, UiCommand};
 use crate::ui::data;
+use crate::ui::error::UiError;
 use crate::ui::format::bytes::format_bytes;
+use crate::ui::screens::categories::ai_section::run_summary;
+use crate::ui::widgets::toast::Toast;
 
 /// The core, reachable from any view: `Core::get(cx).history.…`.
 pub struct Core(pub Arc<ClientCore>);
@@ -78,7 +82,7 @@ impl Revisions {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CategorizeTask {
     pub running: bool,
-    pub recheck: bool,
+    pub mode: RunMode,
     pub done: usize,
     pub total: usize,
 }
@@ -87,7 +91,7 @@ impl From<AiRunStatus> for CategorizeTask {
     fn from(status: AiRunStatus) -> Self {
         Self {
             running: status.running,
-            recheck: status.recheck,
+            mode: status.mode,
             done: status.done,
             total: status.total,
         }
@@ -130,8 +134,11 @@ pub struct AppState {
     pub categorize: CategorizeTask,
     pub download: DownloadTask,
     pub revisions: Revisions,
+    /// Why the last run started from this window failed.
+    pub run_error: Option<String>,
     settings_issue: Option<String>,
     categories_load: Task<()>,
+    run: Task<()>,
 }
 
 struct AppStateHandle(Entity<AppState>);
@@ -203,15 +210,51 @@ impl AppState {
         );
     }
 
-    /// A screen that starts a run marks it here; the core only reports progress once it runs.
-    pub fn mark_categorize_started(&mut self, recheck: bool, cx: &mut Context<Self>) {
+    /// A run started here or by the scheduler; the core only reports progress once it runs.
+    pub fn mark_categorize_started(&mut self, mode: RunMode, cx: &mut Context<Self>) {
         self.categorize = CategorizeTask {
             running: true,
-            recheck,
+            mode,
             done: 0,
             total: 0,
         };
         cx.notify();
+    }
+
+    /// Starts `request` in the background, unless a run is going, and says how it went in a toast.
+    pub fn start_run(&mut self, request: RunRequest, cx: &mut Context<Self>) {
+        if self.categorize.running {
+            return;
+        }
+        let mode = request.mode;
+        self.run_error = None;
+        self.mark_categorize_started(mode, cx);
+        let job = data::blocking(cx, move |core| {
+            let outcome = core.runner.run(&request, RunTrigger::Manual);
+            (outcome, core.runner.status())
+        });
+        self.run = cx.spawn(async move |this, cx| {
+            let result = job.await;
+            let _ = this.update(cx, |state, cx| {
+                let status = match result {
+                    Some((Ok(outcome), status)) => {
+                        let (title, description) = run_summary(&outcome, mode);
+                        Toast::success(title).description(description).show_in_main_window(cx);
+                        Some(status)
+                    }
+                    Some((Err(err), status)) => {
+                        state.run_error = Some(UiError::from(err).to_string());
+                        Some(status)
+                    }
+                    None => {
+                        state.run_error = Some("The run stopped unexpectedly.".into());
+                        None
+                    }
+                };
+                state.categorize = status.map_or_else(CategorizeTask::default, Into::into);
+                state.invalidate_categorization(cx);
+            });
+        });
     }
 
     pub fn mark_download_started(&mut self, model: &str, cx: &mut Context<Self>) {
@@ -230,7 +273,7 @@ impl AppState {
 
     fn apply(&mut self, event: CoreEvent, core: &ClientCore, cx: &mut Context<Self>) {
         match event {
-            CoreEvent::CategorizeStarted { recheck } => self.mark_categorize_started(recheck, cx),
+            CoreEvent::CategorizeStarted { mode } => self.mark_categorize_started(mode, cx),
             CoreEvent::CategorizeProgress { done, total } => {
                 if !self.categorize.running {
                     self.categorize = core.runner.status().into();
@@ -274,10 +317,9 @@ pub fn background_tasks(
     if categorize.running {
         tasks.push(BackgroundTask {
             id: "categorize",
-            label: if categorize.recheck {
-                "Re-checking AI labels"
-            } else {
-                "Categorizing activities"
+            label: match categorize.mode {
+                RunMode::Recheck => "Re-checking AI labels",
+                RunMode::Label => "Categorizing activities",
             }
             .into(),
             progress: if categorize.total > 0 {
@@ -317,8 +359,10 @@ pub fn init(events: Receiver<CoreEvent>, cx: &mut App) {
             categorize: core.runner.status().into(),
             download: core.downloads.status().into(),
             revisions: Revisions::default(),
+            run_error: None,
             settings_issue: core.settings.take_load_issue(),
             categories_load: Task::ready(()),
+            run: Task::ready(()),
         };
         state.reload_categories(cx);
         state
@@ -347,7 +391,7 @@ mod tests {
     fn a_task_without_a_total_is_starting() {
         let categorize = CategorizeTask {
             running: true,
-            recheck: true,
+            mode: RunMode::Recheck,
             ..Default::default()
         };
         let tasks = background_tasks(&categorize, &DownloadTask::default());
@@ -360,7 +404,7 @@ mod tests {
     fn progress_reads_done_over_total_and_bytes() {
         let categorize = CategorizeTask {
             running: true,
-            recheck: false,
+            mode: RunMode::Label,
             done: 3,
             total: 10,
         };

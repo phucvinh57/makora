@@ -129,7 +129,8 @@ pub struct FeedbackSecondsRow {
 }
 
 pub trait ReviewRepo {
-    fn get_activities_to_label(&mut self, recheck: bool) -> QueryResult<Vec<ActivityToLabelRow>>;
+    /// With `only`, just those among `only`; the ids go in as one JSON array, however many.
+    fn get_activities_to_label(&mut self, recheck: bool, only: Option<&[i64]>) -> QueryResult<Vec<ActivityToLabelRow>>;
     fn get_recent_activities(&mut self, limit: i64) -> QueryResult<Vec<ActivityToLabelRow>>;
     fn get_review_count(&mut self, category: &CategoryScope, activity_ids: Option<&[i64]>) -> QueryResult<i64>;
     fn get_review_page(
@@ -154,23 +155,30 @@ pub trait ReviewRepo {
 }
 
 impl ReviewRepo for SqliteConnection {
-    fn get_activities_to_label(&mut self, recheck: bool) -> QueryResult<Vec<ActivityToLabelRow>> {
+    fn get_activities_to_label(&mut self, recheck: bool, only: Option<&[i64]>) -> QueryResult<Vec<ActivityToLabelRow>> {
         // A rule has already decided an activity it matches, so the model has nothing to add.
         let wanted = if recheck {
             "EXISTS (SELECT 1 FROM ai_labels l WHERE l.activity_id = a.id AND l.rejected = 0)"
         } else {
             "NOT EXISTS (SELECT 1 FROM ai_labels l WHERE l.activity_id = a.id)"
         };
-        sql_query(format!(
+        let (scope, binds) = match only {
+            Some(ids) => (
+                "AND a.id IN (SELECT value FROM json_each(?))",
+                vec![Param::Text(serde_json::to_string(ids).unwrap_or_else(|_| "[]".into()))],
+            ),
+            None => ("", Vec::new()),
+        };
+        let sql = format!(
             "SELECT a.id, src.name AS app_name, {ACTIVITY_URL} AS url, a.title,
                     src.kind AS source_kind, src.key AS source_key, a.path
              FROM activities a
              JOIN sources src ON src.id = a.source_id
-             WHERE a.category_id IS NULL AND {wanted}
+             WHERE a.category_id IS NULL AND {wanted} {scope}
                AND NOT EXISTS (SELECT 1 FROM rule_matches m WHERE m.activity_id = a.id)
              ORDER BY (SELECT MAX(start_time) FROM sessions WHERE activity_id = a.id) DESC"
-        ))
-        .get_results(self)
+        );
+        bind_all(sql_query(sql).into_boxed(), binds).get_results(self)
     }
 
     fn get_recent_activities(&mut self, limit: i64) -> QueryResult<Vec<ActivityToLabelRow>> {
@@ -396,6 +404,22 @@ mod tests {
         .unwrap();
         assert_eq!(conn.get_feedback_counts().unwrap().rejected, 1);
         assert_seconds(conn.get_feedback_seconds(&now()).unwrap().reviewed_seconds, 60.0);
+    }
+
+    #[test]
+    fn a_scoped_run_takes_only_the_activities_it_names() {
+        let mut conn = conn();
+        conn.batch_execute(
+            "INSERT INTO activities (id, source_id, path, title) VALUES (3, 1, '', 'c'), (4, 1, '', 'd');",
+        )
+        .unwrap();
+        let ids = |rows: Vec<ActivityToLabelRow>| rows.iter().map(|row| row.id).collect::<Vec<_>>();
+        assert_eq!(ids(conn.get_activities_to_label(false, None).unwrap()).len(), 2);
+        assert_eq!(ids(conn.get_activities_to_label(false, Some(&[4, 1]))
+            .unwrap()), [4]);
+        assert_eq!(ids(conn.get_activities_to_label(true, Some(&[2, 3]))
+            .unwrap()), [2]);
+        assert!(conn.get_activities_to_label(false, Some(&[])).unwrap().is_empty());
     }
 
     #[test]

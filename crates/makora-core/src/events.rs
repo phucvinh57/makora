@@ -3,6 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::categorization::application::ai_run::RunMode;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NavTarget {
     CategoriesReview,
@@ -10,7 +12,7 @@ pub enum NavTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CoreEvent {
-    CategorizeStarted { recheck: bool },
+    CategorizeStarted { mode: RunMode },
     CategorizeProgress { done: usize, total: usize },
     CategorizeFinished,
     DownloadProgress { downloaded: u64, total: u64 },
