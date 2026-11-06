@@ -3,6 +3,7 @@
 pub(crate) mod ai_section;
 pub(crate) mod review;
 mod rules;
+pub(crate) mod suggestions;
 mod taxonomy;
 
 use gpui_kit::component::tab::{Tab, TabBar};
@@ -22,7 +23,9 @@ use crate::ui::route::CategoriesTab;
 use crate::ui::screens::Screen;
 use crate::ui::screens::categories::ai_section::AiSection;
 use crate::ui::screens::categories::review::ReviewQueue;
+use crate::ui::screens::categories::ai_section::AiSectionEvent;
 use crate::ui::screens::categories::rules::RulesTab;
+use crate::ui::screens::categories::suggestions::TaxonomySuggestions;
 use crate::ui::widgets::page_header::PageHeader;
 
 const TABS: [CategoriesTab; 3] = [
@@ -34,6 +37,7 @@ const TABS: [CategoriesTab; 3] = [
 pub struct CategoriesScreen {
     pub tab: CategoriesTab,
     rules: Entity<RulesTab>,
+    suggestions: Entity<TaxonomySuggestions>,
     ai: Entity<AiSection>,
     review: Entity<ReviewQueue>,
     stats: Option<FeedbackStats>,
@@ -77,15 +81,21 @@ impl Screen for CategoriesScreen {
 
     fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let rules = cx.new(RulesTab::new);
+        let suggestions = cx.new(TaxonomySuggestions::new);
         let ai = cx.new(|cx| AiSection::new(window, cx));
         let review = cx.new(|cx| ReviewQueue::new(window, cx));
         let subscriptions = vec![
             cx.observe(&AppState::entity(cx), |this, _, cx| this.reload_stats(cx)),
             cx.observe(&rules, |_, _, cx| cx.notify()),
+            cx.observe(&suggestions, |_, _, cx| cx.notify()),
+            cx.subscribe(&ai, |this, _, event: &AiSectionEvent, cx| match event {
+                AiSectionEvent::ShowSuggestions => this.set_tab(CategoriesTab::Taxonomy, cx),
+            }),
         ];
         let mut screen = Self {
             tab: Prefs::get(cx).categories_tab,
             rules,
+            suggestions,
             ai,
             review,
             stats: None,
@@ -106,7 +116,7 @@ impl Screen for CategoriesScreen {
         self.labels = None;
         self.reload_stats(cx);
         match self.tab {
-            CategoriesTab::Taxonomy => {}
+            CategoriesTab::Taxonomy => self.suggestions.update(cx, |suggestions, cx| suggestions.refresh(cx)),
             CategoriesTab::Rules => self.rules.update(cx, |rules, cx| rules.refresh(cx)),
             CategoriesTab::Review => {
                 self.ai.update(cx, |ai, cx| ai.refresh(window, cx));
@@ -133,6 +143,7 @@ impl Render for CategoriesScreen {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let pending = self.stats.as_ref().map_or(0, |stats| stats.pending_review);
         let suggested = self.rules.read(cx).suggestion_count();
+        let new_categories = self.suggestions.read(cx).count();
         let selected = TABS.iter().position(|tab| *tab == self.tab).unwrap_or(0);
 
         v_flex()
@@ -146,7 +157,11 @@ impl Render for CategoriesScreen {
                     TabBar::new("categories-tabs")
                         .segmented()
                         .selected_index(selected)
-                        .child(Tab::new().label("Taxonomy"))
+                        .child(
+                            Tab::new()
+                                .label("Taxonomy")
+                                .when(new_categories > 0, |tab| tab.child(badge(new_categories, cx))),
+                        )
                         .child(
                             Tab::new()
                                 .label("Rules")
@@ -167,7 +182,9 @@ impl Render for CategoriesScreen {
             .child(motion::enter(
                 SharedString::from(format!("categories-{:?}", self.tab)),
                 div().w_full().child(match self.tab {
-                    CategoriesTab::Taxonomy => taxonomy::render(cx).into_any_element(),
+                    CategoriesTab::Taxonomy => {
+                        taxonomy::render(self.suggestions.clone(), cx).into_any_element()
+                    }
                     CategoriesTab::Rules => self.rules.clone().into_any_element(),
                     CategoriesTab::Review => v_flex()
                         .gap_6()

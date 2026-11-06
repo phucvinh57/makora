@@ -26,6 +26,7 @@ use crate::ui::format::duration::format_seconds;
 use crate::ui::format::rules::{pattern_field_label, rule_kind_label};
 use crate::ui::widgets::category_dot::category_color;
 use crate::ui::widgets::feedback::ErrorBanner;
+use crate::ui::widgets::suggestion_card::{SuggestionCard, suggestion_row};
 use crate::ui::widgets::toast::Toast;
 
 pub fn rule_tag(kind: RuleKind, field: Option<PatternField>) -> &'static str {
@@ -218,14 +219,7 @@ impl RulesTab {
         let dismiss = suggestion.clone();
         let usage = rule_usage(suggestion.activity_count as i64, suggestion.total_seconds);
 
-        v_flex()
-            .gap_1()
-            .rounded_lg()
-            .border_1()
-            .border_color(theme.border)
-            .bg(theme.background)
-            .px_3()
-            .py_2()
+        suggestion_row(cx)
             .child(
                 h_flex()
                     .gap_3()
@@ -321,24 +315,13 @@ impl RulesTab {
             .enumerate()
             .map(|(ix, suggestion)| self.render_suggestion(ix, suggestion, paths, cx))
             .collect();
-        let theme = cx.theme();
         Some(
-            v_flex()
-                .gap_2()
-                .rounded_lg()
-                .border_1()
-                .border_color(theme.primary.opacity(0.4))
-                .bg(theme.primary.opacity(0.05))
-                .p_3()
-                .child(
-                    v_flex()
-                        .child(div().text_sm().font_medium().child("Suggested rules"))
-                        .child(div().text_xs().text_color(theme.muted_foreground).child(
-                            "From how you filed activity yourself. Adding one files the rest of \
-                             that activity too; your pins stay as they are.",
-                        )),
-                )
-                .children(rows),
+            SuggestionCard::new(
+                "Suggested rules",
+                "From how you filed activity yourself. Adding one files the rest of that activity \
+                 too; your pins stay as they are.",
+            )
+            .children(rows),
         )
     }
 

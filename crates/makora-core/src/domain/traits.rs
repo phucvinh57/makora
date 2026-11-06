@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::shared::ids::ActivityId;
+use crate::shared::ids::{ActivityId, CategoryId};
 use crate::shared::time::TimeRange;
 
 use super::types::{
@@ -18,6 +18,8 @@ pub trait LabelingSvc: Send + Sync {
     /// pin nor an AI label nor a rejected one; with `recheck`, those carrying an AI label the
     /// user has not confirmed. With `only`, just those of them among `only`.
     fn get_activities_to_label(&self, recheck: bool, only: Option<&[ActivityId]>) -> Result<Vec<ActivitySample>>;
+    /// The activities filed under `category` itself by an AI label the user has not confirmed.
+    fn get_ai_filed_ids(&self, category: CategoryId) -> Result<Vec<ActivityId>>;
     /// The `limit` activities seen most recently, categorized or not.
     fn get_recent_activities(&self, limit: i64) -> Result<Vec<ActivitySample>>;
     /// AI labels awaiting review, longest-tracked first so the ones that matter come up first.

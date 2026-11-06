@@ -40,6 +40,14 @@ impl LabelingSvc for SqliteLabeling {
             .collect())
     }
 
+    fn get_ai_filed_ids(&self, category: CategoryId) -> Result<Vec<ActivityId>> {
+        let mut conn = self.db.read()?;
+        Ok(reporting::review::ReviewRepo::get_ai_filed_ids(&mut *conn, category.into())?
+            .into_iter()
+            .map(ActivityId::from)
+            .collect())
+    }
+
     fn get_recent_activities(&self, limit: i64) -> Result<Vec<ActivitySample>> {
         let mut conn = self.db.read()?;
         Ok(reporting::review::ReviewRepo::get_recent_activities(&mut *conn, limit)?

@@ -132,6 +132,8 @@ pub trait ReviewRepo {
     /// With `only`, just those among `only`; the ids go in as one JSON array, however many.
     fn get_activities_to_label(&mut self, recheck: bool, only: Option<&[i64]>) -> QueryResult<Vec<ActivityToLabelRow>>;
     fn get_recent_activities(&mut self, limit: i64) -> QueryResult<Vec<ActivityToLabelRow>>;
+    /// Activities whose resolved category is an AI label on `category_id` itself.
+    fn get_ai_filed_ids(&mut self, category_id: i64) -> QueryResult<Vec<i64>>;
     fn get_review_count(&mut self, category: &CategoryScope, activity_ids: Option<&[i64]>) -> QueryResult<i64>;
     fn get_review_page(
         &mut self,
@@ -192,6 +194,24 @@ impl ReviewRepo for SqliteConnection {
         ))
         .bind::<BigInt, _>(limit)
         .get_results(self)
+    }
+
+    fn get_ai_filed_ids(&mut self, category_id: i64) -> QueryResult<Vec<i64>> {
+        #[derive(QueryableByName)]
+        struct IdRow {
+            #[diesel(sql_type = BigInt)]
+            activity_id: i64,
+        }
+        Ok(sql_query(
+            "SELECT activity_id FROM activity_category
+             WHERE source = 'ai' AND category_id = ?
+             ORDER BY activity_id",
+        )
+        .bind::<BigInt, _>(category_id)
+        .get_results::<IdRow>(self)?
+        .into_iter()
+        .map(|row| row.activity_id)
+        .collect())
     }
 
     fn get_review_count(&mut self, category: &CategoryScope, activity_ids: Option<&[i64]>) -> QueryResult<i64> {
@@ -404,6 +424,19 @@ mod tests {
         .unwrap();
         assert_eq!(conn.get_feedback_counts().unwrap().rejected, 1);
         assert_seconds(conn.get_feedback_seconds(&now()).unwrap().reviewed_seconds, 60.0);
+    }
+
+    #[test]
+    fn the_ai_filed_activities_of_a_category_leave_out_pins_and_rejections() {
+        let mut conn = conn();
+        conn.batch_execute(
+            "INSERT INTO categories (id, name, color) VALUES (2, 'Fun', '#000000');
+             INSERT INTO activities (id, source_id, path, title, category_id) VALUES (3, 1, '', 'c', 2), (4, 1, '', 'd', NULL);
+             INSERT INTO ai_labels (activity_id, category_id, rejected) VALUES (3, 1, 0), (4, 1, 1);",
+        )
+        .unwrap();
+        assert_eq!(conn.get_ai_filed_ids(1).unwrap(), [1, 2]);
+        assert!(conn.get_ai_filed_ids(2).unwrap().is_empty());
     }
 
     #[test]

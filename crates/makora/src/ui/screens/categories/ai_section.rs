@@ -11,7 +11,7 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    App, AppContext, Context, Entity, IntoElement, ParentElement, Render,
+    App, AppContext, Context, Entity, EventEmitter, IntoElement, ParentElement, Render,
     SharedString, Styled, Subscription, Task, Window, div, px,
 };
 use makora_lib::ai::llm::ModelRole;
@@ -265,12 +265,28 @@ impl SyncKey {
     }
 }
 
+/// What the section asks of the screen around it.
+pub enum AiSectionEvent {
+    /// Show the suggested categories.
+    ShowSuggestions,
+}
+
+impl EventEmitter<AiSectionEvent> for AiSection {}
+
+/// "The AI found no category for 3 activities."
+pub fn unlabeled_line(count: usize) -> String {
+    let noun = if count == 1 { "activity" } else { "activities" };
+    format!("The AI found no category for {count} {noun}.")
+}
+
 pub struct AiSection {
     installed: Option<Vec<(String, ModelRole)>>,
     pending_provider: Option<String>,
     pending_review: Option<i64>,
+    /// Activities the model found no category for, as of `unlabeled_revision`.
+    unlabeled: Option<usize>,
+    unlabeled_revision: Option<u64>,
     setting_model: bool,
-    /// While the run call is out: whether it is a re-check.
     stopping: bool,
     saving_period: bool,
     period_error: Option<String>,
@@ -295,6 +311,7 @@ pub struct AiSection {
     installed_load: Task<()>,
     next_run_load: Task<()>,
     models_load: Task<()>,
+    unlabeled_load: Task<()>,
     _polls: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -360,6 +377,8 @@ impl AiSection {
             installed: None,
             pending_provider: None,
             pending_review: None,
+            unlabeled: None,
+            unlabeled_revision: None,
             setting_model: false,
             stopping: false,
             saving_period: false,
@@ -383,6 +402,7 @@ impl AiSection {
             installed_load: Task::ready(()),
             next_run_load: Task::ready(()),
             models_load: Task::ready(()),
+            unlabeled_load: Task::ready(()),
             _polls: polls,
             _subscriptions: subscriptions,
         };
@@ -393,6 +413,7 @@ impl AiSection {
     pub fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.installed_revision = None;
         self.next_run_inputs = None;
+        self.unlabeled_revision = None;
         self.on_app_state(window, cx);
     }
 
@@ -401,7 +422,24 @@ impl AiSection {
         cx.notify();
     }
 
+    fn load_unlabeled(&mut self, cx: &mut Context<Self>) {
+        let revision = AppState::read(cx).revisions.labels;
+        if self.unlabeled_revision == Some(revision) {
+            return;
+        }
+        self.unlabeled_revision = Some(revision);
+        self.unlabeled_load = data::fetch(
+            cx,
+            |core| core.suggestions.count_unlabeled(),
+            |this, result, _| match result {
+                Ok(count) => this.unlabeled = Some(count),
+                Err(err) => tracing::warn!(error = %err, "failed to count the unlabeled activities"),
+            },
+        );
+    }
+
     fn on_app_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.load_unlabeled(cx);
         let state = AppState::read(cx);
         let revision = state.revisions.installed_models;
         let downloading = state.download.running;
@@ -924,6 +962,8 @@ impl Render for AiSection {
         let disabled = self.models_disabled(cx);
         let running = self.running(cx);
         let rechecking = running && status.mode == RunMode::Recheck;
+        let finding = running && status.mode == RunMode::FindCategories;
+        let unlabeled = self.unlabeled.filter(|count| *count > 0);
         let run_error = state.run_error.clone();
         let progress = (status.running && status.total > 0).then_some((status.done, status.total));
         let saved_provider = Self::saved_provider(cx);
@@ -1003,7 +1043,7 @@ impl Render for AiSection {
                         .child(
                             Button::new("categorize")
                                 .primary()
-                                .label(run_label("Categorize", running && !rechecking))
+                                .label(run_label("Categorize", running && status.mode == RunMode::Label))
                                 .disabled(!can_run)
                                 .on_click(
                                     cx.listener(|this, _, _, cx| this.run(RunRequest::label(), cx)),
@@ -1031,6 +1071,19 @@ impl Render for AiSection {
                                     cx.listener(|this, _, _, cx| this.run(RunRequest::recheck(), cx)),
                                 ),
                         )
+                        .child(
+                            Button::new("find-categories")
+                                .outline()
+                                .label(if finding { "Looking…" } else { "Find new categories" })
+                                .disabled(!can_run || unlabeled.is_none())
+                                .tooltip(
+                                    "Group the activities the AI found no category for and \
+                                     suggest categories for them",
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.run(RunRequest::find_categories(), cx)
+                                })),
+                        )
                         .child(div().flex_1())
                         .child(
                             Button::new("reset-data")
@@ -1042,6 +1095,24 @@ impl Render for AiSection {
                                 }),
                         ),
                 )
+                .when_some(unlabeled, |this, count| {
+                    this.child(
+                        h_flex()
+                            .gap_2()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(unlabeled_line(count))
+                            .child(
+                                Button::new("show-suggestions")
+                                    .link()
+                                    .xsmall()
+                                    .label("See suggested categories")
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        cx.emit(AiSectionEvent::ShowSuggestions)
+                                    })),
+                            ),
+                    )
+                })
                 .when_some(blocker, |this, blocker| {
                     this.child(div().text_xs().text_color(muted).child(blocker))
                 })
@@ -1195,6 +1266,12 @@ mod tests {
             ..outcome
         };
         assert_eq!(run_summary(&stopped, RunMode::Recheck).0, "AI categorization stopped");
+    }
+
+    #[test]
+    fn the_unlabeled_line_counts_activities() {
+        assert_eq!(unlabeled_line(1), "The AI found no category for 1 activity.");
+        assert_eq!(unlabeled_line(4), "The AI found no category for 4 activities.");
     }
 
     #[test]

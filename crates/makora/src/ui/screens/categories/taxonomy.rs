@@ -4,7 +4,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::{ActiveTheme, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
-use gpui_kit::{App, ElementId, IntoElement, ParentElement, SharedString, Styled, div, px};
+use gpui_kit::{App, ElementId, Entity, IntoElement, ParentElement, SharedString, Styled, div, px};
 use makora_lib::domain::types::Category;
 
 use crate::ui::app_state::AppState;
@@ -13,6 +13,7 @@ use crate::ui::dialogs::delete_category::DeleteCategoryDialog;
 use crate::ui::dialogs::edit_category::EditCategoryDialog;
 use crate::ui::dialogs::{self};
 use crate::ui::format::categories::{build_category_tree, flatten_category_tree};
+use crate::ui::screens::categories::suggestions::TaxonomySuggestions;
 use crate::ui::widgets::card::Card;
 use crate::ui::widgets::category_dot::category_color;
 use crate::ui::widgets::feedback::ErrorBanner;
@@ -28,7 +29,7 @@ pub fn subcategory_label(count: usize) -> String {
     format!("{count} {noun}")
 }
 
-pub fn render(cx: &App) -> impl IntoElement + use<> {
+pub fn render(suggestions: Entity<TaxonomySuggestions>, cx: &App) -> impl IntoElement + use<> {
     let state = AppState::read(cx);
     let tree = build_category_tree(&state.categories);
     let cards: Vec<_> = flatten_category_tree(&tree)
@@ -42,6 +43,7 @@ pub fn render(cx: &App) -> impl IntoElement + use<> {
         .when_some(state.categories_error.clone(), |this, error| {
             this.child(ErrorBanner::new(error))
         })
+        .child(suggestions)
         .child(
             h_flex().justify_end().child(
                 Button::new("add-category")
