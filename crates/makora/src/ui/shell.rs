@@ -3,7 +3,9 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::tooltip::Tooltip;
-use gpui_kit::component::{ActiveTheme, Icon, Sizable, StyledExt, TitleBar, h_flex, v_flex};
+use gpui_kit::component::{
+    ActiveTheme, Icon, Sizable, StyledExt, TITLE_BAR_HEIGHT, TitleBar, h_flex, v_flex,
+};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, AnyView, App, AppContext, ClickEvent, Context, Entity, InteractiveElement,
@@ -11,7 +13,6 @@ use gpui_kit::{
     Styled, Subscription, Window, div, px, size,
 };
 
-use crate::runtime::window::TITLE;
 use crate::ui::app_state::AppState;
 use crate::ui::prefs::Prefs;
 use crate::ui::route::{Route, Section};
@@ -189,6 +190,7 @@ impl Shell {
             .border_color(theme.sidebar_border)
             .bg(theme.sidebar)
             .text_color(theme.sidebar_foreground)
+            .when(cfg!(target_os = "macos"), |this| this.pt(TITLE_BAR_HEIGHT))
             .child(
                 h_flex()
                     .py_4()
@@ -343,34 +345,27 @@ pub fn content_size(window: &Window, cx: &App) -> Size<Pixels> {
     };
     size(
         viewport.width - px(sidebar + 2. * CONTENT_PADDING),
-        viewport.height - px(2. * CONTENT_PADDING + 4.),
+        viewport.height - TITLE_BAR_HEIGHT - px(2. * CONTENT_PADDING + 4.),
     )
 }
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let screen = self.screen(self.section, window, cx);
+        let sidebar = self.render_sidebar(cx).into_any_element();
         let theme = cx.theme();
-        v_flex()
+        h_flex()
             .size_full()
             .bg(theme.background)
             .text_color(theme.foreground)
             .text_size(theme.font_size)
+            .child(sidebar)
             .child(
-                TitleBar::new().child(
-                    div()
-                        .text_sm()
-                        .font_medium()
-                        .text_color(theme.muted_foreground)
-                        .child(TITLE),
-                ),
-            )
-            .child(
-                h_flex()
+                v_flex()
                     .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .child(self.render_sidebar(cx))
+                    .min_w_0()
+                    .h_full()
+                    .child(TitleBar::new().bg(theme.background).border_b_0())
                     .child(
                         div()
                             .id(SharedString::from(format!(
@@ -378,8 +373,8 @@ impl Render for Shell {
                                 self.section.label()
                             )))
                             .flex_1()
-                            .min_w_0()
-                            .h_full()
+                            .min_h_0()
+                            .w_full()
                             .p(px(CONTENT_PADDING))
                             .overflow_y_scrollbar()
                             .child(screen),
