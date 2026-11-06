@@ -7,6 +7,7 @@ pub mod date_range;
 pub mod duration;
 pub mod logs;
 pub mod number;
+pub mod privacy;
 pub mod providers;
 pub mod rules;
 pub mod stats_date;

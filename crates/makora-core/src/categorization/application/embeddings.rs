@@ -9,7 +9,7 @@ use anyhow::{bail, Result};
 use diesel::Connection;
 use tracing::warn;
 
-use crate::categorization::domain::retrieval::{activity_text, Candidate, RelatedActivity};
+use crate::categorization::domain::retrieval::{activity_text, Candidate, RelatedActivity, SourceRef};
 use crate::categorization::ports::{Embedder, Embedding};
 use crate::db::{self, Db};
 use crate::shared::ids::{raw, ActivityId};
@@ -94,6 +94,11 @@ impl EmbeddingSvc for SqliteEmbeddings {
                         url: location(row.source_kind, &row.source_key, &row.path),
                         title: row.title,
                         category: row.category_id.into(),
+                        source: SourceRef {
+                            kind: row.source_kind,
+                            key: row.source_key,
+                            path: row.path,
+                        },
                     },
                     vector: decode(&row.vector)?,
                 })

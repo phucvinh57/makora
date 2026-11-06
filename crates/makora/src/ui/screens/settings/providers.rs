@@ -244,8 +244,9 @@ impl Render for ProvidersSection {
                     })
                     .child(div().text_xs().text_color(muted).child(
                         "When a remote provider categorizes, the titles and addresses of the \
-                         activities being labeled and your category names are sent to it. \
-                         Local servers like Ollama keep everything on this machine.",
+                         activities being labeled, after the redaction set under Privacy, and \
+                         your category names are sent to it. Local servers like Ollama keep \
+                         everything on this machine.",
                     )),
             )
     }

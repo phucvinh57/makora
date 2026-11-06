@@ -2,9 +2,11 @@
 //! embeddings of their text, so "Pull request · acme/api" lands near other code-review pages
 //! whatever words they share.
 
+use crate::categorization::domain::rules::ActivityFacts;
 use crate::categorization::ports::Embedding;
 use crate::shared::ids::{ActivityId, CategoryId};
 use crate::shared::text::{clip, single_line};
+use crate::tracking::domain::source_key::KeyKind;
 
 /// How many related activities the model is shown with each activity it labels.
 pub const RELATED_COUNT: usize = 5;
@@ -22,6 +24,21 @@ pub fn activity_text(app_name: &str, url: Option<&str>, title: &str) -> String {
     parts.join(" | ")
 }
 
+/// Where an activity was recorded: the app's executable or the site's domain, and the page path.
+/// Never sent to a model; it is what rules and the privacy list are matched against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceRef {
+    pub kind: KeyKind,
+    pub key: String,
+    pub path: String,
+}
+
+impl SourceRef {
+    pub fn facts(&self, name: &str, title: &str) -> ActivityFacts {
+        ActivityFacts::new(self.kind, &self.key, name, &self.path, title)
+    }
+}
+
 /// An activity already filed under a category, by the user or by one of their rules.
 #[derive(Debug, Clone)]
 pub struct RelatedActivity {
@@ -29,6 +46,7 @@ pub struct RelatedActivity {
     pub url: Option<String>,
     pub title: String,
     pub category: CategoryId,
+    pub source: SourceRef,
 }
 
 #[derive(Debug, Clone)]

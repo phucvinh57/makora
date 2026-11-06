@@ -5,7 +5,7 @@ use super::date_range::parse_instant;
 use super::number::{js_string, to_fixed, to_locale_string};
 
 /// Fields shown on a collapsed row, in this order, before any others.
-pub const KEY_FIELDS: [&str; 11] = [
+pub const KEY_FIELDS: [&str; 12] = [
     "host",
     "method",
     "path",
@@ -16,6 +16,7 @@ pub const KEY_FIELDS: [&str; 11] = [
     "model",
     "browser",
     "activities_sent",
+    "redactions",
     "error",
 ];
 pub const INLINE_FIELD_COUNT: usize = 4;

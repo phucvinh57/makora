@@ -21,12 +21,11 @@ use crate::categorization::domain::retrieval::{top_related, RELATED_COUNT};
 use crate::categorization::application::usage::AiUsageSvc;
 use crate::categorization::domain::usage::{AiRunRecord, RunStatus, RunTrigger};
 use crate::categorization::ports::{ActivityText, Classifier, Embedder, LlmSpec, RunUsage, UsageMeter};
-use crate::domain::types::{AiVerdict, Category, UncategorizedActivity};
+use crate::domain::types::{ActivitySample, AiVerdict, Category};
 use crate::domain::LabelingSvc;
 use crate::shared::ids::{ActivityId, CategoryId, ProviderId};
 use crate::shared::sync::RunGuard;
 use crate::taxonomy::CategorySvc;
-use crate::tracking::domain::source_key::url_location;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AiRunError {
@@ -193,7 +192,7 @@ impl AiRunState {
         deps: &AiRunDeps<'_>,
         models: &AiModels,
         taxonomy: &[Category],
-        pending: &[UncategorizedActivity],
+        pending: &[ActivitySample],
         meter: &UsageMeter,
         tally: &mut RunTally,
         on_progress: &mut dyn FnMut(AiRunProgress),
@@ -223,14 +222,7 @@ impl AiRunState {
         let candidates = deps.embeddings.get_candidates(&models.embedding)?;
         let ids: Vec<ActivityId> = pending.iter().map(|activity| activity.id).collect();
         let vectors = deps.embeddings.get_vectors(&models.embedding, &ids)?;
-        let activities: Vec<ActivityText> = pending
-            .iter()
-            .map(|activity| ActivityText {
-                app_name: activity.app_name.clone(),
-                url: activity.url.as_deref().and_then(url_location),
-                title: activity.title.clone(),
-            })
-            .collect();
+        let activities: Vec<ActivityText> = pending.iter().map(ActivityText::of).collect();
         let related = |position: usize| {
             let id = pending[position].id;
             vectors

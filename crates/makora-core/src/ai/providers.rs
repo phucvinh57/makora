@@ -179,6 +179,7 @@ mod tests {
     use anyhow::{anyhow, Result};
 
     use super::*;
+    use crate::ai::privacy::PrivacySettings;
     use crate::settings::{AiSettings, ModelPrice, SettingsResult};
     use crate::shared::sync::lock;
     use crate::tracking::domain::exclusion::Exclusion;
@@ -235,6 +236,15 @@ mod tests {
             unreachable!()
         }
         fn remove_model_price(&self, _: &str, _: &str) -> SettingsResult {
+            unreachable!()
+        }
+        fn set_privacy(&self, _: PrivacySettings) -> SettingsResult {
+            unreachable!()
+        }
+        fn add_never_send(&self, _: Exclusion) -> SettingsResult {
+            unreachable!()
+        }
+        fn remove_never_send(&self, _: &Exclusion) -> SettingsResult {
             unreachable!()
         }
         fn take_load_issue(&self) -> Option<String> {

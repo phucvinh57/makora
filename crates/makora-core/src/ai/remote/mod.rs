@@ -18,6 +18,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use tracing::{info, warn};
 
+use crate::ai::privacy::RedactionReport;
 use crate::categorization::domain::retrieval::RelatedActivity;
 use crate::categorization::ports::{ActivityText, TokenUsage, UsageMeter};
 use crate::domain::types::Category;
@@ -57,7 +58,8 @@ pub fn api_for(provider: &ProviderConfig, key: Option<String>) -> Box<dyn ChatAp
 /// fails the run at once; after that a failed activity is skipped, unless too many fail in a row.
 ///
 /// Whatever happens, once anything was sent one `makora_lib::network` event records where it
-/// went and what it held, never the prompt itself.
+/// went and what it held, never the prompt itself; `redactions` is what the caller took out of
+/// it, and is read once the requests are done.
 #[allow(clippy::too_many_arguments)]
 pub fn classify(
     api: &dyn ChatApi,
@@ -67,6 +69,7 @@ pub fn classify(
     activities: &[ActivityText],
     related: &dyn Fn(usize) -> Vec<RelatedActivity>,
     meter: &UsageMeter,
+    redactions: &RedactionReport,
     on_answer: &mut dyn FnMut(usize, Option<CategoryId>) -> bool,
 ) -> Result<()> {
     let before = meter.snapshot();
@@ -82,6 +85,8 @@ pub fn classify(
             model,
             activities_sent,
             fields = SENT_FIELDS,
+            redactions = redactions.total(),
+            redaction_kinds = %redactions.summary(),
             input_tokens = after.input_tokens - before.input_tokens,
             output_tokens = after.output_tokens - before.output_tokens,
             "sent activities to remote provider"
@@ -92,7 +97,8 @@ pub fn classify(
 
 /// What each request tells the provider, as built by [`user_prompt`] and [`system_prompt`].
 const SENT_FIELDS: &str = "app name, URL domain and path (no query), window title, \
-    category names and descriptions, similar filed activities (app, URL domain and path, title, category)";
+    category names and descriptions, similar filed activities (app, URL domain and path, title, category), \
+    after PII redaction";
 
 /// One request, timed and counted.
 struct Asker<'a> {
@@ -267,6 +273,9 @@ fn trimmed(base_url: &str) -> String {
 mod tests {
     use anyhow::anyhow;
 
+    use crate::categorization::domain::retrieval::SourceRef;
+    use crate::tracking::domain::source_key::KeyKind;
+
     use super::*;
 
     /// Answers "Work" for every activity, except those whose title contains "fail".
@@ -297,6 +306,11 @@ mod tests {
             app_name: "Code".to_string(),
             url: None,
             title: title.to_string(),
+            source: SourceRef {
+                kind: KeyKind::Exe,
+                key: "code".to_string(),
+                path: String::new(),
+            },
         }
     }
 
@@ -320,6 +334,7 @@ mod tests {
             &activities,
             &|_| Vec::new(),
             &meter,
+            &RedactionReport::default(),
             &mut |index, category| {
                 answered.push((index, category));
                 true
