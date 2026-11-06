@@ -29,7 +29,7 @@ use crate::domain::{HistorySvc, LabelingSvc, SqliteHistory, SqliteLabeling};
 use crate::events::EventSink;
 use crate::ipc::{self, worker::WorkerRunner};
 use crate::logging;
-use crate::network_log::{JsonlNetworkLog, NetworkLog};
+use crate::logs::{JsonlNetworkLog, NetworkLog};
 use crate::paths::AppPaths;
 use crate::settings::{SettingsService, SettingsStore, SettingsSvc, TomlSettings};
 use crate::shared::sync::lock;

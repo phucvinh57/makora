@@ -60,7 +60,7 @@ pub trait NetworkLog: Send + Sync {
     fn masked(&self, days: u32, now: DateTime<Utc>) -> Result<MaskedSummary>;
 }
 
-/// Reads the daily `events.<date>.jsonl` files [`super::NetworkLogLayer`] writes.
+/// Reads the network events in the daily `events.<date>.jsonl` files [`super::AppLogLayer`] writes.
 pub struct JsonlNetworkLog {
     dir: PathBuf,
 }
@@ -80,6 +80,9 @@ impl JsonlNetworkLog {
                 Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
             };
             for line in String::from_utf8_lossy(&bytes).lines().rev() {
+                if !line.contains(NETWORK_TARGET) {
+                    continue;
+                }
                 let Ok(entry) = serde_json::from_str::<LogEntry>(line) else {
                     continue;
                 };
@@ -233,7 +236,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::network_log::layer::tests::capture;
+    use crate::logs::layer::tests::capture;
 
     struct Scratch(PathBuf);
 

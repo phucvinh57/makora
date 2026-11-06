@@ -5,38 +5,42 @@ use chrono::{SecondsFormat, Utc};
 use serde_json::{Map, Value};
 use tracing::field::{Field, Visit};
 use tracing::{Event, Subscriber};
+use tracing_log::NormalizeEvent;
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::{Context, Layer};
 
-use super::{LogEntry, NETWORK_TARGET};
+use super::{LogEntry, LogLevel};
 
-/// Writes each [`NETWORK_TARGET`] event as one [`LogEntry`] JSON line; every other event stays in
-/// the developer log. Failures to write are dropped silently: reporting them would mean logging
-/// from inside the logger.
-pub struct NetworkLogLayer<W> {
+/// Writes every event it is given as one [`LogEntry`] JSON line. Failures to write are dropped
+/// silently: reporting them would mean logging from inside the logger.
+///
+/// Records bridged from the `log` crate are left out. Makora logs through `tracing`, so they come
+/// from dependencies, mostly GPUI's renderer and font loading, and stay in the developer log.
+pub struct AppLogLayer<W> {
     make_writer: W,
 }
 
-impl<W> NetworkLogLayer<W> {
+impl<W> AppLogLayer<W> {
     pub fn new(make_writer: W) -> Self {
         Self { make_writer }
     }
 }
 
-impl<S, W> Layer<S> for NetworkLogLayer<W>
+impl<S, W> Layer<S> for AppLogLayer<W>
 where
     S: Subscriber,
     W: for<'writer> MakeWriter<'writer> + 'static,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        let metadata = event.metadata();
-        if metadata.target() != NETWORK_TARGET {
+        if event.is_log() {
             return;
         }
+        let metadata = event.metadata();
         let mut visitor = FieldVisitor::default();
         event.record(&mut visitor);
         let entry = LogEntry {
             ts: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+            level: LogLevel::from(metadata.level()),
             target: metadata.target().to_string(),
             message: visitor.message,
             fields: visitor.fields,
@@ -134,28 +138,43 @@ pub(crate) mod tests {
 
     pub(crate) fn capture(emit: impl FnOnce()) -> String {
         let buffer = Buffer::default();
-        let subscriber = tracing_subscriber::registry().with(NetworkLogLayer::new(buffer.clone()));
+        let subscriber = tracing_subscriber::registry().with(AppLogLayer::new(buffer.clone()));
         tracing::subscriber::with_default(subscriber, emit);
         buffer.text()
     }
 
     #[test]
-    fn writes_one_json_line_per_network_event_with_typed_fields() {
+    fn writes_one_json_line_per_event_with_typed_fields() {
         let text = capture(|| {
             let host = "api.openai.com";
             tracing::info!(target: "makora_lib::network", %host, status = 200u16, bytes_sent = 512u64, ok = true, "HTTP request");
-            tracing::warn!(target: "makora_lib::app_core", "not network");
+            tracing::warn!(error = ?"boom", "something failed");
         });
         let lines: Vec<LogEntry> = text.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
-        assert_eq!(lines.len(), 1);
+        assert_eq!(lines.len(), 2);
 
         let network = &lines[0];
-        assert_eq!(network.target, NETWORK_TARGET);
+        assert_eq!(network.level, LogLevel::Info);
         assert_eq!(network.message, "HTTP request");
         assert_eq!(network.fields["host"], "api.openai.com");
         assert_eq!(network.fields["status"], 200);
         assert_eq!(network.fields["bytes_sent"], 512);
         assert_eq!(network.fields["ok"], true);
         assert!(!network.fields.contains_key("message"));
+
+        assert_eq!(lines[1].level, LogLevel::Warn);
+        assert_eq!(lines[1].fields["error"], "\"boom\"");
+        assert!(lines[1].target.starts_with("makora_lib::logs"));
+    }
+
+    #[test]
+    fn leaves_out_records_bridged_from_the_log_crate() {
+        let _ = tracing_log::LogTracer::init();
+        let text = capture(|| {
+            log::warn!(target: "gpui::text_system", "failed to load font .SystemUIFont");
+            tracing::warn!(target: "makora_lib::app_core", "kept");
+        });
+        assert!(text.contains("kept"));
+        assert!(!text.contains("failed to load font"));
     }
 }

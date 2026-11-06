@@ -7,7 +7,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, App, Context, IntoElement, ParentElement, Render, Styled, Task, Window, div, px,
 };
-use makora_lib::network_log::{MaskedSummary, RemoteSend};
+use makora_lib::logs::{MaskedSummary, RemoteSend};
 
 use super::period::LogPeriod;
 use crate::runtime::window::show_main_window;

@@ -6,7 +6,7 @@ use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, App, Context, IntoElement, ParentElement, Render, Styled, Task, Window, div, px,
 };
-use makora_lib::network_log::HostTraffic;
+use makora_lib::logs::HostTraffic;
 
 use super::period::LogPeriod;
 use crate::ui::data;

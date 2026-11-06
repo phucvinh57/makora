@@ -22,7 +22,7 @@ use crate::ai::privacy::RedactionReport;
 use crate::categorization::domain::retrieval::RelatedActivity;
 use crate::categorization::ports::{ActivityText, TokenUsage, UsageMeter};
 use crate::domain::types::Category;
-use crate::network_log::{NETWORK_TARGET, REMOTE_SEND};
+use crate::logs::{NETWORK_TARGET, REMOTE_SEND};
 use crate::settings::{ProviderConfig, ProviderKind};
 use crate::shared::ids::CategoryId;
 
@@ -359,7 +359,7 @@ mod tests {
             parent_id: None,
             description: None,
         }];
-        let text = crate::network_log::layer::tests::capture(|| {
+        let text = crate::logs::layer::tests::capture(|| {
             classify(
                 &FakeApi,
                 "https://api.example.com/v1",
@@ -373,8 +373,8 @@ mod tests {
             )
             .unwrap();
         });
-        let entry: crate::network_log::LogEntry = serde_json::from_str(text.trim()).unwrap();
-        assert_eq!(entry.message, crate::network_log::REMOTE_SEND);
+        let entry: crate::logs::LogEntry = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(entry.message, crate::logs::REMOTE_SEND);
         assert_eq!(entry.fields["host"], "api.example.com");
         assert_eq!(entry.fields["activities_sent"], 1);
         assert_eq!(entry.fields["fields"], SENT_FIELDS);

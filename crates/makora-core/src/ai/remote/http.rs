@@ -9,7 +9,7 @@ use tracing::{info, warn};
 use ureq::http::Response;
 use ureq::{Agent, Body};
 
-use crate::network_log::NETWORK_TARGET;
+use crate::logs::NETWORK_TARGET;
 use crate::shared::text::clip;
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -206,7 +206,7 @@ fn error_message(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network_log::layer::tests::capture;
+    use crate::logs::layer::tests::capture;
 
     #[test]
     fn the_network_log_leaves_out_the_query_string() {
@@ -214,8 +214,8 @@ mod tests {
         let text = capture(|| request.answered(1, Instant::now(), 200, 42));
 
         assert!(!text.contains("secret") && !text.contains("limit"));
-        let entry: crate::network_log::LogEntry = serde_json::from_str(text.trim()).unwrap();
-        assert_eq!(entry.target, crate::network_log::NETWORK_TARGET);
+        let entry: crate::logs::LogEntry = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(entry.target, crate::logs::NETWORK_TARGET);
         assert_eq!(entry.fields["host"], "api.anthropic.com");
         assert_eq!(entry.fields["path"], "/v1/models");
         assert_eq!(entry.fields["bytes_received"], 42);
