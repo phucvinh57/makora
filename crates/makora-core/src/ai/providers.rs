@@ -250,6 +250,8 @@ mod tests {
         fn take_load_issue(&self) -> Option<String> {
             None
         }
+        fn reload(&self) {}
+        fn on_save(&self, _: Box<dyn Fn() + Send + Sync>) {}
     }
 
     fn existing() -> Settings {

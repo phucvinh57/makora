@@ -19,7 +19,6 @@ use tracing::{info, warn};
 use ureq::Agent;
 
 use crate::ai::llm;
-use crate::categorization::ActivityIndexer;
 use crate::events::{CoreEvent, EventSink};
 use crate::logs::NETWORK_TARGET;
 use crate::shared::sync::{lock, RunGuard};
@@ -51,7 +50,7 @@ pub struct ModelDownloadState {
     total: AtomicU64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ModelDownloadStatus {
     pub running: bool,
     pub model: String,
@@ -112,13 +111,12 @@ pub trait ModelDownloads: Send + Sync {
 
 pub struct OllamaDownloads {
     state: Arc<ModelDownloadState>,
-    indexer: Arc<dyn ActivityIndexer>,
     events: Arc<dyn EventSink>,
 }
 
 impl OllamaDownloads {
-    pub fn new(state: Arc<ModelDownloadState>, indexer: Arc<dyn ActivityIndexer>, events: Arc<dyn EventSink>) -> Self {
-        Self { state, indexer, events }
+    pub fn new(state: Arc<ModelDownloadState>, events: Arc<dyn EventSink>) -> Self {
+        Self { state, events }
     }
 }
 
@@ -144,10 +142,6 @@ impl ModelDownloads for OllamaDownloads {
         });
         if !matches!(downloaded, Err(ModelDownloadError::AlreadyRunning)) {
             self.events.emit(CoreEvent::DownloadFinished);
-        }
-        // The model may be the embedding one, and activities may be waiting for it.
-        if matches!(downloaded, Ok(true)) {
-            self.indexer.refresh();
         }
         downloaded
     }

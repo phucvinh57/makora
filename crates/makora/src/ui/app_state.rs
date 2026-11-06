@@ -6,7 +6,7 @@ use std::sync::Arc;
 use async_channel::Receiver;
 use gpui_kit::{App, AppContext, Context, Entity, Global, Task};
 use makora_lib::ai::model_download::ModelDownloadStatus;
-use makora_lib::app_core::AppCore;
+use makora_lib::app_core::ClientCore;
 use makora_lib::categorization::application::ai_run::AiRunStatus;
 use makora_lib::domain::types::Category;
 use makora_lib::events::CoreEvent;
@@ -18,12 +18,12 @@ use crate::ui::data;
 use crate::ui::format::bytes::format_bytes;
 
 /// The core, reachable from any view: `Core::get(cx).history.…`.
-pub struct Core(pub Arc<AppCore>);
+pub struct Core(pub Arc<ClientCore>);
 
 impl Global for Core {}
 
 impl Core {
-    pub fn get(cx: &App) -> Arc<AppCore> {
+    pub fn get(cx: &App) -> Arc<ClientCore> {
         cx.global::<Self>().0.clone()
     }
 }
@@ -228,7 +228,7 @@ impl AppState {
         background_tasks(&self.categorize, &self.download)
     }
 
-    fn apply(&mut self, event: CoreEvent, core: &AppCore, cx: &mut Context<Self>) {
+    fn apply(&mut self, event: CoreEvent, core: &ClientCore, cx: &mut Context<Self>) {
         match event {
             CoreEvent::CategorizeStarted { recheck } => self.mark_categorize_started(recheck, cx),
             CoreEvent::CategorizeProgress { done, total } => {

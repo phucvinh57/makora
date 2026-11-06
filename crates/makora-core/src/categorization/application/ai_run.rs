@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use chrono::Utc;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::categorization::application::embeddings::{embed_missing, EmbedSkips, EmbeddingSvc};
@@ -46,7 +46,7 @@ pub struct AiRunState {
     total: AtomicUsize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AiRunStatus {
     pub running: bool,
     pub recheck: bool,
@@ -60,7 +60,7 @@ pub struct AiRunProgress {
     pub total: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AiRunOutcome {
     pub labeled: usize,
     pub skipped: usize,

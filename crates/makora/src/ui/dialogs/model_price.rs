@@ -157,7 +157,7 @@ impl PriceForm {
 
     fn run<E: Into<UiError> + Send + 'static>(
         &mut self,
-        call: impl FnOnce(&makora_lib::app_core::AppCore) -> Result<makora_lib::settings::Settings, E>
+        call: impl FnOnce(&makora_lib::app_core::ClientCore) -> Result<makora_lib::settings::Settings, E>
         + Send
         + 'static,
         window: &mut Window,

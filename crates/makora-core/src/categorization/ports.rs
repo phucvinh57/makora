@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::domain::types::{ActivitySample, Category};
 use crate::shared::ids::{CategoryId, ProviderId};
@@ -80,7 +80,7 @@ pub struct TokenUsage {
 /// milliseconds; `busy_ms` sums the latency of every request, so with requests in flight at once
 /// it can exceed `llm_ms`, the wall time of the labeling phase. `prefill_ms` and `decode_ms` are
 /// only known for the local model.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunUsage {
     pub requests: u64,
     pub failed_requests: u64,

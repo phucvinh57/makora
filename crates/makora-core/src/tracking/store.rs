@@ -33,14 +33,14 @@ pub fn ensure_activity(
     source_id: i64,
     path: &str,
     title: &str,
-) -> QueryResult<(ActivityRow, bool)> {
+) -> QueryResult<ActivityRow> {
     if let Some(existing) = db::activities::ActivitiesRepo::get_by_identity(conn, source_id, path, title)? {
-        return Ok((existing, false));
+        return Ok(existing);
     }
     let created = db::activities::ActivitiesRepo::insert(conn, &NewActivityRow { source_id, path, title })?;
     // A rule the person already wrote may cover it, so it is categorized from its first moment.
     categorization::rules_store::match_new(conn, created.id)?;
-    Ok((created, true))
+    Ok(created)
 }
 
 pub fn prune_orphans(conn: &mut SqliteConnection, activity_ids: &[i64]) -> QueryResult<()> {

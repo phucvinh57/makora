@@ -4,6 +4,7 @@ pub mod categorization;
 pub mod db;
 pub mod domain;
 pub mod events;
+pub mod ipc;
 pub mod logging;
 pub mod logs;
 pub mod paths;

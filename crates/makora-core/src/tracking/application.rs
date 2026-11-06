@@ -5,7 +5,6 @@ use chrono::{DateTime, Utc};
 use diesel::{Connection, QueryResult};
 
 use crate::categorization::store as classifications;
-use crate::categorization::ActivityIndexer;
 use crate::db::models::NewSessionRow;
 use crate::db::{self, Db};
 use crate::shared::ids::SessionId;
@@ -23,12 +22,11 @@ use super::store::{ensure_activity, ensure_source, prune_orphans};
 pub struct SqliteSessionRecorder {
     db: Db,
     settings: Arc<dyn SettingsStore>,
-    indexer: Arc<dyn ActivityIndexer>,
 }
 
 impl SqliteSessionRecorder {
-    pub fn new(db: Db, settings: Arc<dyn SettingsStore>, indexer: Arc<dyn ActivityIndexer>) -> Self {
-        Self { db, settings, indexer }
+    pub fn new(db: Db, settings: Arc<dyn SettingsStore>) -> Self {
+        Self { db, settings }
     }
 }
 
@@ -39,9 +37,9 @@ impl SessionRecorder for SqliteSessionRecorder {
         let canonical = canonical_title(window_title, &app.app_name, url);
         let at = time::to_db(at_time);
         let mut conn = self.db.write();
-        let (opened, created) = conn.transaction(|conn| -> QueryResult<(OpenedRow, bool)> {
+        conn.transaction(|conn| -> QueryResult<OpenedRow> {
             let source_id = ensure_source(conn, &source, &source.display_name(&app.app_name))?;
-            let (activity, created) = ensure_activity(conn, source_id, &path, &canonical)?;
+            let activity = ensure_activity(conn, source_id, &path, &canonical)?;
 
             if let Some(last) = db::sessions::SessionsRepo::get_last(conn)? {
                 if last.activity_id == activity.id {
@@ -54,7 +52,7 @@ impl SessionRecorder for SqliteSessionRecorder {
                                 id: last.id.into(),
                                 started_at,
                             };
-                            return Ok((opened, created));
+                            return Ok(opened);
                         }
                     }
                 }
@@ -72,12 +70,9 @@ impl SessionRecorder for SqliteSessionRecorder {
                 id: session.id.into(),
                 started_at: at_time,
             };
-            Ok((opened, created))
-        })?;
-        if created {
-            self.indexer.refresh();
-        }
-        Ok(opened)
+            Ok(opened)
+        })
+        .map_err(Into::into)
     }
 
     fn end(&self, id: SessionId, at: DateTime<Utc>) -> Result<()> {
@@ -104,20 +99,20 @@ impl SessionRecorder for SqliteSessionRecorder {
     fn retitle(&self, id: SessionId, app: &FocusedApp, window_title: &str, url: Option<&str>) -> Result<()> {
         let id = i64::from(id);
         let mut conn = self.db.write();
-        let created = conn.transaction(|conn| -> QueryResult<bool> {
+        conn.transaction(|conn| -> QueryResult<()> {
             let Some(session) = db::sessions::SessionsRepo::get(conn, id)? else {
-                return Ok(false);
+                return Ok(());
             };
             let Some(old_activity) = db::activities::ActivitiesRepo::get(conn, session.activity_id)? else {
-                return Ok(false);
+                return Ok(());
             };
             let canonical = canonical_title(window_title, &app.app_name, url);
             let source = SourceKey::of(&app.exe_path, url);
             let path = url.map(url_path).unwrap_or_default();
             let source_id = ensure_source(conn, &source, &source.display_name(&app.app_name))?;
-            let (target, created) = ensure_activity(conn, source_id, &path, &canonical)?;
+            let target = ensure_activity(conn, source_id, &path, &canonical)?;
             if target.id == old_activity.id {
-                return Ok(created);
+                return Ok(());
             }
 
             // The session moves onto the target activity, so the user's pin moves with it —
@@ -131,13 +126,9 @@ impl SessionRecorder for SqliteSessionRecorder {
             }
 
             db::sessions::SessionsRepo::reassign_activity(conn, id, target.id)?;
-            prune_orphans(conn, &[old_activity.id])?;
-            Ok(created)
-        })?;
-        if created {
-            self.indexer.refresh();
-        }
-        Ok(())
+            prune_orphans(conn, &[old_activity.id])
+        })
+        .map_err(Into::into)
     }
 
     fn touch(&self, id: SessionId, at: DateTime<Utc>) -> Result<()> {

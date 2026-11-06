@@ -9,7 +9,7 @@ use tracing::info;
 use crate::ai::privacy::{PrivacyPreview, PrivacySettings, Redactor};
 use crate::categorization::domain::rules::{PatternField, RuleKind};
 use crate::categorization::ports::ActivityText;
-use crate::categorization::{ActivityIndexer, AutoCategorizeSchedule};
+use crate::categorization::AutoCategorizeSchedule;
 use crate::domain::LabelingSvc;
 use crate::tracking::domain::exclusion::Exclusion;
 
@@ -24,7 +24,7 @@ pub trait SettingsSvc: Send + Sync {
     fn remove_exclusion(&self, kind: RuleKind, field: Option<PatternField>, value: &str) -> SettingsResult;
     /// Sets the LLM to `model` on the remote `provider`, or on the local runtime when it is `None`.
     fn set_llm(&self, provider: Option<&str>, model: &str) -> SettingsResult;
-    /// Embeds, in the background, the activities the new model has no embedding for.
+    /// Activities are embedded with the new model at the start of the next AI run.
     fn set_embedding_model(&self, model: &str) -> SettingsResult;
     /// Restarts the schedule: the first run comes one period from now, on the hour.
     fn set_auto_categorize_hours(&self, hours: u32) -> SettingsResult;
@@ -44,7 +44,6 @@ const PRIVACY_PREVIEW_ROWS: i64 = 20;
 
 pub struct SettingsService {
     store: Arc<dyn SettingsStore>,
-    indexer: Arc<dyn ActivityIndexer>,
     schedule: Arc<dyn AutoCategorizeSchedule>,
     labeling: Arc<dyn LabelingSvc>,
 }
@@ -52,13 +51,11 @@ pub struct SettingsService {
 impl SettingsService {
     pub fn new(
         store: Arc<dyn SettingsStore>,
-        indexer: Arc<dyn ActivityIndexer>,
         schedule: Arc<dyn AutoCategorizeSchedule>,
         labeling: Arc<dyn LabelingSvc>,
     ) -> Self {
         Self {
             store,
-            indexer,
             schedule,
             labeling,
         }
@@ -105,7 +102,6 @@ impl SettingsSvc for SettingsService {
     fn set_embedding_model(&self, model: &str) -> SettingsResult {
         let saved = self.store.set_embedding_model(model)?;
         info!(setting = "embedding_model", value = model, "setting changed");
-        self.indexer.refresh();
         Ok(saved)
     }
 

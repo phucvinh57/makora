@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use gpui_kit::{AppContext, AsyncWindowContext, Context, Task, Window};
-use makora_lib::app_core::AppCore;
+use makora_lib::app_core::ClientCore;
 
 use crate::ui::app_state::Core;
 
@@ -19,7 +19,7 @@ use crate::ui::app_state::Core;
 /// is applied once the view is gone or the task is dropped.
 pub fn fetch<V, T>(
     cx: &mut Context<V>,
-    load: impl FnOnce(&AppCore) -> T + Send + 'static,
+    load: impl FnOnce(&ClientCore) -> T + Send + 'static,
     apply: impl FnOnce(&mut V, T, &mut Context<V>) + 'static,
 ) -> Task<()>
 where
@@ -40,7 +40,7 @@ where
 pub fn fetch_in<V, T>(
     window: &Window,
     cx: &mut Context<V>,
-    load: impl FnOnce(&AppCore) -> T + Send + 'static,
+    load: impl FnOnce(&ClientCore) -> T + Send + 'static,
     apply: impl FnOnce(&mut V, T, &mut Window, &mut Context<V>) + 'static,
 ) -> Task<()>
 where
@@ -61,13 +61,13 @@ where
 /// its own, so it does not hold one of the executor's threads.
 pub fn blocking<V, T>(
     cx: &Context<V>,
-    load: impl FnOnce(&AppCore) -> T + Send + 'static,
+    load: impl FnOnce(&ClientCore) -> T + Send + 'static,
 ) -> Task<Option<T>>
 where
     V: 'static,
     T: Send + 'static,
 {
-    let core: Arc<AppCore> = Core::get(cx);
+    let core: Arc<ClientCore> = Core::get(cx);
     let (tx, rx) = async_channel::bounded(1);
     let spawned = std::thread::Builder::new()
         .name("makora-ui-job".into())
@@ -83,12 +83,12 @@ where
 /// Runs a core call on a background thread; await the task from a foreground one.
 pub fn background<V, T>(
     cx: &Context<V>,
-    load: impl FnOnce(&AppCore) -> T + Send + 'static,
+    load: impl FnOnce(&ClientCore) -> T + Send + 'static,
 ) -> Task<T>
 where
     V: 'static,
     T: Send + 'static,
 {
-    let core: Arc<AppCore> = Core::get(cx);
+    let core: Arc<ClientCore> = Core::get(cx);
     cx.background_spawn(async move { load(&core) })
 }

@@ -1,12 +1,13 @@
 //! App-wide preferences, kept in a TOML file the person can also edit by hand.
 //!
-//! The file is read once at startup. Changes made through the settings page are applied at once
-//! and written back; edits made to the file while the app runs are picked up on the next launch.
+//! The file is read at startup. Changes made through the settings page are applied at once and
+//! written back; the background process reads the file again when the window saves it. Edits
+//! made to the file by hand while the app runs are picked up on the next launch.
 
 mod application;
 
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
@@ -184,6 +185,11 @@ pub trait SettingsStore: Send + Sync {
     fn remove_never_send(&self, exclusion: &Exclusion) -> SettingsResult;
     /// What went wrong reading the settings file at startup, once: later calls get `None`.
     fn take_load_issue(&self) -> Option<String>;
+    /// Reads the file again, for what another process saved. A file that cannot be read now
+    /// leaves the settings as they were.
+    fn reload(&self);
+    /// Calls `hook` after each save, at most one hook.
+    fn on_save(&self, hook: Box<dyn Fn() + Send + Sync>);
 }
 
 pub struct TomlSettings {
@@ -192,6 +198,7 @@ pub struct TomlSettings {
     /// The file could not be read and is still in place, so saving would overwrite it.
     read_only: bool,
     load_issue: Mutex<Option<String>>,
+    on_save: OnceLock<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl TomlSettings {
@@ -203,7 +210,7 @@ impl TomlSettings {
     pub fn load(path: PathBuf) -> Self {
         let mut read_only = false;
         let mut load_issue = None;
-        let mut settings = match std::fs::read_to_string(&path) {
+        let settings = match std::fs::read_to_string(&path) {
             Ok(text) => match toml::from_str(&text) {
                 Ok(settings) => settings,
                 Err(err) => {
@@ -242,50 +249,12 @@ impl TomlSettings {
             ));
         }
 
-        let seconds = settings.tracking.min_session_seconds;
-        if !MIN_SESSION_SECONDS_RANGE.contains(&seconds) {
-            let clamped = seconds.clamp(*MIN_SESSION_SECONDS_RANGE.start(), *MIN_SESSION_SECONDS_RANGE.end());
-            warn!(seconds, clamped, "tracking.min_session_seconds is out of range; clamping");
-            settings.tracking.min_session_seconds = clamped;
-        }
-
-        settings.tracking.excluded = normalized_exclusions("tracking.excluded", std::mem::take(&mut settings.tracking.excluded));
-        settings.ai.privacy = normalized_privacy(std::mem::take(&mut settings.ai.privacy));
-
-        settings.ai.providers = normalized_providers(std::mem::take(&mut settings.ai.providers));
-        if let Some(id) = settings.ai.llm_provider.as_deref() {
-            if settings.ai.provider(id).is_none() {
-                warn!(provider = id, "ai.llm_provider is not one of ai.providers; using the local model");
-                settings.ai.llm_provider = None;
-                settings.ai.llm_model = llm::DEFAULT_MODEL.to_string();
-            }
-        }
-
-        settings.ai.prices = normalized_prices(std::mem::take(&mut settings.ai.prices));
-
-        let defaults = AiSettings::default();
-        if settings.ai.llm_model.trim().is_empty() {
-            settings.ai.llm_model = defaults.llm_model;
-        }
-        if settings.ai.embedding_model.trim().is_empty() {
-            settings.ai.embedding_model = defaults.embedding_model;
-        }
-
-        let hours = settings.ai.auto_categorize_hours;
-        if hours != 0 && !AUTO_CATEGORIZE_HOURS_OPTIONS.contains(&hours) {
-            let nearest = AUTO_CATEGORIZE_HOURS_OPTIONS
-                .into_iter()
-                .min_by_key(|option| option.abs_diff(hours))
-                .unwrap_or(DEFAULT_AUTO_CATEGORIZE_HOURS);
-            warn!(hours, nearest, "ai.auto_categorize_hours is not one of the allowed periods; using the nearest");
-            settings.ai.auto_categorize_hours = nearest;
-        }
-
         Self {
             path,
-            current: RwLock::new(settings),
+            current: RwLock::new(normalized(settings)),
             read_only,
             load_issue: Mutex::new(load_issue),
+            on_save: OnceLock::new(),
         }
     }
 
@@ -308,8 +277,55 @@ impl TomlSettings {
         change(&mut next)?;
         write_atomically(&self.path, &next)?;
         *current = next.clone();
+        drop(current);
+        if let Some(hook) = self.on_save.get() {
+            hook();
+        }
         Ok(next)
     }
+}
+
+/// Puts what was read from the file within what the app accepts.
+fn normalized(mut settings: Settings) -> Settings {
+    let seconds = settings.tracking.min_session_seconds;
+    if !MIN_SESSION_SECONDS_RANGE.contains(&seconds) {
+        let clamped = seconds.clamp(*MIN_SESSION_SECONDS_RANGE.start(), *MIN_SESSION_SECONDS_RANGE.end());
+        warn!(seconds, clamped, "tracking.min_session_seconds is out of range; clamping");
+        settings.tracking.min_session_seconds = clamped;
+    }
+
+    settings.tracking.excluded = normalized_exclusions("tracking.excluded", std::mem::take(&mut settings.tracking.excluded));
+    settings.ai.privacy = normalized_privacy(std::mem::take(&mut settings.ai.privacy));
+
+    settings.ai.providers = normalized_providers(std::mem::take(&mut settings.ai.providers));
+    if let Some(id) = settings.ai.llm_provider.as_deref() {
+        if settings.ai.provider(id).is_none() {
+            warn!(provider = id, "ai.llm_provider is not one of ai.providers; using the local model");
+            settings.ai.llm_provider = None;
+            settings.ai.llm_model = llm::DEFAULT_MODEL.to_string();
+        }
+    }
+
+    settings.ai.prices = normalized_prices(std::mem::take(&mut settings.ai.prices));
+
+    let defaults = AiSettings::default();
+    if settings.ai.llm_model.trim().is_empty() {
+        settings.ai.llm_model = defaults.llm_model;
+    }
+    if settings.ai.embedding_model.trim().is_empty() {
+        settings.ai.embedding_model = defaults.embedding_model;
+    }
+
+    let hours = settings.ai.auto_categorize_hours;
+    if hours != 0 && !AUTO_CATEGORIZE_HOURS_OPTIONS.contains(&hours) {
+        let nearest = AUTO_CATEGORIZE_HOURS_OPTIONS
+            .into_iter()
+            .min_by_key(|option| option.abs_diff(hours))
+            .unwrap_or(DEFAULT_AUTO_CATEGORIZE_HOURS);
+        warn!(hours, nearest, "ai.auto_categorize_hours is not one of the allowed periods; using the nearest");
+        settings.ai.auto_categorize_hours = nearest;
+    }
+    settings
 }
 
 fn create_defaults(path: &Path) {
@@ -556,6 +572,24 @@ impl SettingsStore for TomlSettings {
     fn take_load_issue(&self) -> Option<String> {
         sync::lock(&self.load_issue).take()
     }
+
+    fn reload(&self) {
+        // Held across the read, so two reloads land in the order the file was written.
+        let mut current = sync::write(&self.current);
+        let read = std::fs::read_to_string(&self.path)
+            .context("reading")
+            .and_then(|text| toml::from_str::<Settings>(&text).context("parsing"));
+        match read {
+            Ok(settings) => *current = normalized(settings),
+            Err(err) => warn!(path = %self.path.display(), error = format!("{err:#}"), "could not reload settings; keeping the ones in use"),
+        }
+    }
+
+    fn on_save(&self, hook: Box<dyn Fn() + Send + Sync>) {
+        if self.on_save.set(hook).is_err() {
+            warn!("a settings save hook is already set");
+        }
+    }
 }
 
 fn write_atomically(path: &Path, settings: &Settings) -> Result<()> {
@@ -573,6 +607,9 @@ mod tests {
     use crate::ai::privacy::{Kind, UrlPolicy};
     use crate::categorization::domain::rules::RuleKind;
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
     use super::*;
 
     fn scratch_dir(name: &str) -> PathBuf {
@@ -580,6 +617,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn another_process_save_is_seen_after_reload() {
+        let path = scratch_dir("reload").join("settings.toml");
+        let reader = TomlSettings::load(path.clone());
+        let writer = TomlSettings::load(path.clone());
+        let saves = Arc::new(AtomicUsize::new(0));
+        let counter = saves.clone();
+        writer.on_save(Box::new(move || {
+            counter.fetch_add(1, Ordering::Relaxed);
+        }));
+
+        writer.set_min_session_seconds(42).unwrap();
+        assert_eq!(saves.load(Ordering::Relaxed), 1);
+        assert_ne!(reader.get().tracking.min_session_seconds, 42);
+        reader.reload();
+        assert_eq!(reader.get().tracking.min_session_seconds, 42);
+
+        std::fs::write(&path, "not = = toml").unwrap();
+        reader.reload();
+        assert_eq!(reader.get().tracking.min_session_seconds, 42);
     }
 
     #[test]

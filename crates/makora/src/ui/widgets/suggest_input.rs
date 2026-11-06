@@ -17,7 +17,7 @@ use gpui_kit::{
     IntoElement, MouseButton, ParentElement, Pixels, Render, SharedString, Styled, Subscription,
     Task, Window, anchored, canvas, deferred, div, px,
 };
-use makora_lib::app_core::AppCore;
+use makora_lib::app_core::ClientCore;
 
 use crate::ui::data;
 
@@ -159,7 +159,7 @@ impl SuggestInput {
     pub fn load(
         &mut self,
         cx: &mut Context<Self>,
-        load: impl FnOnce(&AppCore) -> Vec<Suggestion> + Send + 'static,
+        load: impl FnOnce(&ClientCore) -> Vec<Suggestion> + Send + 'static,
     ) {
         self.load = data::fetch(cx, load, |this, suggestions, cx| {
             this.set_suggestions(suggestions, cx);
