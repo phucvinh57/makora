@@ -17,12 +17,12 @@ use std::sync::Arc;
 
 use async_channel::Receiver;
 use gpui_kit::App;
-use makora_lib::app_core::AppCore;
+use makora_lib::app_core::ClientCore;
 use makora_lib::events::CoreEvent;
 
 use crate::ui::app_state::Core;
 
-pub fn init(core: Arc<AppCore>, events: Receiver<CoreEvent>, cx: &mut App) {
+pub fn init(core: Arc<ClientCore>, events: Receiver<CoreEvent>, cx: &mut App) {
     prefs::init(&core.paths.config_dir, cx);
     cx.set_global(Core(core));
     theme::init(cx);

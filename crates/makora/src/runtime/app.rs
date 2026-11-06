@@ -49,7 +49,7 @@ pub fn launch(
             None
         });
         cx.set_global(AutostartService(autostart));
-        ui::init(core.clone(), events, cx);
+        ui::init(Arc::new(core.client()), events, cx);
         window::init(cx);
         install_quit(cx);
         tray::install(command_tx, cx);
