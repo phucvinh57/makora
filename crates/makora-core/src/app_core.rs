@@ -20,7 +20,7 @@ use crate::categorization::application::ai_run::AiRunState;
 use crate::categorization::application::usage::SqliteAiUsage;
 use crate::categorization::ports::{Classifier, Embedder};
 use crate::categorization::{
-    ActivityIndexer, AiCategorizationRunner, AiUsageSvc, AutoCategorizeSchedule, BackgroundIndexer,
+    AiCategorizationRunner, AiUsageSvc, AutoCategorizeSchedule,
     CategorizationRunner, ClassificationSvc, EmbedSkips, EmbeddingSvc, RuleSvc, ScheduleAnchor,
     ScheduledCategorization, SqliteClassification, SqliteEmbeddings, SqliteRules,
 };
@@ -63,7 +63,6 @@ pub struct AppCore {
     pub embedder: Arc<dyn Embedder>,
     pub embeddings: Arc<dyn EmbeddingSvc>,
     pub embed_skips: Arc<EmbedSkips>,
-    pub indexer: Arc<dyn ActivityIndexer>,
     pub models: ModelCache,
     pub ai_run: Arc<AiRunState>,
     pub runner: Arc<dyn CategorizationRunner>,
@@ -98,13 +97,9 @@ impl AppCore {
         let embedder: Arc<dyn Embedder> = Arc::new(LlamaEmbedder::new(models.clone()));
         let embeddings: Arc<dyn EmbeddingSvc> = Arc::new(SqliteEmbeddings::new(conn.clone()));
         let embed_skips = Arc::new(EmbedSkips::default());
-        let indexer: Arc<dyn ActivityIndexer> = Arc::new(
-            BackgroundIndexer::spawn(embeddings.clone(), embedder.clone(), settings_store.clone(), embed_skips.clone())
-                .context("spawning activity-embedder thread")?,
-        );
 
         let recorder: Box<dyn SessionRecorder> =
-            Box::new(SqliteSessionRecorder::new(conn.clone(), settings_store.clone(), indexer.clone()));
+            Box::new(SqliteSessionRecorder::new(conn.clone(), settings_store.clone()));
         let exclusions: Box<dyn ExclusionPolicy> = Box::new(SettingsExclusions::new(settings_store.clone()));
         let session_tracker = FocusStateMachine::new(recorder, exclusions).context("initializing session tracker")?;
         let tracker: SharedTracker = Arc::new(Mutex::new(Box::new(session_tracker) as Box<dyn SessionTracker>));
@@ -149,11 +144,11 @@ impl AppCore {
             events: events.clone(),
         });
         let settings: Arc<dyn SettingsSvc> =
-            Arc::new(SettingsService::new(settings_store.clone(), indexer.clone(), schedule.clone(), labeling.clone()));
+            Arc::new(SettingsService::new(settings_store.clone(), schedule.clone(), labeling.clone()));
 
         let download_state = Arc::new(ModelDownloadState::default());
         let downloads: Arc<dyn ModelDownloads> =
-            Arc::new(OllamaDownloads::new(download_state.clone(), indexer.clone(), events.clone()));
+            Arc::new(OllamaDownloads::new(download_state.clone(), events.clone()));
 
         Ok(Arc::new(Self {
             paths,
@@ -173,7 +168,6 @@ impl AppCore {
             embedder,
             embeddings,
             embed_skips,
-            indexer,
             models,
             ai_run,
             runner,
@@ -185,12 +179,8 @@ impl AppCore {
         }))
     }
 
-    /// Starts tracking focus and presence, the browser bridge, the embedding backfill and the
-    /// categorization schedule. Call it once.
+    /// Starts tracking focus and presence, the browser bridge and the categorization schedule. Call it once.
     pub fn start_background(&self) -> Result<()> {
-        // Activities recorded before they were embedded as they were saved.
-        self.indexer.refresh();
-
         let (tx, rx) = mpsc::channel::<WatchEvent>();
         tracking::adapters::platform::start_presence_watcher(tx.clone()).context("starting presence watcher")?;
         let mut watcher = PlatformFocusWatcher::new();

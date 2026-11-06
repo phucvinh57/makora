@@ -12,7 +12,7 @@ pub mod rules_store;
 pub mod store;
 
 pub use application::{
-    ActivityIndexer, AiCategorizationRunner, AiUsageSvc, AutoCategorizeSchedule, BackgroundIndexer,
+    AiCategorizationRunner, AiUsageSvc, AutoCategorizeSchedule,
     CategorizationRunner, ClassificationSvc, EmbedSkips, EmbeddingSvc, RuleSvc, ScheduleAnchor,
     ScheduledCategorization, SqliteClassification, SqliteEmbeddings, SqliteRules,
 };

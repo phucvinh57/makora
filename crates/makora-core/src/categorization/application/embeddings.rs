@@ -1,6 +1,6 @@
 //! The embedding of every activity, kept in the database so that finding the activities most like
-//! another is a read, not a model run. Vectors are made once, as activities are saved
-//! ([`super::indexing`]), and what is still missing is caught up before an AI run reads them.
+//! another is a read, not a model run. Vectors are made at the start of an AI run, for the
+//! activities that have none yet, so no model is loaded while the app only tracks.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
@@ -123,7 +123,7 @@ impl EmbedSkips {
 }
 
 /// Embeds every activity that has no vector from `model` yet, a batch at a time, and returns how
-/// many it did. Safe to run alongside itself: a vector made twice is just replaced.
+/// many it did.
 ///
 /// A batch that fails is tried again one activity at a time; the ones that still fail while
 /// others succeed are left out from then on. When none succeeds the model itself is the
