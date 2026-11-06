@@ -454,7 +454,7 @@ impl LogsTab {
                             .accessibility_label("Minimum level"),
                     )
                     .child(
-                        div().ml_auto().w(px(168.)).child(
+                        h_flex().ml_auto().child(
                             TabBar::new("log-group-by")
                                 .segmented()
                                 .small()

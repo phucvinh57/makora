@@ -3,10 +3,10 @@ mod logs;
 mod usage;
 
 use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::v_flex;
+use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Window, div, px,
+    AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Window, div,
 };
 
 use crate::ui::prefs::Prefs;
@@ -84,7 +84,7 @@ impl Render for InsightsScreen {
                 "What the AI used and cost, and what Makora has been doing",
             ))
             .child(
-                div().w(px(168.)).child(
+                h_flex().child(
                     TabBar::new("insights-tabs")
                         .segmented()
                         .selected_index(match tab {
