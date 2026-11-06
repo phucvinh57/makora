@@ -12,5 +12,5 @@
     "noUnusedParameters": true,
     "types": ["node"]
   },
-  "include": ["src", "scripts", "remotion.config.ts"]
+  "include": ["src", "remotion.config.ts"]
 }

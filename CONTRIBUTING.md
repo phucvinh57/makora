@@ -102,7 +102,7 @@ Store for stable tags.
 | `packaging/` | Linux desktop entry and package maintainer scripts |
 | `extensions/browser/` | Optional active-tab reporter |
 | `extensions/gnome/` | GNOME Shell focus reporter |
-| `demo/` | Remotion video and fictional screenshot fixtures |
+| `demo/` | Remotion video built from app screenshots |
 | `docs/` | [Domain design](docs/ddd.md) and [trait guidance](docs/traits.md) |
 
 The focus watcher and browser tab listener run in-process alongside the
@@ -200,9 +200,8 @@ and versions in sync with the Rust platform implementation when changing it.
 
 ## Demo video
 
-The [Remotion demo guide](demo/README.md) covers screenshot capture, preview,
-typechecking, and rendering. Capture injects fictional responses into an
-isolated browser context; it never reads or writes the real activity database.
+The [Remotion demo guide](demo/README.md) covers preview, typechecking, and
+rendering.
 
 ## Change guidelines
 

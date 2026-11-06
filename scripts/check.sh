@@ -35,12 +35,17 @@ run() {
   fi
 }
 
-if touches '^(scripts/|extensions/|package\.json|bun\.lock|biome\.json)'; then
-  run biome bunx biome ci extensions scripts
+if touches '^(scripts/|extensions/|demo/|package\.json|bun\.lock|biome\.json)'; then
+  run biome bunx biome ci extensions scripts demo
 fi
 
 if touches '^(extensions/browser/|package\.json|bun\.lock)'; then
   run ext-check bun run ext:check
+fi
+
+if touches '^(demo/|package\.json)'; then
+  run demo-install bun install --cwd demo --frozen-lockfile
+  run demo-check bun run demo:check
 fi
 
 if touches '^(crates/|Cargo\.(toml|lock)|\.cargo/)'; then
