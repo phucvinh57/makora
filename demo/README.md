@@ -2,7 +2,7 @@
 
 A 44-second, 1920 × 1080, 30 fps Remotion video for introducing Makora.
 It is designed to work without sound: headings and captions carry the story.
-Screenshots show the actual React interface with fictional activity data.
+Screenshots show the earlier React interface with fictional activity data.
 
 ## Preview and render
 
@@ -28,46 +28,25 @@ CHROME_PATH=/usr/bin/google-chrome bun run demo:render
 
 The demo dependencies and lockfile are separate from the desktop app.
 
-## Refresh screenshots
+## Screenshots
 
-Install the app's dependencies with `bun install` and the demo dependencies
-with `bun run demo:install`. Build and preview the production frontend in
-another terminal, so the video shows release behavior:
-
-```sh
-bun run build
-bun run preview --host 127.0.0.1
-```
-
-Then capture the screens:
-
-```sh
-CHROME_PATH=/usr/bin/google-chrome bun run demo:capture
-```
-
-The capture script uses Playwright with an isolated browser context and a
-fictional desktop-command bridge. It does not start the Rust backend or
-access the real database. The fixture dates are fixed to October 2–8, 2026;
-weekly totals are derived from the sample sessions. Screenshot capture also
-copies the app's bundled Geist font for offline rendering.
-
-`DEMO_APP_URL` defaults to `http://127.0.0.1:4173`. Set it if Vite is hosted
-elsewhere. `CHROME_PATH` should point to your local Chrome/Chromium executable.
-The captured PNGs and font are included, so recapture is only necessary when
-the UI or sample data changes.
+`public/screens/` holds screenshots of the earlier React interface. The
+capture script that produced them, which also copied the app's Geist font to
+`public/fonts/geist.woff2`, was removed with that UI. Replace the PNGs and font
+by hand when the screens change.
 
 ## Storyboard
 
-| Time | Scene |
-| --- | --- |
-| 0–5 s | Introduce local-only tracking, built-in AI, and personalization |
-| 5–12 s | Illustrate focus changes and automatic activity blocks |
-| 12–19 s | Search activity history by app and website |
-| 19–25 s | Show weekly statistics and daily trends |
-| 25–31 s | Introduce on-device AI category suggestions |
-| 31–37 s | Show how categories and past choices guide suggestions |
-| 37–44 s | Reaffirm the three pillars and close with the project URL |
+| Time    | Scene                                                           |
+| ------- | --------------------------------------------------------------- |
+| 0–5 s   | Introduce local-only tracking, built-in AI, and personalization |
+| 5–12 s  | Illustrate focus changes and automatic activity blocks          |
+| 12–19 s | Search activity history by app and website                      |
+| 19–25 s | Show weekly statistics and daily trends                         |
+| 25–31 s | Introduce on-device AI category suggestions                     |
+| 31–37 s | Show how categories and past choices guide suggestions          |
+| 37–44 s | Reaffirm the three pillars and close with the project URL       |
 
-Edit `src/MakoraDemo.tsx` for the visuals and copy, `src/timing.ts` for timing
-and dimensions, and `scripts/fixtures.ts` for sample activity. Animations use
+Edit `src/MakoraDemo.tsx` for the visuals and copy, and `src/timing.ts` for
+timing and dimensions. Animations use
 Remotion frames rather than wall-clock timers so preview and export match.

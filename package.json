@@ -9,7 +9,6 @@
     "ext:watch": "node extensions/browser/build.mjs --watch",
     "ext:check": "tsc -p extensions/browser",
     "demo:install": "bun install --cwd demo",
-    "demo:capture": "bun run --cwd demo capture",
     "demo:dev": "bun run --cwd demo dev",
     "demo:check": "bun run --cwd demo check",
     "demo:render": "bun run --cwd demo render",

@@ -1,0 +1,5 @@
+# Installed as ~/.cargo/config.toml by CI. Overrides Cargo.toml's opt-level 2
+# for dependencies: CI only compiles and runs fast tests, so a cold build is
+# what matters. rust-cache ignores profiles, so ci.yml keys the cache on this.
+[profile.dev.package."*"]
+opt-level = 0
