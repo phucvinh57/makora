@@ -6,7 +6,7 @@
 
 ## Risk
 
-<!-- Low / Medium / High (REVIEW.md), and what could break. -->
+<!-- Low / Medium / High (docs/REVIEW.md), and what could break. -->
 
 ## How to revert
 
