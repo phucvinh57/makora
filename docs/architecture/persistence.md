@@ -15,6 +15,8 @@ Each table belongs to one context. Others may read it, but only the owner writes
 | `ai_labels`           | Categorization  | The model's suggestion per activity, and whether it was rejected |
 | `activity_embeddings` | Categorization  | One vector per activity, tagged with the model that made it     |
 | `ai_runs`             | Categorization  | One record per AI run                                           |
+| `ai_unlabeled`        | Categorization  | Activities the model found no category for                      |
+| `taxonomy_suggestions`| Categorization  | Proposed new categories, descriptions and merges                |
 | `activity_category`   | Categorization (view) | The resolved category, read by Reporting                  |
 
 ## Tracking tables
@@ -56,6 +58,8 @@ erDiagram
     categories ||--o{ category_rules : "files under"
     categories ||--o{ ai_labels : "suggested"
     categories ||--o{ rule_suggestion_dismissals : "not suggested"
+    activities ||--o| ai_unlabeled : "no category fits"
+    ai_runs ||--o{ taxonomy_suggestions : "proposed by"
     ai_labels {
         int activity_id PK
         int category_id FK
@@ -84,11 +88,29 @@ erDiagram
         text model
         blob vector
     }
+    ai_unlabeled {
+        int activity_id PK
+        text model
+        text answered_at
+    }
+    taxonomy_suggestions {
+        int id PK
+        text kind "new | describe | merge"
+        text payload "JSON"
+        text status "pending | accepted | dismissed"
+        text created_at
+        text decided_at "accepted or dismissed"
+        int run_id FK
+    }
 ```
 
 `rule_suggestion_dismissals` holds the rule suggestions the user dismissed, one per (matcher, category). They cascade with the category.
 
-`ai_runs` stands alone: trigger, provider, model, status, timestamps, counts, tokens and timings of each run.
+`ai_runs` holds the trigger, provider, model, status, timestamps, counts, tokens and timings of each run.
+
+`ai_unlabeled` holds the activities the model answered "None" for. `ai_labels` only holds categories the model picked, so this is what tells a "None" answer from an activity never asked about. `ClassificationSvc::assign_ai` writes a row; `store::save_changes` deletes it once the activity has a pin or an active suggestion; a reset clears the table, and the row cascades with its activity.
+
+`taxonomy_suggestions` holds the changes to the taxonomy proposed from the data. `payload` is JSON whose shape depends on `kind` (`domain/suggestions.rs`); a "new category" payload lists its member activity ids, so it is checked against `ai_unlabeled` when read rather than kept in step by foreign keys. `run_id` is the run that proposed it, `NULL` once that run's record is gone.
 
 ## Taxonomy table
 
@@ -131,6 +153,7 @@ Each application service does one use case in one transaction, so the database n
 - Opening, closing or retitling a session, including matching a new activity against the rules and carrying a pin across.
 - Creating, editing or deleting a rule, including rewriting `rule_matches`.
 - Deleting a category branch, including releasing its pins and AI labels.
+- Merging one category into another, including moving its subcategories, pins, rules and AI labels and rewriting `rule_matches`.
 - Pinning, unpinning, accepting, and undoing an assignment.
 
 Writes go through `Db::write`, reads through `Db::read` (`db/mod.rs`).

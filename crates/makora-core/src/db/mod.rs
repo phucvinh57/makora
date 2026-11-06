@@ -7,6 +7,7 @@ pub mod activities;
 pub mod activity_embeddings;
 pub mod ai_labels;
 pub mod ai_runs;
+pub mod ai_unlabeled;
 pub mod categories;
 pub mod category_rules;
 mod migrate;
@@ -17,6 +18,7 @@ pub mod schema;
 pub mod sessions;
 pub(crate) mod sql;
 pub mod sources;
+pub mod taxonomy_suggestions;
 mod text_enums;
 mod traits;
 

@@ -40,9 +40,18 @@ pub struct Pick {
     pub usage: TokenUsage,
 }
 
+/// A JSON object a model answered with, and the tokens the request took.
+pub struct JsonReply {
+    pub value: Value,
+    pub usage: TokenUsage,
+}
+
 pub trait ChatApi: Send + Sync {
     /// Asks `model` to pick one of `choices` for the activity in `user`.
     fn pick(&self, model: &str, system: &str, user: &str, choices: &[String]) -> Result<Pick>;
+    /// Asks `model` for a JSON object that follows `schema`, an object schema whose properties
+    /// are all required, in at most `max_tokens`.
+    fn complete_json(&self, model: &str, system: &str, user: &str, schema: &Value, max_tokens: u32) -> Result<JsonReply>;
     /// The ids of the models the provider offers.
     fn list_models(&self) -> Result<Vec<String>>;
 }
@@ -94,6 +103,69 @@ pub fn classify(
         );
     }
     result
+}
+
+/// One request for a JSON answer, metered, and recorded in the network log as one
+/// `makora_lib::network` event saying where it went and what it held, never the prompt itself.
+pub fn complete_json(
+    api: &dyn ChatApi,
+    base_url: &str,
+    model: &str,
+    request: &JsonRequest<'_>,
+    meter: &UsageMeter,
+    redactions: &RedactionReport,
+) -> Result<Value> {
+    let started = Instant::now();
+    let result = api.complete_json(model, request.system, request.user, request.schema, request.max_tokens);
+    let usage = match &result {
+        Ok(reply) => {
+            meter.record(reply.usage, started.elapsed());
+            reply.usage
+        }
+        Err(_) => {
+            meter.record_failure(started.elapsed());
+            TokenUsage::default()
+        }
+    };
+    info!(
+        target: NETWORK_TARGET,
+        host = %host_of(base_url),
+        purpose = request.purpose,
+        model,
+        activities_sent = request.activities_sent,
+        fields = request.fields,
+        redactions = redactions.total(),
+        redaction_kinds = %redactions.summary(),
+        input_tokens = usage.input,
+        output_tokens = usage.output,
+        "{REMOTE_SEND}"
+    );
+    result.map(|reply| reply.value)
+}
+
+/// What [`complete_json`] sends, and how the network log describes it.
+pub struct JsonRequest<'a> {
+    pub system: &'a str,
+    pub user: &'a str,
+    pub schema: &'a Value,
+    pub max_tokens: u32,
+    pub purpose: &'static str,
+    pub fields: &'static str,
+    pub activities_sent: usize,
+}
+
+/// The JSON object in `text`: all of it, or the part from the first `{` to the last `}`, for a
+/// model that wraps its answer in prose or a code fence.
+pub fn json_in(text: &str) -> Option<Value> {
+    let text = text.trim();
+    if let Ok(value @ Value::Object(_)) = serde_json::from_str::<Value>(text) {
+        return Some(value);
+    }
+    let (start, end) = (text.find('{')?, text.rfind('}')?);
+    match serde_json::from_str::<Value>(text.get(start..=end)?) {
+        Ok(value @ Value::Object(_)) => Some(value),
+        _ => None,
+    }
 }
 
 /// What each request tells the provider, as built by [`user_prompt`] and [`system_prompt`].
@@ -297,6 +369,17 @@ mod tests {
             })
         }
 
+        fn complete_json(&self, _model: &str, _system: &str, _user: &str, _schema: &Value, _max_tokens: u32) -> Result<JsonReply> {
+            Ok(JsonReply {
+                value: serde_json::json!({ "name": "Games" }),
+                usage: TokenUsage {
+                    input: 50,
+                    cached_input: 0,
+                    output: 10,
+                },
+            })
+        }
+
         fn list_models(&self) -> Result<Vec<String>> {
             Ok(Vec::new())
         }
@@ -378,6 +461,45 @@ mod tests {
         assert_eq!(entry.fields["host"], "api.example.com");
         assert_eq!(entry.fields["activities_sent"], 1);
         assert_eq!(entry.fields["fields"], SENT_FIELDS);
+    }
+
+    #[test]
+    fn a_json_request_is_metered_and_logged() {
+        let meter = UsageMeter::default();
+        let schema = serde_json::json!({});
+        let request = JsonRequest {
+            system: "s",
+            user: "u",
+            schema: &schema,
+            max_tokens: 100,
+            purpose: "Category suggestions",
+            fields: "titles",
+            activities_sent: 5,
+        };
+        let text = crate::logs::layer::tests::capture(|| {
+            let value = complete_json(
+                &FakeApi,
+                "https://api.example.com/v1",
+                "model",
+                &request,
+                &meter,
+                &RedactionReport::default(),
+            )
+            .unwrap();
+            assert_eq!(value["name"], "Games");
+        });
+        let entry: crate::logs::LogEntry = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(entry.fields["purpose"], "Category suggestions");
+        assert_eq!(entry.fields["activities_sent"], 5);
+        assert_eq!(meter.snapshot().output_tokens, 10);
+    }
+
+    #[test]
+    fn json_is_found_inside_prose_or_a_fence() {
+        assert_eq!(json_in(r#"{"a": 1}"#).unwrap()["a"], 1);
+        assert_eq!(json_in("Sure:\n```json\n{\"a\": 2}\n```").unwrap()["a"], 2);
+        assert!(json_in("no json here").is_none());
+        assert!(json_in("[1, 2]").is_none());
     }
 
     #[test]

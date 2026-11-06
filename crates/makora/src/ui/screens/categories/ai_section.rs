@@ -11,15 +11,14 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    App, AppContext, Context, Entity, IntoElement, ParentElement, Render,
+    App, AppContext, Context, Entity, EventEmitter, IntoElement, ParentElement, Render,
     SharedString, Styled, Subscription, Task, Window, div, px,
 };
 use makora_lib::ai::llm::ModelRole;
-use makora_lib::categorization::application::ai_run::AiRunOutcome;
-use makora_lib::categorization::domain::usage::RunTrigger;
+use makora_lib::categorization::application::ai_run::{AiRunOutcome, RunMode, RunRequest};
 use makora_lib::settings::{AUTO_CATEGORIZE_HOURS_OPTIONS, AiSettings, ProviderConfig, Settings};
 
-use crate::ui::app_state::{AppState, CategorizeTask};
+use crate::ui::app_state::AppState;
 use crate::ui::data;
 use crate::ui::dialogs::add_model::{AddModelData, AddModelDialog};
 use crate::ui::dialogs::reset_categorization::ResetCategorizationDialog;
@@ -113,25 +112,36 @@ pub fn describe_next_run(next: DateTime<Utc>, now: DateTime<Utc>, running: bool)
 }
 
 /// The toast after a run: its title and what it did.
-pub fn run_summary(outcome: &AiRunOutcome, recheck: bool) -> (&'static str, String) {
-    let title = if outcome.stopped {
-        "AI categorization stopped"
-    } else if recheck {
-        "AI labels re-checked"
-    } else {
-        "AI categorization finished"
+pub fn run_summary(outcome: &AiRunOutcome, mode: RunMode) -> (&'static str, String) {
+    let title = match mode {
+        _ if outcome.stopped => "AI categorization stopped",
+        RunMode::Recheck => "AI labels re-checked",
+        RunMode::Label => "AI categorization finished",
+        RunMode::FindCategories => "New categories",
     };
-    let counts = if recheck {
-        format!(
+    let mut counts = match mode {
+        RunMode::Recheck => format!(
             "{} labels changed, {} cleared as uncertain.",
             outcome.changed, outcome.skipped
-        )
-    } else {
-        format!(
+        ),
+        RunMode::Label => format!(
             "{} activities labeled, {} left uncategorized.",
             outcome.labeled, outcome.skipped
-        )
+        ),
+        RunMode::FindCategories => String::new(),
     };
+    let found = match outcome.suggested {
+        0 if mode == RunMode::FindCategories => Some("No new groups of activities found.".to_string()),
+        0 => None,
+        1 => Some("1 new category suggested.".to_string()),
+        n => Some(format!("{n} new categories suggested.")),
+    };
+    if let Some(found) = found {
+        if !counts.is_empty() {
+            counts.push(' ');
+        }
+        counts.push_str(&found);
+    }
     let description = match describe_run_usage(&outcome.usage) {
         Some(usage) => format!("{counts} {usage}"),
         None => counts,
@@ -255,14 +265,28 @@ impl SyncKey {
     }
 }
 
+/// What the section asks of the screen around it.
+pub enum AiSectionEvent {
+    /// Show the suggested categories.
+    ShowSuggestions,
+}
+
+impl EventEmitter<AiSectionEvent> for AiSection {}
+
+/// "The AI found no category for 3 activities."
+pub fn unlabeled_line(count: usize) -> String {
+    let noun = if count == 1 { "activity" } else { "activities" };
+    format!("The AI found no category for {count} {noun}.")
+}
+
 pub struct AiSection {
     installed: Option<Vec<(String, ModelRole)>>,
     pending_provider: Option<String>,
     pending_review: Option<i64>,
+    /// Activities the model found no category for, as of `unlabeled_revision`.
+    unlabeled: Option<usize>,
+    unlabeled_revision: Option<u64>,
     setting_model: bool,
-    /// While the run call is out: whether it is a re-check.
-    run_pending: Option<bool>,
-    run_error: Option<String>,
     stopping: bool,
     saving_period: bool,
     period_error: Option<String>,
@@ -287,7 +311,7 @@ pub struct AiSection {
     installed_load: Task<()>,
     next_run_load: Task<()>,
     models_load: Task<()>,
-    run: Task<()>,
+    unlabeled_load: Task<()>,
     _polls: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -353,9 +377,9 @@ impl AiSection {
             installed: None,
             pending_provider: None,
             pending_review: None,
+            unlabeled: None,
+            unlabeled_revision: None,
             setting_model: false,
-            run_pending: None,
-            run_error: None,
             stopping: false,
             saving_period: false,
             period_error: None,
@@ -378,7 +402,7 @@ impl AiSection {
             installed_load: Task::ready(()),
             next_run_load: Task::ready(()),
             models_load: Task::ready(()),
-            run: Task::ready(()),
+            unlabeled_load: Task::ready(()),
             _polls: polls,
             _subscriptions: subscriptions,
         };
@@ -389,6 +413,7 @@ impl AiSection {
     pub fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.installed_revision = None;
         self.next_run_inputs = None;
+        self.unlabeled_revision = None;
         self.on_app_state(window, cx);
     }
 
@@ -397,7 +422,24 @@ impl AiSection {
         cx.notify();
     }
 
+    fn load_unlabeled(&mut self, cx: &mut Context<Self>) {
+        let revision = AppState::read(cx).revisions.labels;
+        if self.unlabeled_revision == Some(revision) {
+            return;
+        }
+        self.unlabeled_revision = Some(revision);
+        self.unlabeled_load = data::fetch(
+            cx,
+            |core| core.suggestions.count_unlabeled(),
+            |this, result, _| match result {
+                Ok(count) => this.unlabeled = Some(count),
+                Err(err) => tracing::warn!(error = %err, "failed to count the unlabeled activities"),
+            },
+        );
+    }
+
     fn on_app_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.load_unlabeled(cx);
         let state = AppState::read(cx);
         let revision = state.revisions.installed_models;
         let downloading = state.download.running;
@@ -600,7 +642,7 @@ impl AiSection {
     }
 
     fn running(&self, cx: &App) -> bool {
-        self.run_pending.is_some() || AppState::read(cx).categorize.running
+        AppState::read(cx).categorize.running
     }
 
     fn downloading(cx: &App) -> bool {
@@ -784,45 +826,8 @@ impl AiSection {
         cx.notify();
     }
 
-    fn run(&mut self, recheck: bool, window: &mut Window, cx: &mut Context<Self>) {
-        self.run_pending = Some(recheck);
-        self.run_error = None;
-        AppState::update(cx, |state, cx| state.mark_categorize_started(recheck, cx));
-        let job = data::blocking(cx, move |core| {
-            let outcome = core
-                .runner
-                .run(recheck, RunTrigger::Manual)
-                .map_err(UiError::from);
-            (outcome, core.runner.status())
-        });
-        self.run = cx.spawn_in(window, async move |this, cx| {
-            let result = job.await;
-            let _ = this.update_in(cx, |this, window, cx| {
-                this.run_pending = None;
-                let status = match result {
-                    Some((Ok(outcome), status)) => {
-                        let (title, description) = run_summary(&outcome, recheck);
-                        Toast::success(title)
-                            .description(description)
-                            .show(window, cx);
-                        Some(status)
-                    }
-                    Some((Err(err), status)) => {
-                        this.run_error = Some(err.to_string());
-                        Some(status)
-                    }
-                    None => {
-                        this.run_error = Some("The run stopped unexpectedly.".into());
-                        None
-                    }
-                };
-                AppState::update(cx, |state, cx| {
-                    state.categorize = status.map_or_else(CategorizeTask::default, Into::into);
-                    state.invalidate_categorization(cx);
-                });
-                cx.notify();
-            });
-        });
+    fn run(&mut self, request: RunRequest, cx: &mut Context<Self>) {
+        AppState::update(cx, |state, cx| state.start_run(request, cx));
         cx.notify();
     }
 
@@ -956,11 +961,10 @@ impl Render for AiSection {
         let no_categories = state.has_no_categories();
         let disabled = self.models_disabled(cx);
         let running = self.running(cx);
-        let rechecking = running
-            && match self.run_pending {
-                Some(recheck) => recheck,
-                None => status.recheck,
-            };
+        let rechecking = running && status.mode == RunMode::Recheck;
+        let finding = running && status.mode == RunMode::FindCategories;
+        let unlabeled = self.unlabeled.filter(|count| *count > 0);
+        let run_error = state.run_error.clone();
         let progress = (status.running && status.total > 0).then_some((status.done, status.total));
         let saved_provider = Self::saved_provider(cx);
         let shown_provider = self.shown_provider(cx);
@@ -1039,10 +1043,10 @@ impl Render for AiSection {
                         .child(
                             Button::new("categorize")
                                 .primary()
-                                .label(run_label("Categorize", running && !rechecking))
+                                .label(run_label("Categorize", running && status.mode == RunMode::Label))
                                 .disabled(!can_run)
                                 .on_click(
-                                    cx.listener(|this, _, window, cx| this.run(false, window, cx)),
+                                    cx.listener(|this, _, _, cx| this.run(RunRequest::label(), cx)),
                                 ),
                         )
                         .when(running, |this| {
@@ -1064,8 +1068,21 @@ impl Render for AiSection {
                                          latest pins and rules",
                                 )
                                 .on_click(
-                                    cx.listener(|this, _, window, cx| this.run(true, window, cx)),
+                                    cx.listener(|this, _, _, cx| this.run(RunRequest::recheck(), cx)),
                                 ),
+                        )
+                        .child(
+                            Button::new("find-categories")
+                                .outline()
+                                .label(if finding { "Looking…" } else { "Find new categories" })
+                                .disabled(!can_run || unlabeled.is_none())
+                                .tooltip(
+                                    "Group the activities the AI found no category for and \
+                                     suggest categories for them",
+                                )
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.run(RunRequest::find_categories(), cx)
+                                })),
                         )
                         .child(div().flex_1())
                         .child(
@@ -1078,10 +1095,28 @@ impl Render for AiSection {
                                 }),
                         ),
                 )
+                .when_some(unlabeled, |this, count| {
+                    this.child(
+                        h_flex()
+                            .gap_2()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(unlabeled_line(count))
+                            .child(
+                                Button::new("show-suggestions")
+                                    .link()
+                                    .xsmall()
+                                    .label("See suggested categories")
+                                    .on_click(cx.listener(|_, _, _, cx| {
+                                        cx.emit(AiSectionEvent::ShowSuggestions)
+                                    })),
+                            ),
+                    )
+                })
                 .when_some(blocker, |this, blocker| {
                     this.child(div().text_xs().text_color(muted).child(blocker))
                 })
-                .when_some(self.run_error.clone(), |this, error| {
+                .when_some(run_error, |this, error| {
                     this.child(div().text_xs().text_color(theme.danger).child(error))
                 }),
         )
@@ -1218,17 +1253,38 @@ mod tests {
             changed: 2,
             stopped: false,
             usage: RunUsage::default(),
+            suggested: 0,
         };
-        let (title, description) = run_summary(&outcome, false);
+        let (title, description) = run_summary(&outcome, RunMode::Label);
         assert_eq!(title, "AI categorization finished");
         assert!(description.starts_with("4 activities labeled, 1 left uncategorized."));
-        let (title, description) = run_summary(&outcome, true);
+        let (title, description) = run_summary(&outcome, RunMode::Recheck);
         assert_eq!(title, "AI labels re-checked");
         assert!(description.starts_with("2 labels changed, 1 cleared as uncertain."));
         let stopped = AiRunOutcome {
             stopped: true,
             ..outcome
         };
-        assert_eq!(run_summary(&stopped, true).0, "AI categorization stopped");
+        assert_eq!(run_summary(&stopped, RunMode::Recheck).0, "AI categorization stopped");
+    }
+
+    #[test]
+    fn the_unlabeled_line_counts_activities() {
+        assert_eq!(unlabeled_line(1), "The AI found no category for 1 activity.");
+        assert_eq!(unlabeled_line(4), "The AI found no category for 4 activities.");
+    }
+
+    #[test]
+    fn the_run_summary_says_what_categories_it_found() {
+        let found = AiRunOutcome {
+            labeled: 4,
+            suggested: 2,
+            ..AiRunOutcome::default()
+        };
+        let (_, description) = run_summary(&found, RunMode::Label);
+        assert!(description.starts_with("4 activities labeled, 0 left uncategorized. 2 new categories suggested."));
+        let (title, description) = run_summary(&AiRunOutcome::default(), RunMode::FindCategories);
+        assert_eq!(title, "New categories");
+        assert!(description.starts_with("No new groups of activities found."));
     }
 }

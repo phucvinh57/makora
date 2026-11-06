@@ -15,7 +15,7 @@ use super::{read_message, write_message, RunFailure};
 use crate::ai::llm;
 use crate::ai::model_download::{ModelDownloadError, ModelDownloadStatus, ModelDownloads};
 use crate::app_core::AppCore;
-use crate::categorization::application::ai_run::{AiRunError, AiRunOutcome, AiRunStatus};
+use crate::categorization::application::ai_run::{AiRunError, AiRunOutcome, AiRunStatus, RunMode, RunRequest};
 use crate::categorization::domain::usage::RunTrigger;
 use crate::categorization::CategorizationRunner;
 use crate::events::{CoreEvent, NavTarget};
@@ -41,7 +41,7 @@ pub enum FromWindow {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Call {
-    Run { recheck: bool },
+    Run { request: RunRequest },
     CancelRun,
     RunStatus,
     Download { model: String },
@@ -108,7 +108,7 @@ pub fn parse_args(args: &[String]) -> Option<Option<NavTarget>> {
 /// What the background process answers a window's call with.
 pub fn answer(core: &AppCore, call: Call) -> Reply {
     match call {
-        Call::Run { recheck } => Reply::Run(core.runner.run(recheck, RunTrigger::Manual).map_err(RunFailure::from)),
+        Call::Run { request } => Reply::Run(core.runner.run(&request, RunTrigger::Manual).map_err(RunFailure::from)),
         Call::CancelRun => {
             core.runner.cancel();
             Reply::Done
@@ -203,8 +203,8 @@ fn gone() -> io::Error {
 pub struct RemoteRunner(pub Arc<WindowClient>);
 
 impl CategorizationRunner for RemoteRunner {
-    fn run(&self, recheck: bool, _trigger: RunTrigger) -> Result<AiRunOutcome, AiRunError> {
-        match self.0.call(Call::Run { recheck }).map_err(anyhow::Error::from)? {
+    fn run(&self, request: &RunRequest, _trigger: RunTrigger) -> Result<AiRunOutcome, AiRunError> {
+        match self.0.call(Call::Run { request: request.clone() }).map_err(anyhow::Error::from)? {
             Reply::Run(result) => result.map_err(AiRunError::from),
             other => Err(anyhow!("unexpected answer {other:?}").into()),
         }
@@ -215,7 +215,7 @@ impl CategorizationRunner for RemoteRunner {
             Ok(Reply::RunStatus(status)) => status,
             _ => AiRunStatus {
                 running: false,
-                recheck: false,
+                mode: RunMode::Label,
                 done: 0,
                 total: 0,
             },
@@ -315,7 +315,7 @@ mod tests {
         write_message(&mut incoming, &ToWindow::Show(None)).unwrap();
         let status = AiRunStatus {
             running: true,
-            recheck: false,
+            mode: RunMode::Label,
             done: 3,
             total: 7,
         };

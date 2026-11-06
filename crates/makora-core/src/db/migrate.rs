@@ -22,6 +22,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0011_session_last_seen.sql"),
     include_str!("migrations/0012_ai_runs.sql"),
     include_str!("migrations/0013_rule_suggestion_dismissals.sql"),
+    include_str!("migrations/0014_taxonomy_suggestions.sql"),
 ];
 
 /// `user_version` the 28 migrations this schema replaced ended at. Such a database already has

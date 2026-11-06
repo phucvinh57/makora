@@ -55,6 +55,8 @@ A category comes from a manual pin first, then a matching rule, then an AI sugge
 
 The Rules tab suggests rules from the user's pins (`categorization/domain/rule_mining.rs`). If most pinned time of an app, site or page prefix is in one category, Makora offers a rule for it. It also offers to change a rule when the pins contradict it. Accepting a review group offers the same suggestion in a toast. A dismissed suggestion is stored in `rule_suggestion_dismissals` and is not shown again.
 
+The Taxonomy tab suggests new categories. When the model files an activity under no category, it is stored in `ai_unlabeled`. After a full run, or on **Find new categories**, those activities are clustered by embedding (`categorization/domain/clustering.rs`), and the model names each cluster. It also proposes a sharper description for a category whose AI labels the user keeps moving out, and a merge of two alike categories the user moves activities between. The suggestions live in `taxonomy_suggestions`. Creating the category offers a run scoped to its members. Editing a category's name or description offers a re-check of the activities the AI filed there.
+
 Before a remote AI provider sees an activity, the `Redactor` (`crates/makora-core/src/ai/privacy/`) replaces detected values with placeholders, strips ids from URLs, and masks never-send apps. The local model gets the full text. To add a detector:
 
 1. Write a finder in `privacy/detectors.rs`, with positive and near-miss tests.

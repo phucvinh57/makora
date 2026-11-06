@@ -2,6 +2,7 @@ use diesel::prelude::*;
 
 use super::schema::{
     activities, ai_labels, ai_runs, categories, category_rules, rule_suggestion_dismissals, sessions, sources,
+    taxonomy_suggestions,
 };
 use super::text_enums::PatternFieldColumn;
 use crate::categorization::domain::rules::{PatternField, RuleKind};
@@ -263,4 +264,25 @@ pub struct AiModelTotalsRow {
     pub prefill_ms: i64,
     #[diesel(sql_type = diesel::sql_types::BigInt)]
     pub decode_ms: i64,
+}
+
+#[derive(Debug, Clone, Queryable, Selectable)]
+#[diesel(table_name = taxonomy_suggestions)]
+pub struct TaxonomySuggestionRow {
+    pub id: i64,
+    pub kind: String,
+    pub payload: String,
+    pub status: String,
+    pub created_at: String,
+    pub decided_at: Option<String>,
+    pub run_id: Option<i64>,
+}
+
+#[derive(Debug, Insertable)]
+#[diesel(table_name = taxonomy_suggestions)]
+pub struct NewTaxonomySuggestionRow<'a> {
+    pub kind: &'a str,
+    pub payload: &'a str,
+    pub created_at: &'a str,
+    pub run_id: Option<i64>,
 }

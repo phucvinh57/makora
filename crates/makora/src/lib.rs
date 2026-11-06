@@ -24,8 +24,8 @@ use crate::runtime::single_instance::{self, Claim};
 
 pub fn run() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if let Some((recheck, trigger)) = worker::parse_args(&args) {
-        return run_child(|paths| worker::serve(paths, recheck, trigger));
+    if worker::parse_args(&args) {
+        return run_child(worker::serve);
     }
     if let Some(open_at) = makora_lib::ipc::window::parse_args(&args) {
         return run_child(|paths| window_process::run(paths, open_at));

@@ -23,6 +23,7 @@ use crate::ui::app_state::AppState;
 use crate::ui::data;
 use crate::ui::error::UiError;
 use crate::ui::format::categories::category_paths;
+use crate::ui::screens::categories::suggestions::offer_recheck;
 use crate::ui::widgets::category_combobox::{
     CategoryChoice, CategoryCombobox, CategoryComboboxEvent,
 };
@@ -32,10 +33,12 @@ const NO_PARENT: &str = "none";
 
 /// Called with the category just created, in the main window, once `AppState::categories` lists it.
 pub type OnCreated = Rc<dyn Fn(&Category, &mut Window, &mut App)>;
+/// Called once an edited category is saved.
+pub type OnSaved = Rc<dyn Fn(&mut App)>;
 
 pub enum Submit {
     Create { on_created: Option<OnCreated> },
-    Update(CategoryId),
+    Update { id: CategoryId, on_saved: Option<OnSaved> },
 }
 
 pub struct CategoryForm {
@@ -46,6 +49,8 @@ pub struct CategoryForm {
     parent: Entity<CategoryCombobox>,
     color_hex: String,
     parent_id: Option<CategoryId>,
+    /// The name and description an edited category has now, to tell whether its meaning changes.
+    saved_meaning: Option<(String, Option<String>)>,
     pending: bool,
     error: Option<String>,
     save: Task<()>,
@@ -150,6 +155,14 @@ impl CategoryForm {
                 }
             }),
         ];
+        let saved_meaning = match &submit {
+            Submit::Update { id, .. } => AppState::read(cx)
+                .categories
+                .iter()
+                .find(|category| category.id == *id)
+                .map(|category| (category.name.clone(), category.description.clone())),
+            Submit::Create { .. } => None,
+        };
         Self {
             submit,
             name,
@@ -158,6 +171,7 @@ impl CategoryForm {
             parent,
             color_hex: initial.color,
             parent_id: initial.parent_id,
+            saved_meaning,
             pending: false,
             error: None,
             save: Task::ready(()),
@@ -178,7 +192,7 @@ impl CategoryForm {
 
     fn title(&self, cx: &App) -> String {
         match &self.submit {
-            Submit::Update(_) => "Edit category".into(),
+            Submit::Update { .. } => "Edit category".into(),
             Submit::Create { .. } => {
                 let path = self
                     .parent_id
@@ -210,9 +224,13 @@ impl CategoryForm {
         self.pending = true;
         self.error = None;
         let update = match &self.submit {
-            Submit::Update(id) => Some(*id),
+            Submit::Update { id, .. } => Some(*id),
             Submit::Create { .. } => None,
         };
+        let meaning_changed = self
+            .saved_meaning
+            .as_ref()
+            .is_some_and(|(name, description)| *name != draft.name || *description != draft.description);
         self.save = data::fetch_in(
             window,
             cx,
@@ -220,17 +238,23 @@ impl CategoryForm {
                 Some(id) => core.categories.update(id, &draft).map_err(UiError::from),
                 None => core.categories.create(&draft).map_err(UiError::from),
             },
-            |this, result, window, cx| {
+            move |this, result, window, cx| {
                 this.pending = false;
                 match result {
                     Ok(saved) => {
                         AppState::update(cx, |state, cx| state.invalidate_categorization(cx));
                         window.close_dialog(cx);
-                        if let Submit::Create {
-                            on_created: Some(on_created),
-                        } = &this.submit
-                        {
-                            when_listed(saved, on_created.clone(), cx);
+                        if meaning_changed {
+                            offer_recheck(saved.id, cx);
+                        }
+                        match &this.submit {
+                            Submit::Create {
+                                on_created: Some(on_created),
+                            } => when_listed(saved, on_created.clone(), cx),
+                            Submit::Update {
+                                on_saved: Some(on_saved), ..
+                            } => on_saved(cx),
+                            _ => {}
                         }
                     }
                     Err(err) => this.error = Some(err.to_string()),
@@ -247,7 +271,7 @@ impl Render for CategoryForm {
         let danger = cx.theme().danger;
         let can_submit = self.draft(cx).is_some() && !self.pending;
         let submit_label = match self.submit {
-            Submit::Update(_) => "Save",
+            Submit::Update { .. } => "Save",
             Submit::Create { .. } => "Add category",
         };
 

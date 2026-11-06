@@ -12,5 +12,6 @@ pub mod segmented;
 pub mod select_item;
 pub mod stat_tile;
 pub mod suggest_input;
+pub mod suggestion_card;
 pub mod toast;
 pub mod tri_checkbox;

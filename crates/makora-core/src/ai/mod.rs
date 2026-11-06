@@ -12,6 +12,7 @@ pub mod llm;
 pub mod model_download;
 pub mod privacy;
 mod prompt;
+mod suggest;
 pub mod providers;
 pub mod remote;
 pub mod router;

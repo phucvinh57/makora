@@ -72,6 +72,13 @@ impl AiLabelsRepo for SqliteConnection {
         Ok(())
     }
 
+    fn move_labels(&mut self, from: i64, into: i64) -> QueryResult<()> {
+        diesel::update(ai_labels::table.filter(ai_labels::category_id.eq(from)))
+            .set(ai_labels::category_id.eq(into))
+            .execute(self)?;
+        Ok(())
+    }
+
     fn delete_all(&mut self) -> QueryResult<usize> {
         diesel::delete(ai_labels::table).execute(self)
     }

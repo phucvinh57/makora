@@ -22,7 +22,7 @@ use crate::categorization::application::usage::SqliteAiUsage;
 use crate::categorization::{
     AiCategorizationRunner, AiUsageSvc, AutoCategorizeSchedule, CategorizationRunner, ClassificationSvc, EmbedSkips,
     EmbeddingSvc, RuleSvc, ScheduleAnchor, ScheduledCategorization, SqliteClassification, SqliteEmbeddings,
-    SqliteRules,
+    SqliteRules, SqliteTaxonomySuggestions, TaxonomySuggestionSvc,
 };
 use crate::db::{self, Db};
 use crate::domain::{HistorySvc, LabelingSvc, SqliteHistory, SqliteLabeling};
@@ -63,6 +63,7 @@ pub struct Services {
     pub usage: Arc<dyn AiUsageSvc>,
     pub network_log: Arc<dyn NetworkLog>,
     pub embeddings: Arc<dyn EmbeddingSvc>,
+    pub suggestions: Arc<dyn TaxonomySuggestionSvc>,
     pub anchor: Arc<ScheduleAnchor>,
 }
 
@@ -89,6 +90,7 @@ impl Services {
             rules: Arc::new(SqliteRules::new(db.clone())),
             usage: Arc::new(SqliteAiUsage::new(db.clone())),
             embeddings: Arc::new(SqliteEmbeddings::new(db.clone())),
+            suggestions: Arc::new(SqliteTaxonomySuggestions::new(db.clone())),
             paths,
             events,
             db,
@@ -102,6 +104,11 @@ impl Services {
 
     /// Runs AI categorization in this process, loading the models into `models`.
     pub fn local_runner(&self, state: Arc<AiRunState>, models: ModelCache) -> Arc<dyn CategorizationRunner> {
+        let router = Arc::new(LlmRouter::new(
+            LlamaClassifier::new(models.clone()),
+            self.settings_store.clone(),
+            self.secrets.clone(),
+        ));
         Arc::new(AiCategorizationRunner {
             state,
             anchor: self.anchor.clone(),
@@ -110,15 +117,13 @@ impl Services {
             categories: self.categories.clone(),
             labeling: self.labeling.clone(),
             classification: self.classification.clone(),
-            classifier: Arc::new(LlmRouter::new(
-                LlamaClassifier::new(models.clone()),
-                self.settings_store.clone(),
-                self.secrets.clone(),
-            )),
+            classifier: router.clone(),
             embedder: Arc::new(LlamaEmbedder::new(models)),
             embeddings: self.embeddings.clone(),
             embed_skips: Arc::new(EmbedSkips::default()),
             usage: self.usage.clone(),
+            suggester: router,
+            suggestions: self.suggestions.clone(),
         })
     }
 
@@ -150,6 +155,7 @@ pub struct ClientCore {
     pub classification: Arc<dyn ClassificationSvc>,
     pub rules: Arc<dyn RuleSvc>,
     pub usage: Arc<dyn AiUsageSvc>,
+    pub suggestions: Arc<dyn TaxonomySuggestionSvc>,
     pub network_log: Arc<dyn NetworkLog>,
     pub runner: Arc<dyn CategorizationRunner>,
     pub schedule: Arc<dyn AutoCategorizeSchedule>,
@@ -173,6 +179,7 @@ impl ClientCore {
             classification: services.classification.clone(),
             rules: services.rules.clone(),
             usage: services.usage.clone(),
+            suggestions: services.suggestions.clone(),
             network_log: services.network_log.clone(),
             runner,
             schedule,

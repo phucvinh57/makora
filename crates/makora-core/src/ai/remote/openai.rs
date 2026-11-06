@@ -13,7 +13,7 @@ use tracing::info;
 use super::http::{ApiError, Http};
 use crate::categorization::ports::TokenUsage;
 
-use super::{count, trimmed, ChatApi, Pick};
+use super::{count, json_in, trimmed, ChatApi, JsonReply, Pick};
 
 const PLAIN_REPLY: &str = "\n\nReply with only the category, exactly as written in the list, and nothing else.";
 
@@ -95,7 +95,70 @@ impl OpenAi {
     }
 }
 
+impl OpenAi {
+    fn json_body(&self, model: &str, system: &str, user: &str, schema: &Value) -> Value {
+        let strict = self.schema.load(Ordering::Acquire);
+        let system = if strict {
+            system.to_string()
+        } else {
+            format!("{system}{}", plain_json_reply(schema))
+        };
+        let mut body = json!({
+            "model": model,
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user", "content": user },
+            ],
+        });
+        if self.temperature.load(Ordering::Acquire) {
+            body["temperature"] = json!(0);
+        }
+        if strict {
+            body["response_format"] = json!({
+                "type": "json_schema",
+                "json_schema": { "name": "answer", "strict": true, "schema": schema },
+            });
+        }
+        body
+    }
+}
+
+/// Asks, without a schema, for a bare JSON object with the schema's fields.
+fn plain_json_reply(schema: &Value) -> String {
+    let fields: Vec<&str> = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|properties| properties.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    format!(
+        "\n\nReply with only a JSON object with the fields {}, and nothing else.",
+        fields.join(", ")
+    )
+}
+
 impl ChatApi for OpenAi {
+    fn complete_json(&self, model: &str, system: &str, user: &str, schema: &Value, _max_tokens: u32) -> Result<JsonReply> {
+        let url = format!("{}/chat/completions", self.base_url);
+        let reply = loop {
+            match self.http.post_json(&url, &self.headers(), &self.json_body(model, system, user, schema)) {
+                Ok(reply) => break reply,
+                Err(err) => match err.downcast_ref::<ApiError>() {
+                    Some(api) if self.drop_refused(api) => continue,
+                    _ => return Err(err),
+                },
+            }
+        };
+        let content = reply
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("the provider's reply has no message"))?;
+        let value = json_in(content).ok_or_else(|| anyhow!("the provider's reply is not a JSON object"))?;
+        Ok(JsonReply {
+            value,
+            usage: usage(&reply),
+        })
+    }
+
     fn pick(&self, model: &str, system: &str, user: &str, choices: &[String]) -> Result<Pick> {
         let url = format!("{}/chat/completions", self.base_url);
         loop {

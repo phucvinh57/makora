@@ -67,6 +67,48 @@ pub trait Classifier: Send + Sync {
     ) -> Result<()>;
 }
 
+/// What the model proposes to call a group of activities no category fits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClusterName {
+    pub name: String,
+    pub description: Option<String>,
+    /// The existing category it belongs under; `None` for a top-level one.
+    pub parent: Option<CategoryId>,
+}
+
+/// Proposes changes to the taxonomy, through the same language model the run labels with.
+pub trait Suggester: Send + Sync {
+    /// A new category for `samples`, activities that fit none of `taxonomy`. `None` when the
+    /// model's answer is unusable.
+    fn name_cluster(
+        &self,
+        llm: &LlmSpec,
+        taxonomy: &[Category],
+        samples: &[ActivityText],
+        meter: &UsageMeter,
+    ) -> Result<Option<ClusterName>>;
+
+    /// A sharper description for `category`, from activities the user `kept` in it and those
+    /// they `moved` out. `None` when the model's answer is unusable.
+    fn describe_category(
+        &self,
+        llm: &LlmSpec,
+        taxonomy: &[Category],
+        category: &Category,
+        kept: &[ActivityText],
+        moved: &[MovedActivity],
+        meter: &UsageMeter,
+    ) -> Result<Option<String>>;
+}
+
+/// An activity the user moved out of a category the model filed it under, and the category they
+/// put it in; `None` when they left it uncategorized.
+#[derive(Debug, Clone)]
+pub struct MovedActivity {
+    pub text: ActivityText,
+    pub to: Option<CategoryId>,
+}
+
 /// The tokens one request to a language model took. `cached_input` is the part of `input` served
 /// from a prompt cache: the provider's, or the KV cache the local model keeps between activities.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

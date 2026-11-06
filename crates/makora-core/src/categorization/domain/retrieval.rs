@@ -78,6 +78,7 @@ pub fn top_related(query: &[f32], candidates: &[Candidate], own_id: ActivityId, 
         .collect()
 }
 
-fn similarity(a: &[f32], b: &[f32]) -> f32 {
+/// The cosine similarity of two unit vectors.
+pub fn similarity(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }

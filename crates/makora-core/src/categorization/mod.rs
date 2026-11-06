@@ -14,5 +14,6 @@ pub mod store;
 pub use application::{
     AiCategorizationRunner, AiUsageSvc, AutoCategorizeSchedule,
     CategorizationRunner, ClassificationSvc, EmbedSkips, EmbeddingSvc, RuleSvc, ScheduleAnchor,
-    ScheduledCategorization, SqliteClassification, SqliteEmbeddings, SqliteRules,
+    ScheduledCategorization, SqliteClassification, SqliteEmbeddings, SqliteRules, SqliteTaxonomySuggestions,
+    TaxonomySuggestionSvc,
 };

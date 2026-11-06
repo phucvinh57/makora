@@ -10,9 +10,11 @@ use super::schema::ai_runs;
 pub use super::traits::AiRunsRepo;
 
 impl AiRunsRepo for SqliteConnection {
-    fn insert(&mut self, new: &NewAiRunRow<'_>) -> QueryResult<()> {
-        diesel::insert_into(ai_runs::table).values(new).execute(self)?;
-        Ok(())
+    fn insert(&mut self, new: &NewAiRunRow<'_>) -> QueryResult<i64> {
+        diesel::insert_into(ai_runs::table)
+            .values(new)
+            .returning(ai_runs::id)
+            .get_result(self)
     }
 
     fn get_recent(&mut self, limit: i64) -> QueryResult<Vec<AiRunRow>> {
