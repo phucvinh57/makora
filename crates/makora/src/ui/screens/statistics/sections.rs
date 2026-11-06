@@ -12,6 +12,8 @@ use gpui_kit::{
 };
 use makora_lib::domain::types::{ActivityStats, Category};
 
+use crate::ui::format::stats_date::RangePreset;
+
 use super::breakdown::{busiest_day, category_breakdown};
 use crate::ui::format::categories::UNCATEGORIZED_COLOR;
 use crate::ui::format::duration::format_seconds;
@@ -44,7 +46,12 @@ fn half(breakpoint: f32, gap: f32) -> Pixels {
     px((breakpoint - gap) / 2.)
 }
 
-pub fn body(stats: &ActivityStats, categories: &[Category], cx: &App) -> AnyElement {
+pub fn body(
+    stats: &ActivityStats,
+    range: RangePreset,
+    categories: &[Category],
+    cx: &App,
+) -> AnyElement {
     if stats.session_count == 0 {
         return div()
             .rounded_md()
@@ -62,10 +69,10 @@ pub fn body(stats: &ActivityStats, categories: &[Category], cx: &App) -> AnyElem
         .child(summary_tiles(stats))
         .child(
             wrapping_row(GAP_6)
-                .child(cell(CARDS_SIDE_BY_SIDE, GAP_6).child(category_card(stats, categories, cx)))
+                .child(cell(CARDS_SIDE_BY_SIDE, GAP_6).child(category_card(stats, range, categories, cx)))
                 .child(cell(CARDS_SIDE_BY_SIDE, GAP_6).child(top_apps_card(stats))),
         )
-        .child(daily_trend_card(stats, cx))
+        .child(daily_trend_card(stats, range, cx))
         .into_any_element()
 }
 
@@ -109,7 +116,12 @@ fn summary_tiles(stats: &ActivityStats) -> Div {
     ])
 }
 
-fn category_card(stats: &ActivityStats, categories: &[Category], cx: &App) -> Card {
+fn category_card(
+    stats: &ActivityStats,
+    range: RangePreset,
+    categories: &[Category],
+    cx: &App,
+) -> Card {
     let card = Card::new()
         .small()
         .h_full()
@@ -128,6 +140,7 @@ fn category_card(stats: &ActivityStats, categories: &[Category], cx: &App) -> Ca
         .inner_radius(55.)
         .outer_radius(85.)
         .pad_angle(2f32.to_radians())
+        .appear_key(range)
         .tooltip_name(|slice| slice.name.clone().into())
         .tooltip_value(|slice, _, _| format_seconds(slice.value).into());
     let legend = breakdown.rows.into_iter().map(|row| {
@@ -209,7 +222,7 @@ struct Day {
     seconds: f64,
 }
 
-fn daily_trend_card(stats: &ActivityStats, cx: &App) -> Card {
+fn daily_trend_card(stats: &ActivityStats, range: RangePreset, cx: &App) -> Card {
     let card = Card::new()
         .small()
         .title("Daily activity")
@@ -235,6 +248,7 @@ fn daily_trend_card(stats: &ActivityStats, cx: &App) -> Card {
         })
         .max_band_width(px(28.))
         .grid_dashed(false)
+        .appear_key(range)
         .name("Tracked time")
         .tooltip_title(|day| day.label.clone())
         .tooltip_value(|_, seconds| format_seconds(seconds).into());

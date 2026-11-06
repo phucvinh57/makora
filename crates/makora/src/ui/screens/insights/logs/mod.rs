@@ -369,7 +369,6 @@ impl LogsTab {
                 cx.listener(|tab: &mut Self, ix: &usize, _, cx| {
                     tab.set_period(Period::ALL[*ix], cx)
                 }),
-                cx,
             ))
             .child(
                 Button::new("open-log-folder")

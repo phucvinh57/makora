@@ -8,12 +8,13 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AnyElement, AnyView, App, AppContext, ClickEvent, Context, Entity, InteractiveElement,
+    AnyElement, AnyView, App, AppContext, ClickEvent, Context, Entity, Global, InteractiveElement,
     IntoElement, ParentElement, Pixels, Render, SharedString, Size, StatefulInteractiveElement,
     Styled, Subscription, Window, div, px, size,
 };
 
 use crate::ui::app_state::AppState;
+use crate::ui::motion;
 use crate::ui::prefs::Prefs;
 use crate::ui::route::{Route, Section};
 use crate::ui::screens::Screen;
@@ -29,6 +30,14 @@ use crate::ui::widgets::toast::Toast;
 const SIDEBAR_WIDTH: f32 = 208.;
 const SIDEBAR_COLLAPSED_WIDTH: f32 = 56.;
 const CONTENT_PADDING: f32 = 24.;
+/// The inset that keeps the sidebar's icons in place while it opens and closes.
+const SIDEBAR_HEADER_INSET: f32 = 14.;
+const NAV_ITEM_INSET: f32 = 12.;
+
+/// The sidebar's width this frame, which differs from its resting width while it slides.
+struct SidebarWidth(f32);
+
+impl Global for SidebarWidth {}
 
 pub struct Shell {
     section: Section,
@@ -164,8 +173,25 @@ impl Shell {
         }
     }
 
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_sidebar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let collapsed = self.collapsed;
+        let width = motion::glide(
+            "sidebar-width",
+            if collapsed {
+                SIDEBAR_COLLAPSED_WIDTH
+            } else {
+                SIDEBAR_WIDTH
+            },
+            window,
+            cx,
+        );
+        if cx.try_global::<SidebarWidth>().map(|current| current.0) != Some(width) {
+            cx.set_global(SidebarWidth(width));
+        }
+        let openness = ((width - SIDEBAR_COLLAPSED_WIDTH)
+            / (SIDEBAR_WIDTH - SIDEBAR_COLLAPSED_WIDTH))
+            .clamp(0., 1.);
+        let labelled = openness > 0.;
         let tasks = AppState::read(cx).background_tasks();
         let toggle_label = if collapsed {
             "Expand sidebar"
@@ -174,18 +200,15 @@ impl Shell {
         };
         let nav: Vec<_> = Section::ALL
             .into_iter()
-            .map(|section| self.render_nav_item(section, cx))
+            .map(|section| self.render_nav_item(section, openness, cx))
             .collect();
         let theme = cx.theme();
 
         v_flex()
             .flex_shrink_0()
             .h_full()
-            .w(px(if collapsed {
-                SIDEBAR_COLLAPSED_WIDTH
-            } else {
-                SIDEBAR_WIDTH
-            }))
+            .w(px(width))
+            .overflow_hidden()
             .border_r_1()
             .border_color(theme.sidebar_border)
             .bg(theme.sidebar)
@@ -194,17 +217,22 @@ impl Shell {
             .child(
                 h_flex()
                     .py_4()
+                    .px(px(SIDEBAR_HEADER_INSET))
                     .map(|this| {
-                        if collapsed {
-                            this.justify_center().px_2()
+                        if labelled {
+                            this.justify_between()
                         } else {
-                            this.justify_between().px_4()
+                            this.justify_center()
                         }
                     })
-                    .when(!collapsed, |this| {
+                    .when(labelled, |this| {
                         this.child(
                             h_flex()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
                                 .gap_2()
+                                .opacity(openness)
                                 .child(
                                     div()
                                         .flex()
@@ -217,7 +245,13 @@ impl Shell {
                                         .text_color(theme.primary_foreground)
                                         .child(Icon::new(IconName::Hourglass).small()),
                                 )
-                                .child(div().text_base().font_semibold().child("Makora")),
+                                .child(
+                                    div()
+                                        .whitespace_nowrap()
+                                        .text_base()
+                                        .font_semibold()
+                                        .child("Makora"),
+                                ),
                         )
                     })
                     .child(
@@ -255,11 +289,16 @@ impl Shell {
                 div()
                     .px_2()
                     .pb_2()
-                    .child(BackgroundTasksIndicator::new(tasks).collapsed(collapsed)),
+                    .child(BackgroundTasksIndicator::new(tasks).collapsed(!labelled)),
             )
     }
 
-    fn render_nav_item(&self, section: Section, cx: &mut Context<Self>) -> AnyElement {
+    fn render_nav_item(
+        &self,
+        section: Section,
+        openness: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let theme = cx.theme();
         let active = self.section == section;
         let label = SharedString::from(section.label());
@@ -274,8 +313,9 @@ impl Shell {
         h_flex()
             .id(SharedString::from(format!("nav-{}", section.label())))
             .gap_2()
-            .px(px(10.))
+            .px(px(NAV_ITEM_INSET))
             .py(px(6.))
+            .overflow_hidden()
             .rounded(theme.radius)
             .text_sm()
             .font_medium()
@@ -295,15 +335,15 @@ impl Shell {
             })
             .when(self.collapsed, |this| {
                 let label = label.clone();
-                this.justify_center()
-                    .px_0()
-                    .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
+                this.tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
             })
             .on_click(cx.listener(move |shell, _: &ClickEvent, window, cx| {
                 shell.select(section, window, cx)
             }))
             .child(Icon::new(icon).small().flex_shrink_0())
-            .when(!self.collapsed, |this| this.child(label))
+            .when(openness > 0., |this| {
+                this.child(div().whitespace_nowrap().opacity(openness).child(label))
+            })
             .into_any_element()
     }
 }
@@ -338,11 +378,16 @@ fn set_visible<S: Screen + 'static>(
 /// than scroll in it. The height leaves a few pixels for borders.
 pub fn content_size(window: &Window, cx: &App) -> Size<Pixels> {
     let viewport = window.viewport_size();
-    let sidebar = if Prefs::get(cx).sidebar_collapsed {
-        SIDEBAR_COLLAPSED_WIDTH
-    } else {
-        SIDEBAR_WIDTH
-    };
+    let sidebar = cx.try_global::<SidebarWidth>().map_or_else(
+        || {
+            if Prefs::get(cx).sidebar_collapsed {
+                SIDEBAR_COLLAPSED_WIDTH
+            } else {
+                SIDEBAR_WIDTH
+            }
+        },
+        |width| width.0,
+    );
     size(
         viewport.width - px(sidebar + 2. * CONTENT_PADDING),
         viewport.height - TITLE_BAR_HEIGHT - px(2. * CONTENT_PADDING + 4.),
@@ -352,7 +397,12 @@ pub fn content_size(window: &Window, cx: &App) -> Size<Pixels> {
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let screen = self.screen(self.section, window, cx);
-        let sidebar = self.render_sidebar(cx).into_any_element();
+        let sidebar = self.render_sidebar(window, cx).into_any_element();
+        let screen = motion::enter(
+            SharedString::from(format!("enter-{}", self.section.label())),
+            div().w_full().child(screen),
+            cx,
+        );
         let theme = cx.theme();
         h_flex()
             .size_full()
