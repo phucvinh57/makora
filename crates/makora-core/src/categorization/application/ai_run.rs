@@ -46,7 +46,7 @@ pub struct AiRunState {
     total: AtomicUsize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AiRunStatus {
     pub running: bool,
     pub recheck: bool,

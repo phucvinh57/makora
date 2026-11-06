@@ -1,6 +1,7 @@
 //! Messages between Makora's processes over a child's stdin and stdout: JSON in the bridge's
 //! length-prefixed frames.
 
+pub mod window;
 pub mod worker;
 
 use std::io::{self, Read, Write};
@@ -14,7 +15,7 @@ use crate::tracking::adapters::bridge_wire::{read_frame, Frame, MAX_FRAME_BYTES}
 
 /// [`AiRunError`] as it crosses between processes.
 #[derive(Debug, Serialize, Deserialize)]
-enum RunFailure {
+pub enum RunFailure {
     AlreadyRunning,
     NoCategories,
     Failed(String),

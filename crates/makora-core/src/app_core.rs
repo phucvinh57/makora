@@ -159,6 +159,33 @@ pub struct ClientCore {
     pub models: Option<ModelCache>,
 }
 
+impl ClientCore {
+    pub fn new(
+        services: &Services,
+        runner: Arc<dyn CategorizationRunner>,
+        downloads: Arc<dyn ModelDownloads>,
+        models: Option<ModelCache>,
+    ) -> Self {
+        let schedule = services.schedule(runner.clone());
+        Self {
+            paths: services.paths.clone(),
+            settings: services.settings_svc(schedule.clone()),
+            providers: services.providers.clone(),
+            history: services.history.clone(),
+            labeling: services.labeling.clone(),
+            categories: services.categories.clone(),
+            classification: services.classification.clone(),
+            rules: services.rules.clone(),
+            usage: services.usage.clone(),
+            logs: services.logs.clone(),
+            runner,
+            schedule,
+            downloads,
+            models,
+        }
+    }
+}
+
 pub struct AppCore {
     pub services: Services,
     pub settings: Arc<dyn SettingsSvc>,
@@ -207,23 +234,7 @@ impl AppCore {
 
     /// The services a window in this process calls.
     pub fn client(&self) -> ClientCore {
-        let services = &self.services;
-        ClientCore {
-            paths: services.paths.clone(),
-            settings: self.settings.clone(),
-            providers: services.providers.clone(),
-            history: services.history.clone(),
-            labeling: services.labeling.clone(),
-            categories: services.categories.clone(),
-            classification: services.classification.clone(),
-            rules: services.rules.clone(),
-            usage: services.usage.clone(),
-            logs: services.logs.clone(),
-            runner: self.runner.clone(),
-            schedule: self.schedule.clone(),
-            downloads: self.downloads.clone(),
-            models: self.models.clone(),
-        }
+        ClientCore::new(&self.services, self.runner.clone(), self.downloads.clone(), self.models.clone())
     }
 
     /// Starts tracking focus and presence, the browser bridge and the categorization schedule.

@@ -251,7 +251,7 @@ unsafe fn activated_application(app: *mut AnyObject) -> Option<Activated> {
         return None;
     }
 
-    if pid == std::process::id() as i32 {
+    if u32::try_from(pid).is_ok_and(crate::tracking::adapters::own_process::is_own) {
         return Some(Activated::Makora);
     }
 

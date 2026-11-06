@@ -28,16 +28,26 @@ struct InstalledTray(Box<dyn SystemTray>);
 
 impl Global for InstalledTray {}
 
-/// Puts the icon in the tray for the life of the app. Call it from the app's launch callback, on
-/// the main thread, which macOS and Windows require.
-pub fn install(commands: CommandSender, cx: &mut App) {
+/// Puts the icon in the tray until [`SystemTray::remove`]. On macOS and Windows, call it on the
+/// main thread, from the app's launch callback.
+pub fn start(commands: CommandSender) -> Option<Box<dyn SystemTray>> {
     let tray = Rgba::decode(TRAY_PNG).and_then(|icon| spawn(icon, commands));
     match tray {
-        Ok(tray) => cx.set_global(InstalledTray(tray)),
-        Err(err) => warn!(
-            error = format!("{err:#}"),
-            "no tray icon; closing the window will hide the app"
-        ),
+        Ok(tray) => Some(tray),
+        Err(err) => {
+            warn!(
+                error = format!("{err:#}"),
+                "no tray icon; closing the window will hide the app"
+            );
+            None
+        }
+    }
+}
+
+/// [`start`], for the life of the app.
+pub fn install(commands: CommandSender, cx: &mut App) {
+    if let Some(tray) = start(commands) {
+        cx.set_global(InstalledTray(tray));
     }
 }
 

@@ -131,7 +131,7 @@ unsafe extern "system" fn win_event_proc(
     let mut process_id: u32 = 0;
     GetWindowThreadProcessId(hwnd, &mut process_id);
     let timestamp = Utc::now();
-    let event = if process_id == std::process::id() {
+    let event = if crate::tracking::adapters::own_process::is_own(process_id) {
         if event != EVENT_SYSTEM_FOREGROUND {
             return;
         }

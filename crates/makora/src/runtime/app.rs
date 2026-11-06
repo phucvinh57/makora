@@ -1,12 +1,14 @@
-//! The GPUI application: it stays alive with no window open, until Quit.
+//! The GPUI application: the window, its menus and keys, and what quitting means for the process
+//! it runs in.
 
 use std::sync::Arc;
 
 use async_channel::Receiver;
 use gpui_kit::assets::AllAssets;
 use gpui_kit::{App, KeyBinding, Menu, MenuItem, QuitMode};
-use makora_lib::app_core::AppCore;
-use makora_lib::events::CoreEvent;
+use makora_lib::app_core::{AppCore, ClientCore};
+use makora_lib::events::{CoreEvent, NavTarget};
+use makora_lib::ipc::window::WindowClient;
 use tracing::warn;
 
 use crate::runtime::autostart::{self, AutostartService};
@@ -22,9 +24,26 @@ const QUIT_KEY: &str = "cmd-q";
 #[cfg(not(target_os = "macos"))]
 const QUIT_KEY: &str = "ctrl-q";
 
+/// Where the core lives, which decides what closing the window and quitting do.
+#[derive(Clone)]
+pub enum Host {
+    /// The core and the tray are in this process, which stays alive with no window open, until
+    /// Quit.
+    InProcess(Arc<AppCore>, CommandSender),
+    /// A window process started by the background process: closing the window ends it, and
+    /// Quit asks the background process to quit the app.
+    Child(Arc<WindowClient>),
+}
+
 /// Quit from the keyboard and, on macOS, the app menu, besides the tray.
-fn install_quit(cx: &mut App) {
-    cx.on_action(|_: &Quit, cx| cx.quit());
+fn install_quit(host: &Host, cx: &mut App) {
+    let host = host.clone();
+    cx.on_action(move |_: &Quit, cx| {
+        if let Host::Child(client) = &host {
+            client.quit_app();
+        }
+        cx.quit();
+    });
     cx.bind_keys([KeyBinding::new(QUIT_KEY, Quit, None)]);
     cx.set_menus(vec![
         Menu::new("Makora").items([MenuItem::action("Quit Makora", Quit)]),
@@ -32,14 +51,19 @@ fn install_quit(cx: &mut App) {
 }
 
 pub fn launch(
-    core: Arc<AppCore>,
-    command_tx: CommandSender,
+    core: Arc<ClientCore>,
+    host: Host,
     command_rx: CommandReceiver,
     events: Receiver<CoreEvent>,
+    open_at: Option<NavTarget>,
 ) {
+    let quit_mode = match host {
+        Host::InProcess(..) => QuitMode::Explicit,
+        Host::Child(_) => QuitMode::LastWindowClosed,
+    };
     let app = gpui_kit::application()
         .with_assets(AllAssets)
-        .with_quit_mode(QuitMode::Explicit);
+        .with_quit_mode(quit_mode);
     app.on_reopen(|cx| window::show_main_window(None, cx));
     app.run(move |cx| {
         ui::theme::register_ui_font(cx);
@@ -49,20 +73,24 @@ pub fn launch(
             None
         });
         cx.set_global(AutostartService(autostart));
-        ui::init(Arc::new(core.client()), events, cx);
+        ui::init(core, events, cx);
         window::init(cx);
-        install_quit(cx);
-        tray::install(command_tx, cx);
+        install_quit(&host, cx);
+        if let Host::InProcess(_, commands) = &host {
+            tray::install(commands.clone(), cx);
+        }
         commands::start_pump(command_rx, cx);
 
         cx.on_app_quit(move |cx| {
             Prefs::flush(cx);
-            tray::remove(cx);
-            core.shutdown();
+            if let Host::InProcess(core, _) = &host {
+                tray::remove(cx);
+                core.shutdown();
+            }
             async {}
         })
         .detach();
 
-        window::show_main_window(None, cx);
+        window::show_main_window(open_at.map(commands::route), cx);
     });
 }

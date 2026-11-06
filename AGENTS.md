@@ -23,7 +23,9 @@ Build deps: Rust, Node/Bun, a C/C++ toolchain and CMake (SQLite and llama.cpp bu
 
 Database: `makora.sqlite` in the app-data dir (`~/.local/share/dev.phucvinh57.makora/` on Linux), resolved by `AppPaths` in `crates/makora-core/src/paths.rs`. Debug builds take `MAKORA_DATA_DIR` / `MAKORA_CONFIG_DIR` to run on other data.
 
-Backend layout: `AppCore` (`crates/makora-core/src/app_core.rs`) builds every service and starts the background work; the UI in `crates/makora/src/ui/` calls its application-layer traits.
+Backend layout: `Services` (`crates/makora-core/src/app_core.rs`) opens the database and settings with no background work; `AppCore` adds the tracker, AI runner, schedule and downloads and starts the background work; the UI in `crates/makora/src/ui/` calls `ClientCore`'s application-layer traits.
+
+Processes: on Linux, `makora` is a background process (`crates/makora/src/runtime/background.rs`: tracking, tray, notifications, AI schedule, no GPUI) that starts `makora --window` when the window is asked for; closing the window ends that process. The two talk over the child's stdin/stdout (`crates/makora-core/src/ipc/`): the window reads and writes SQLite and `settings.toml` itself, and asks the background process for AI runs and model downloads. Each AI run is a `makora --ai-worker` process, so llama.cpp and the GPU driver leave with it. macOS and Windows still run the window in the background process.
 
 ## Workflow
 
@@ -36,5 +38,5 @@ Backend layout: `AppCore` (`crates/makora-core/src/app_core.rs`) builds every se
 
 - **Do not add unnecessary comments.**
 - **No `println!`/`eprintln!`** — use `tracing::{info, warn, error}`. The only exceptions are the bootstrap fallback in `crates/makora/src/lib.rs`, for errors before the subscriber is installed, and `cargo:` directives in build scripts.
-- **Build process-wide state in `main` after the single-instance check** (`makora::run`), never before it: a second launch exits there.
+- **Build process-wide state in `main` after the single-instance check** (`makora::run`), never before it: a second launch exits there. The `--window` and `--ai-worker` children skip the check; the app starts them.
 - **Before applying new migration, make sure to back up the db first.

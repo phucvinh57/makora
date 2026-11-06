@@ -12,6 +12,7 @@ use chrono::Utc;
 use tracing::{error, info};
 
 use crate::tracking::adapters::model::{FocusEvent, WatchEvent};
+use crate::tracking::adapters::own_process;
 use crate::tracking::adapters::watcher::FocusWatcher;
 
 pub use presence::start_presence_watcher;
@@ -43,7 +44,7 @@ fn select_and_run(tx: Sender<WatchEvent>) {
     let mut emit = move |observation: Option<WindowObservation>| {
         let timestamp = Utc::now();
         let event = match observation {
-            Some(observation) if observation.pid != Some(std::process::id()) => FocusEvent {
+            Some(observation) if !observation.pid.is_some_and(own_process::is_own) => FocusEvent {
                 app: proc::resolve_app_info(&observation),
                 window_title: observation.title,
                 timestamp,

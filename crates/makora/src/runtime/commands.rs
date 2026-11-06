@@ -7,18 +7,22 @@ use makora_lib::events::NavTarget;
 use crate::runtime::window;
 use crate::ui::route::{CategoriesTab, Route};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum UiCommand {
     Show,
-    ShowAt(Route),
+    ShowAt(NavTarget),
     Quit,
 }
 
 impl From<NavTarget> for UiCommand {
     fn from(target: NavTarget) -> Self {
-        match target {
-            NavTarget::CategoriesReview => Self::ShowAt(Route::Categories(CategoriesTab::Review)),
-        }
+        Self::ShowAt(target)
+    }
+}
+
+pub fn route(target: NavTarget) -> Route {
+    match target {
+        NavTarget::CategoriesReview => Route::Categories(CategoriesTab::Review),
     }
 }
 
@@ -42,7 +46,7 @@ pub fn start_pump(commands: CommandReceiver, cx: &mut App) {
 pub fn handle(command: UiCommand, cx: &mut App) {
     match command {
         UiCommand::Show => window::show_main_window(None, cx),
-        UiCommand::ShowAt(route) => window::show_main_window(Some(route), cx),
+        UiCommand::ShowAt(target) => window::show_main_window(Some(route(target)), cx),
         UiCommand::Quit => cx.quit(),
     }
 }
@@ -53,9 +57,6 @@ mod tests {
 
     #[test]
     fn a_notification_click_opens_the_review_tab() {
-        assert_eq!(
-            UiCommand::from(NavTarget::CategoriesReview),
-            UiCommand::ShowAt(Route::Categories(CategoriesTab::Review))
-        );
+        assert_eq!(route(NavTarget::CategoriesReview), Route::Categories(CategoriesTab::Review));
     }
 }

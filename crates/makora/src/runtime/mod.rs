@@ -3,6 +3,8 @@
 
 pub mod app;
 pub mod autostart;
+#[cfg(target_os = "linux")]
+pub mod background;
 pub mod commands;
 pub mod events;
 pub mod single_instance;
