@@ -5,6 +5,8 @@ pub mod window;
 pub mod worker;
 
 use std::io::{self, Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::anyhow;
 use serde::de::DeserializeOwned;
@@ -39,6 +41,24 @@ impl From<RunFailure> for AiRunError {
             RunFailure::Failed(message) => Self::Failed(anyhow!(message)),
         }
     }
+}
+
+/// This very binary: on Linux even after a package upgrade replaced the file on disk.
+pub fn own_program() -> io::Result<PathBuf> {
+    if cfg!(target_os = "linux") {
+        Ok(PathBuf::from("/proc/self/exe"))
+    } else {
+        std::env::current_exe()
+    }
+}
+
+/// A command that starts `program` as one of Makora's own processes.
+pub fn own_command(program: &Path) -> Command {
+    #[cfg_attr(windows, allow(unused_mut))]
+    let mut command = Command::new(program);
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::arg0(&mut command, "makora");
+    command
 }
 
 pub fn write_message(writer: &mut impl Write, message: &impl Serialize) -> io::Result<()> {

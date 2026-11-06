@@ -4,7 +4,7 @@
 
 use std::io::{self, BufReader, BufWriter};
 use std::path::PathBuf;
-use std::process::{ChildStdin, Command, Stdio};
+use std::process::{ChildStdin, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -12,7 +12,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
-use super::{read_message, write_message, RunFailure};
+use super::{own_command, read_message, write_message, RunFailure};
 use crate::ai::llm::ModelCache;
 use crate::app_core::Services;
 use crate::categorization::application::ai_run::{AiRunError, AiRunOutcome, AiRunState, AiRunStatus};
@@ -66,9 +66,7 @@ impl WorkerRunner {
 
     /// Relays the worker's events; `finished` is set once `CategorizeFinished` has gone out.
     fn run_child(&self, recheck: bool, trigger: RunTrigger, finished: &mut bool) -> Result<AiRunOutcome, AiRunError> {
-        let mut command = Command::new(&self.program);
-        #[cfg(unix)]
-        std::os::unix::process::CommandExt::arg0(&mut command, "makora");
+        let mut command = own_command(&self.program);
         command.arg(FLAG);
         if recheck {
             command.arg(RECHECK_FLAG);

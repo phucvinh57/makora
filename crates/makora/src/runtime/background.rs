@@ -1,9 +1,9 @@
-//! The background process on Linux: tracking, the tray, notifications and the AI schedule, with
-//! no UI. The window is a process of its own, started when it is asked for, so closing it gives
-//! back everything the UI held: GPUI, fonts and the GPU driver.
+//! The background process: tracking, the tray, notifications and the AI schedule, with no UI.
+//! The window is a process of its own, started when it is asked for, so closing it gives back
+//! everything the UI held: GPUI, fonts and the GPU driver.
 
 use std::io::BufReader;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -12,13 +12,13 @@ use async_channel::Receiver;
 use makora_lib::app_core::AppCore;
 use makora_lib::events::{CoreEvent, NavTarget};
 use makora_lib::ipc::window::{self as wire, answer, FromWindow, ToWindow};
-use makora_lib::ipc::{read_message, write_message};
+use makora_lib::ipc::{own_command, own_program, read_message, write_message};
 use makora_lib::shared::sync::lock;
 use makora_lib::tracking::adapters::own_process;
 use tracing::{error, info, warn};
 
 use crate::runtime::commands::{CommandReceiver, CommandSender, UiCommand};
-use crate::runtime::tray;
+use crate::runtime::main_loop;
 
 /// How long a window gets to save its preferences and exit when the app quits.
 const WINDOW_EXIT_GRACE: Duration = Duration::from_secs(3);
@@ -44,6 +44,9 @@ impl WindowSlot {
     }
 
     fn show(&self, target: Option<NavTarget>, core: &Arc<AppCore>, commands: &CommandSender) {
+        if let Some(pid) = lock(&self.0).as_ref().map(|window| window.child.id()) {
+            allow_window_to_take_focus(pid);
+        }
         if self.send(None, &ToWindow::Show(target)) {
             return;
         }
@@ -60,9 +63,7 @@ impl WindowSlot {
     }
 
     fn spawn(&self, target: Option<NavTarget>, core: &Arc<AppCore>, commands: &CommandSender) -> Result<WindowProcess> {
-        // This very binary, even after a package upgrade replaced the file on disk.
-        let mut command = Command::new("/proc/self/exe");
-        std::os::unix::process::CommandExt::arg0(&mut command, "makora");
+        let mut command = own_command(&own_program().context("finding the running executable")?);
         command.arg(wire::FLAG);
         if target.is_some() {
             command.arg(wire::REVIEW_FLAG);
@@ -76,6 +77,7 @@ impl WindowSlot {
         let stdin = child.stdin.take().context("the window process has no stdin")?;
         let stdout = child.stdout.take().context("the window process has no stdout")?;
         let pid = child.id();
+        allow_window_to_take_focus(pid);
         own_process::set_window_process(Some(pid));
         info!(pid, "window opened");
 
@@ -178,9 +180,27 @@ fn forward_events(events: Receiver<CoreEvent>, window: WindowSlot, commands: Com
     Ok(())
 }
 
+/// Lets the window process `pid` bring its window to the front: Windows only lets the foreground
+/// process, or one it allows, do that.
+#[cfg(windows)]
+fn allow_window_to_take_focus(pid: u32) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow;
+
+    // SAFETY: takes no pointers; a refusal only means the window may open behind others.
+    unsafe {
+        AllowSetForegroundWindow(pid);
+    }
+}
+
+#[cfg(not(windows))]
+fn allow_window_to_take_focus(_pid: u32) {}
+
 /// Runs until Quit, from the tray or the window, then closes the window and the session.
 pub fn run(core: Arc<AppCore>, commands: CommandSender, command_rx: CommandReceiver, events: Receiver<CoreEvent>) {
-    let tray = tray::start(commands.clone());
+    main_loop::run(commands.clone(), move || serve(core, commands, command_rx, events));
+}
+
+fn serve(core: Arc<AppCore>, commands: CommandSender, command_rx: CommandReceiver, events: Receiver<CoreEvent>) {
     let window = WindowSlot::default();
     if let Err(err) = forward_events(events, window.clone(), commands.clone()) {
         error!(error = format!("{err:#}"), "the window will not hear from the core");
@@ -195,8 +215,5 @@ pub fn run(core: Arc<AppCore>, commands: CommandSender, command_rx: CommandRecei
     }
     window.close();
     core.runner.cancel();
-    if let Some(tray) = tray {
-        tray.remove();
-    }
     core.shutdown();
 }

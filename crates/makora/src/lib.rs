@@ -1,9 +1,9 @@
 //! Makora's native front end: the GPUI window, tray and single-instance handling around the
 //! services in [`makora_lib::app_core::AppCore`].
 //!
-//! On Linux the app is a background process ([`runtime::background`]) that starts a window
-//! process (`makora --window`) when the window is asked for. Elsewhere the window shares the
-//! background process. Either way, each AI run may be a worker process (`makora --ai-worker`).
+//! The app is a background process ([`runtime::background`]) that starts a window process
+//! (`makora --window`) when the window is asked for. Each AI run is a worker process
+//! (`makora --ai-worker`).
 
 pub mod runtime;
 pub mod ui;
@@ -27,7 +27,6 @@ pub fn run() -> ExitCode {
     if let Some((recheck, trigger)) = worker::parse_args(&args) {
         return run_child(|paths| worker::serve(paths, recheck, trigger));
     }
-    #[cfg(target_os = "linux")]
     if let Some(open_at) = makora_lib::ipc::window::parse_args(&args) {
         return run_child(|paths| window_process::run(paths, open_at));
     }
@@ -64,16 +63,7 @@ pub fn run() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    #[cfg(target_os = "linux")]
     runtime::background::run(core, command_tx, command_rx, event_rx);
-    #[cfg(not(target_os = "linux"))]
-    runtime::app::launch(
-        Arc::new(core.client()),
-        runtime::app::Host::InProcess(core, command_tx),
-        command_rx,
-        event_rx,
-        None,
-    );
     ExitCode::SUCCESS
 }
 
@@ -113,7 +103,6 @@ fn run_child(body: impl FnOnce(AppPaths) -> anyhow::Result<()>) -> ExitCode {
     }
 }
 
-#[cfg(target_os = "linux")]
 mod window_process {
     use std::io::{self, BufReader, BufWriter};
     use std::sync::Arc;
@@ -124,7 +113,7 @@ mod window_process {
     use makora_lib::ipc::window::{RemoteDownloads, RemoteRunner, ToWindow, WindowClient};
     use makora_lib::paths::AppPaths;
 
-    use crate::runtime::app::{self, Host};
+    use crate::runtime::app;
     use crate::runtime::commands::{self, UiCommand};
     use crate::runtime::events::ChannelEvents;
 
@@ -141,7 +130,6 @@ mod window_process {
             &services,
             Arc::new(RemoteRunner(client.clone())),
             Arc::new(RemoteDownloads(client.clone())),
-            None,
         );
 
         let (command_tx, command_rx) = commands::channel();
@@ -163,7 +151,7 @@ mod window_process {
             })
             .context("spawning the app link thread")?;
 
-        app::launch(Arc::new(core), Host::Child(client), command_rx, event_rx, open_at);
+        app::launch(Arc::new(core), client, command_rx, event_rx, open_at);
         Ok(())
     }
 }
