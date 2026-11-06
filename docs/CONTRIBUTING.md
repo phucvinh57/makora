@@ -36,16 +36,16 @@ bun run check                           # Biome with fixes
 | `crates/makora-core/` | Backend: tracking, categorization, storage, AI, and the `makora-bridge` binary |
 | `crates/makora/`      | The GPUI app: window, tray, single instance, screens and dialogs               |
 | `packaging/`          | Linux desktop entry and package scripts                                        |
-| `extensions/browser/` | Optional active-tab reporter ([guide](extensions/browser/README.md))           |
-| `extensions/gnome/`   | GNOME Shell focus reporter ([guide](extensions/gnome/contributing.md))         |
-| `demo/`               | Remotion demo video ([guide](demo/README.md))                                  |
+| `extensions/browser/` | Optional active-tab reporter ([guide](../extensions/browser/README.md))        |
+| `extensions/gnome/`   | GNOME Shell focus reporter ([guide](../extensions/gnome/contributing.md))      |
+| `demo/`               | Remotion demo video ([guide](../demo/README.md))                               |
 
 ## How it works
 
 - **Tracking.** An app gaining focus opens an activity row; another app taking focus closes it. Browser tab reports split browser rows by site. On Linux, locking or suspending closes the row (via systemd-logind's `LockedHint`); idle input alone does not.
 - **Processes.** On Linux, `makora` runs in the background (tracking, tray, notifications, AI schedule) and starts `makora --window` for the window. Each AI run is a `makora --ai-worker` process. macOS and Windows run the window in the main process.
 - **Browser bridge.** The browser starts `makora-bridge`, which relays tab messages to the app over a per-user socket (`$XDG_RUNTIME_DIR/makora/bridge.sock` on Linux, a named pipe on Windows). Each start, the app registers the bridge next to its own executable, so a dev run points browsers at `target/debug/makora-bridge` until the installed app starts again.
-- **GNOME.** GNOME Wayland hides window focus from apps, so a [Shell extension](extensions/gnome/README.md) reports it over D-Bus.
+- **GNOME.** GNOME Wayland hides window focus from apps, so a [Shell extension](../extensions/gnome/README.md) reports it over D-Bus.
 
 ## Categorization
 
@@ -89,7 +89,7 @@ Pushing a `v*` tag runs `.github/workflows/release.yaml`: it sets the version in
 ## Guidelines
 
 - Keep each change focused. Describe the resulting behavior in the PR.
-- Follow the rules in [AGENTS.md](AGENTS.md). No new tests for now; run the existing checks.
+- Follow the rules in [AGENTS.md](../AGENTS.md). No new tests for now; run the existing checks.
 - Keep activity data local.
 
 ## Known gaps

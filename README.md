@@ -11,7 +11,7 @@ Statistics show how much and _when_ you work: an hour-by-weekday table, a timeli
 <video src="https://github.com/user-attachments/assets/74aae38b-3bff-48b9-adc1-353526fdb4bb" controls></video>
 _The demo uses fictional activity data._
 
-[Get Makora](https://github.com/phucvinh57/makora/releases) · [Contribute](CONTRIBUTING.md)
+[Get Makora](https://github.com/phucvinh57/makora/releases) · [Contribute](docs/CONTRIBUTING.md)
 
 ## Why Makora
 
@@ -19,7 +19,7 @@ Commercial trackers such as [Rize](https://rize.io/) hold your activity on their
 
 ## Install
 
-Download a package from [Releases](https://github.com/phucvinh57/makora/releases), or [build from source](CONTRIBUTING.md#build-and-run).
+Download a package from [Releases](https://github.com/phucvinh57/makora/releases), or [build from source](docs/CONTRIBUTING.md#build-and-run).
 
 | Platform              | Download               | Install                                                                   |
 | --------------------- | ---------------------- | ------------------------------------------------------------------------- |
