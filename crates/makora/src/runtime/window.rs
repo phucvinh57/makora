@@ -1,5 +1,5 @@
-//! The one main window: shown, raised or rebuilt on demand. Closing it only hides the app; the
-//! tray brings it back.
+//! The one main window of the window process: shown, raised or rebuilt on demand. Closing it ends
+//! the process; the tray starts a new one.
 
 use std::sync::{Arc, LazyLock};
 
@@ -56,6 +56,9 @@ pub fn init(cx: &mut App) {
 
 /// Raises the main window, opening it if it is closed, and moves it to `route` when one is given.
 pub fn show_main_window(route: Option<Route>, cx: &mut App) {
+    // The background process asked for the window, so this process is not the active app yet.
+    #[cfg(target_os = "macos")]
+    cx.activate(true);
     if let Some(main) = cx
         .try_global::<MainWindowSlot>()
         .and_then(|slot| slot.0.clone())

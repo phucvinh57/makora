@@ -42,8 +42,8 @@ bun run check                           # Biome with fixes
 
 ## How it works
 
-- **Tracking.** An app gaining focus opens an activity row; another app taking focus closes it. Browser tab reports split browser rows by site. On Linux, locking or suspending closes the row (via systemd-logind's `LockedHint`); idle input alone does not.
-- **Processes.** On Linux, `makora` runs in the background (tracking, tray, notifications, AI schedule) and starts `makora --window` for the window. Each AI run is a `makora --ai-worker` process. macOS and Windows run the window in the main process.
+- **Tracking.** An app gaining focus opens an activity row; another app taking focus closes it. Browser tab reports split browser rows by site. Locking or suspending closes the row (systemd-logind's `LockedHint` on Linux, workspace sleep and lock notifications on macOS, session and power messages on Windows); idle input alone does not.
+- **Processes.** `makora` runs in the background (tracking, tray, notifications, AI schedule) and starts `makora --window` for the window. Each AI run is a `makora --ai-worker` process. On macOS the Dock icon shows only while the window is open.
 - **Browser bridge.** The browser starts `makora-bridge`, which relays tab messages to the app over a per-user socket (`$XDG_RUNTIME_DIR/makora/bridge.sock` on Linux, a named pipe on Windows). Each start, the app registers the bridge next to its own executable, so a dev run points browsers at `target/debug/makora-bridge` until the installed app starts again.
 - **GNOME.** GNOME Wayland hides window focus from apps, so a [Shell extension](../extensions/gnome/README.md) reports it over D-Bus.
 
@@ -94,6 +94,5 @@ Pushing a `v*` tag runs `.github/workflows/release.yaml`: it sets the version in
 
 ## Known gaps
 
-- Lock and sleep detection is Linux-only.
 - Windows Store apps can show up as `ApplicationFrameHost.exe`.
 - macOS focus and title tracking needs more testing on real hardware.

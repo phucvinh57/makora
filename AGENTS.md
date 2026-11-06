@@ -29,7 +29,7 @@ Packaging config: `crates/makora/Cargo.toml` (`[package.metadata.{deb,generate-r
 
 ## Processes
 
-On Linux, `makora` is a background process (`crates/makora/src/runtime/background.rs`: tracking, tray, notifications, AI schedule, no GPUI). It starts `makora --window` when the window is requested; closing the window ends that process. They talk over the child's stdin/stdout (`crates/makora-core/src/ipc/`): the window reads and writes SQLite and `settings.toml` itself, and asks the background process for AI runs and model downloads. Each AI run is a `makora --ai-worker` process, so llama.cpp and the GPU driver exit with it. macOS and Windows still run the window in the background process.
+`makora` is a background process (`crates/makora/src/runtime/background.rs`: tracking, tray, notifications, AI schedule, no GPUI). It starts `makora --window` when the window is requested; closing the window ends that process. They talk over the child's stdin/stdout (`crates/makora-core/src/ipc/`): the window reads and writes SQLite and `settings.toml` itself, and asks the background process for AI runs and model downloads. Each AI run is a `makora --ai-worker` process, so llama.cpp and the GPU driver exit with it. On macOS the background process runs the AppKit loop on its main thread for the tray (`runtime/main_loop.rs`); on Windows the tray pumps its own thread.
 
 ## Workflow
 

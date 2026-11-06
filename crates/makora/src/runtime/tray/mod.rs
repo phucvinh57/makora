@@ -6,7 +6,6 @@ mod linux;
 mod native;
 
 use anyhow::{Context, Result};
-use gpui_kit::{App, Global};
 use tracing::warn;
 
 use crate::runtime::commands::CommandSender;
@@ -24,12 +23,8 @@ pub trait SystemTray {
     fn remove(&self);
 }
 
-struct InstalledTray(Box<dyn SystemTray>);
-
-impl Global for InstalledTray {}
-
-/// Puts the icon in the tray until [`SystemTray::remove`]. On macOS and Windows, call it on the
-/// main thread, from the app's launch callback.
+/// Puts the icon in the tray until [`SystemTray::remove`]. On macOS, call it on the main thread,
+/// whose AppKit event loop runs the tray.
 pub fn start(commands: CommandSender) -> Option<Box<dyn SystemTray>> {
     let tray = Rgba::decode(TRAY_PNG).and_then(|icon| spawn(icon, commands));
     match tray {
@@ -41,19 +36,6 @@ pub fn start(commands: CommandSender) -> Option<Box<dyn SystemTray>> {
             );
             None
         }
-    }
-}
-
-/// [`start`], for the life of the app.
-pub fn install(commands: CommandSender, cx: &mut App) {
-    if let Some(tray) = start(commands) {
-        cx.set_global(InstalledTray(tray));
-    }
-}
-
-pub fn remove(cx: &mut App) {
-    if let Some(tray) = cx.try_global::<InstalledTray>() {
-        tray.0.remove();
     }
 }
 

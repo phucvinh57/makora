@@ -11,8 +11,8 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    App, AppContext, Context, Entity, InteractiveElement, IntoElement, ParentElement, Render,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, Task, Window, div, px,
+    App, AppContext, Context, Entity, IntoElement, ParentElement, Render,
+    SharedString, Styled, Subscription, Task, Window, div, px,
 };
 use makora_lib::ai::llm::ModelRole;
 use makora_lib::categorization::application::ai_run::AiRunOutcome;
@@ -36,7 +36,6 @@ use crate::ui::widgets::toast::Toast;
 const ADD_MODEL: &str = "__add_model__";
 const LOCAL_PROVIDER: &str = "__local__";
 const DEFAULT_HOURS: u32 = 24;
-const MODEL_LOADED_POLL: Duration = Duration::from_secs(15);
 const NEXT_RUN_POLL: Duration = Duration::from_secs(60);
 
 pub fn period_label(hours: u32) -> String {
@@ -265,8 +264,6 @@ pub struct AiSection {
     run_pending: Option<bool>,
     run_error: Option<String>,
     stopping: bool,
-    models_loaded: bool,
-    unloading: bool,
     saving_period: bool,
     period_error: Option<String>,
     next_run: Option<DateTime<Utc>>,
@@ -287,9 +284,7 @@ pub struct AiSection {
     model_save: Task<()>,
     period_save: Task<()>,
     stop_task: Task<()>,
-    unload_task: Task<()>,
     installed_load: Task<()>,
-    loaded_load: Task<()>,
     next_run_load: Task<()>,
     models_load: Task<()>,
     run: Task<()>,
@@ -343,17 +338,6 @@ impl AiSection {
         let polls = vec![
             cx.spawn(async move |this, cx| {
                 loop {
-                    cx.background_executor().timer(MODEL_LOADED_POLL).await;
-                    if this
-                        .update(cx, |this, cx| this.load_models_loaded(cx))
-                        .is_err()
-                    {
-                        break;
-                    }
-                }
-            }),
-            cx.spawn(async move |this, cx| {
-                loop {
                     cx.background_executor().timer(NEXT_RUN_POLL).await;
                     let polled = this.update(cx, |this, cx| {
                         this.next_run_inputs = None;
@@ -373,8 +357,6 @@ impl AiSection {
             run_pending: None,
             run_error: None,
             stopping: false,
-            models_loaded: false,
-            unloading: false,
             saving_period: false,
             period_error: None,
             next_run: None,
@@ -393,16 +375,13 @@ impl AiSection {
             model_save: Task::ready(()),
             period_save: Task::ready(()),
             stop_task: Task::ready(()),
-            unload_task: Task::ready(()),
             installed_load: Task::ready(()),
-            loaded_load: Task::ready(()),
             next_run_load: Task::ready(()),
             models_load: Task::ready(()),
             run: Task::ready(()),
             _polls: polls,
             _subscriptions: subscriptions,
         };
-        section.load_models_loaded(cx);
         section.on_app_state(window, cx);
         section
     }
@@ -410,7 +389,6 @@ impl AiSection {
     pub fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.installed_revision = None;
         self.next_run_inputs = None;
-        self.load_models_loaded(cx);
         self.on_app_state(window, cx);
     }
 
@@ -602,14 +580,6 @@ impl AiSection {
                 });
                 this.remote_models = Some(result);
             },
-        );
-    }
-
-    fn load_models_loaded(&mut self, cx: &mut Context<Self>) {
-        self.loaded_load = data::fetch(
-            cx,
-            |core| core.models.as_ref().is_some_and(|models| models.is_loaded()),
-            |this, loaded, _| this.models_loaded = loaded,
         );
     }
 
@@ -850,7 +820,6 @@ impl AiSection {
                     state.categorize = status.map_or_else(CategorizeTask::default, Into::into);
                     state.invalidate_categorization(cx);
                 });
-                this.load_models_loaded(cx);
                 cx.notify();
             });
         });
@@ -863,23 +832,6 @@ impl AiSection {
             cx,
             |core| core.runner.cancel(),
             |this, _, _| this.stopping = false,
-        );
-        cx.notify();
-    }
-
-    fn unload(&mut self, cx: &mut Context<Self>) {
-        self.unloading = true;
-        self.unload_task = data::fetch(
-            cx,
-            |core| {
-                if let Some(models) = &core.models {
-                    models.unload();
-                }
-            },
-            |this, _, cx| {
-                this.unloading = false;
-                this.load_models_loaded(cx);
-            },
         );
         cx.notify();
     }
@@ -1128,26 +1080,6 @@ impl Render for AiSection {
                 )
                 .when_some(blocker, |this, blocker| {
                     this.child(div().text_xs().text_color(muted).child(blocker))
-                })
-                .when(self.models_loaded && !running, |this| {
-                    this.child(
-                        h_flex()
-                            .gap_1()
-                            .text_xs()
-                            .text_color(muted)
-                            .child("Models loaded in memory (released after 10 idle minutes).")
-                            .child(
-                                div()
-                                    .id("unload-models")
-                                    .underline()
-                                    .cursor_pointer()
-                                    .hover(|style| style.text_color(theme.foreground))
-                                    .when(!self.unloading, |this| {
-                                        this.on_click(cx.listener(|this, _, _, cx| this.unload(cx)))
-                                    })
-                                    .child("Unload"),
-                            ),
-                    )
                 })
                 .when_some(self.run_error.clone(), |this, error| {
                     this.child(div().text_xs().text_color(theme.danger).child(error))
