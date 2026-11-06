@@ -25,7 +25,7 @@ use crate::ui::format::ai_usage::{
     output_tokens_per_second, overall_output_tokens_per_second, speed_detail,
 };
 use crate::ui::format::date_range::parse_instant;
-use crate::ui::screens::insights::cost_chart::{cost_chart, cost_points};
+use crate::ui::screens::monitoring::cost_chart::{cost_chart, cost_points};
 use crate::ui::shell::content_size;
 use crate::ui::widgets::segmented::segmented;
 use crate::ui::widgets::stat_tile::StatTile;

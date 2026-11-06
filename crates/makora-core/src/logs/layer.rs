@@ -9,7 +9,7 @@ use tracing_log::NormalizeEvent;
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::{Context, Layer};
 
-use super::{area_for, LogEntry, LogLevel};
+use super::{LogEntry, LogLevel};
 
 /// Writes every event it is given as one [`LogEntry`] JSON line. Failures to write are dropped
 /// silently: reporting them would mean logging from inside the logger.
@@ -42,7 +42,6 @@ where
             ts: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
             level: LogLevel::from(metadata.level()),
             target: metadata.target().to_string(),
-            area: area_for(metadata.target()),
             message: visitor.message,
             fields: visitor.fields,
         };
@@ -108,7 +107,6 @@ pub(crate) mod tests {
     use tracing_subscriber::layer::SubscriberExt;
 
     use super::*;
-    use crate::logs::LogArea;
 
     #[derive(Clone, Default)]
     pub(crate) struct Buffer(Arc<Mutex<Vec<u8>>>);
@@ -157,7 +155,6 @@ pub(crate) mod tests {
 
         let network = &lines[0];
         assert_eq!(network.level, LogLevel::Info);
-        assert_eq!(network.area, LogArea::Network);
         assert_eq!(network.message, "HTTP request");
         assert_eq!(network.fields["host"], "api.openai.com");
         assert_eq!(network.fields["status"], 200);

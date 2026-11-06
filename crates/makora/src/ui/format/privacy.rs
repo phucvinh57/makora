@@ -13,6 +13,19 @@ pub fn redaction_kind_label(kind: Kind) -> &'static str {
     }
 }
 
+/// A kind as the network log names it (`email`, `term`, `never_send`…), for people.
+pub fn masked_kind_label(name: &str) -> String {
+    match name {
+        "term" => "Words to hide".to_string(),
+        "account" => "Account name".to_string(),
+        "never_send" => "Never-send activities".to_string(),
+        other => Kind::parse(other).map_or_else(
+            || other.to_string(),
+            |kind| redaction_kind_label(kind).to_string(),
+        ),
+    }
+}
+
 pub fn url_policy_label(policy: UrlPolicy) -> &'static str {
     match policy {
         UrlPolicy::Full => "Full path",
@@ -65,6 +78,15 @@ mod tests {
                 .iter()
                 .all(|policy| !url_policy_label(*policy).is_empty())
         );
+    }
+
+    #[test]
+    fn masked_kinds_read_well() {
+        assert_eq!(masked_kind_label("email"), "Email addresses");
+        assert_eq!(masked_kind_label("long_number"), "Numbers of 8+ digits");
+        assert_eq!(masked_kind_label("term"), "Words to hide");
+        assert_eq!(masked_kind_label("never_send"), "Never-send activities");
+        assert_eq!(masked_kind_label("future_kind"), "future_kind");
     }
 
     #[test]

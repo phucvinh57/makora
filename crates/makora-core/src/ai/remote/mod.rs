@@ -22,6 +22,7 @@ use crate::ai::privacy::RedactionReport;
 use crate::categorization::domain::retrieval::RelatedActivity;
 use crate::categorization::ports::{ActivityText, TokenUsage, UsageMeter};
 use crate::domain::types::Category;
+use crate::logs::{NETWORK_TARGET, REMOTE_SEND};
 use crate::settings::{ProviderConfig, ProviderKind};
 use crate::shared::ids::CategoryId;
 
@@ -79,7 +80,7 @@ pub fn classify(
     if activities_sent > 0 {
         let after = meter.snapshot();
         info!(
-            target: "makora_lib::network",
+            target: NETWORK_TARGET,
             host = %host_of(base_url),
             purpose = "AI categorization",
             model,
@@ -89,7 +90,7 @@ pub fn classify(
             redaction_kinds = %redactions.summary(),
             input_tokens = after.input_tokens - before.input_tokens,
             output_tokens = after.output_tokens - before.output_tokens,
-            "sent activities to remote provider"
+            "{REMOTE_SEND}"
         );
     }
     result
@@ -347,6 +348,36 @@ mod tests {
         let usage = meter.snapshot();
         assert_eq!((usage.requests, usage.failed_requests), (4, 1));
         assert_eq!((usage.input_tokens, usage.cached_input_tokens, usage.output_tokens), (300, 240, 6));
+    }
+
+    #[test]
+    fn a_run_that_sent_activities_shows_up_as_masked() {
+        let taxonomy = [Category {
+            id: CategoryId(1),
+            name: "Work".to_string(),
+            color: "#000000".to_string(),
+            parent_id: None,
+            description: None,
+        }];
+        let text = crate::logs::layer::tests::capture(|| {
+            classify(
+                &FakeApi,
+                "https://api.example.com/v1",
+                "model",
+                &taxonomy,
+                &[activity("a")],
+                &|_| Vec::new(),
+                &UsageMeter::default(),
+                &RedactionReport::default(),
+                &mut |_, _| true,
+            )
+            .unwrap();
+        });
+        let entry: crate::logs::LogEntry = serde_json::from_str(text.trim()).unwrap();
+        assert_eq!(entry.message, crate::logs::REMOTE_SEND);
+        assert_eq!(entry.fields["host"], "api.example.com");
+        assert_eq!(entry.fields["activities_sent"], 1);
+        assert_eq!(entry.fields["fields"], SENT_FIELDS);
     }
 
     #[test]

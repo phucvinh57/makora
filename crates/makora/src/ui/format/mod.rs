@@ -5,7 +5,7 @@ pub mod bytes;
 pub mod categories;
 pub mod date_range;
 pub mod duration;
-pub mod logs;
+pub mod network;
 pub mod number;
 pub mod privacy;
 pub mod providers;

@@ -1,39 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Duration, NaiveDate, Utc};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Map, Value};
 
-use super::{LogArea, LogEntry, LogLevel, EVENTS_FILE_PREFIX, EVENTS_FILE_SUFFIX, NETWORK_TARGET};
+use super::{LogEntry, EVENTS_FILE_PREFIX, EVENTS_FILE_SUFFIX, NETWORK_TARGET, REMOTE_SEND};
 
-pub const MAX_ENTRIES: u32 = 1000;
 const MAX_DAYS: u32 = 31;
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LogQuery {
-    pub days: u32,
-    pub min_level: LogLevel,
-    /// Every area when left out.
-    pub areas: Option<Vec<LogArea>>,
-    pub search: Option<String>,
-    /// At most [`MAX_ENTRIES`], which is also the default.
-    pub limit: Option<u32>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct LogPage {
-    /// Newest first.
-    pub entries: Vec<LogEntry>,
-    /// Matches per area for the period, level and search, whatever the area filter.
-    pub area_counts: BTreeMap<LogArea, u32>,
-    /// More entries matched than were returned.
-    pub truncated: bool,
-}
 
 /// Everything sent to or received from one host in a period.
 #[derive(Debug, PartialEq, Serialize)]
@@ -50,27 +27,51 @@ pub struct HostTraffic {
     pub purposes: Vec<String>,
 }
 
-pub trait LogReader: Send + Sync {
-    fn dir(&self) -> &Path;
-
-    fn query(&self, query: &LogQuery, now: DateTime<Utc>) -> Result<LogPage>;
-
-    /// Per host, most recently contacted first.
-    fn network_summary(&self, days: u32, now: DateTime<Utc>) -> Result<Vec<HostTraffic>>;
+/// One AI run that sent activities to a remote provider.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RemoteSend {
+    /// RFC 3339.
+    pub at: String,
+    pub host: String,
+    pub model: String,
+    pub activities_sent: u64,
+    /// What each activity told the provider.
+    pub fields: String,
+    pub redactions: u64,
+    /// Per kind of redaction, as [`crate::ai::privacy::RedactionReport::summary`] names them.
+    pub kinds: Vec<(String, u64)>,
 }
 
-/// Reads the daily `events.<date>.jsonl` files [`super::AppLogLayer`] writes.
-pub struct JsonlLogReader {
+/// What was masked before activities left the machine in a period.
+#[derive(Debug, Default, PartialEq, Serialize)]
+pub struct MaskedSummary {
+    pub activities_sent: u64,
+    pub redactions: u64,
+    /// Most redacted first.
+    pub kinds: Vec<(String, u64)>,
+    /// Newest first.
+    pub sends: Vec<RemoteSend>,
+}
+
+pub trait NetworkLog: Send + Sync {
+    /// Per host, most recently contacted first.
+    fn hosts(&self, days: u32, now: DateTime<Utc>) -> Result<Vec<HostTraffic>>;
+
+    fn masked(&self, days: u32, now: DateTime<Utc>) -> Result<MaskedSummary>;
+}
+
+/// Reads the network events in the daily `events.<date>.jsonl` files [`super::AppLogLayer`] writes.
+pub struct JsonlNetworkLog {
     dir: PathBuf,
 }
 
-impl JsonlLogReader {
+impl JsonlNetworkLog {
     pub fn new(dir: PathBuf) -> Self {
         Self { dir }
     }
 
-    /// Calls `visit` for each entry newer than `since`, newest first. Lines that do not parse,
-    /// such as one cut short by a crash, are skipped.
+    /// Calls `visit` for each network event newer than `since`, newest first. Lines that do not
+    /// parse, such as one cut short by a crash, are skipped.
     fn for_each_entry(&self, since: DateTime<Utc>, mut visit: impl FnMut(LogEntry, DateTime<Utc>)) -> Result<()> {
         for path in self.files_since(since.date_naive())? {
             let bytes = match fs::read(&path) {
@@ -79,9 +80,15 @@ impl JsonlLogReader {
                 Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
             };
             for line in String::from_utf8_lossy(&bytes).lines().rev() {
+                if !line.contains(NETWORK_TARGET) {
+                    continue;
+                }
                 let Ok(entry) = serde_json::from_str::<LogEntry>(line) else {
                     continue;
                 };
+                if entry.target != NETWORK_TARGET {
+                    continue;
+                }
                 let Ok(at) = DateTime::parse_from_rfc3339(&entry.ts) else {
                     continue;
                 };
@@ -113,47 +120,10 @@ impl JsonlLogReader {
     }
 }
 
-impl LogReader for JsonlLogReader {
-    fn dir(&self) -> &Path {
-        &self.dir
-    }
-
-    fn query(&self, query: &LogQuery, now: DateTime<Utc>) -> Result<LogPage> {
-        let limit = query.limit.unwrap_or(MAX_ENTRIES).clamp(1, MAX_ENTRIES) as usize;
-        let needle = query
-            .search
-            .as_deref()
-            .map(str::trim)
-            .filter(|search| !search.is_empty())
-            .map(str::to_lowercase);
-        let mut page = LogPage {
-            entries: Vec::new(),
-            area_counts: BTreeMap::new(),
-            truncated: false,
-        };
-        self.for_each_entry(since(now, query.days), |entry, _| {
-            if entry.level < query.min_level || needle.as_deref().is_some_and(|needle| !matches(&entry, needle)) {
-                return;
-            }
-            *page.area_counts.entry(entry.area).or_default() += 1;
-            if query.areas.as_ref().is_some_and(|areas| !areas.contains(&entry.area)) {
-                return;
-            }
-            if page.entries.len() < limit {
-                page.entries.push(entry);
-            } else {
-                page.truncated = true;
-            }
-        })?;
-        Ok(page)
-    }
-
-    fn network_summary(&self, days: u32, now: DateTime<Utc>) -> Result<Vec<HostTraffic>> {
+impl NetworkLog for JsonlNetworkLog {
+    fn hosts(&self, days: u32, now: DateTime<Utc>) -> Result<Vec<HostTraffic>> {
         let mut hosts: BTreeMap<String, (DateTime<Utc>, HostTraffic, BTreeSet<String>)> = BTreeMap::new();
         self.for_each_entry(since(now, days), |entry, at| {
-            if entry.target != NETWORK_TARGET {
-                return;
-            }
             let Some(host) = entry.fields.get("host").and_then(Value::as_str) else {
                 return;
             };
@@ -198,6 +168,35 @@ impl LogReader for JsonlLogReader {
         summary.sort_by_key(|host| std::cmp::Reverse(host.0));
         Ok(summary.into_iter().map(|(_, traffic)| traffic).collect())
     }
+
+    fn masked(&self, days: u32, now: DateTime<Utc>) -> Result<MaskedSummary> {
+        let mut summary = MaskedSummary::default();
+        let mut kinds: BTreeMap<String, u64> = BTreeMap::new();
+        self.for_each_entry(since(now, days), |entry, _| {
+            if entry.message != REMOTE_SEND {
+                return;
+            }
+            let fields = &entry.fields;
+            let send = RemoteSend {
+                at: entry.ts.clone(),
+                host: text(fields, "host"),
+                model: text(fields, "model"),
+                activities_sent: number(fields, "activities_sent"),
+                fields: text(fields, "fields"),
+                redactions: number(fields, "redactions"),
+                kinds: parse_kinds(&text(fields, "redaction_kinds")),
+            };
+            summary.activities_sent += send.activities_sent;
+            summary.redactions += send.redactions;
+            for (kind, count) in &send.kinds {
+                *kinds.entry(kind.clone()).or_default() += count;
+            }
+            summary.sends.push(send);
+        })?;
+        summary.kinds = kinds.into_iter().collect();
+        summary.kinds.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
+        Ok(summary)
+    }
 }
 
 fn since(now: DateTime<Utc>, days: u32) -> DateTime<Utc> {
@@ -217,16 +216,19 @@ fn number(fields: &Map<String, Value>, key: &str) -> u64 {
     fields.get(key).and_then(Value::as_u64).unwrap_or(0)
 }
 
-/// `needle` is already lowercase.
-fn matches(entry: &LogEntry, needle: &str) -> bool {
-    entry.message.to_lowercase().contains(needle)
-        || entry.fields.iter().any(|(key, value)| {
-            key.to_lowercase().contains(needle)
-                || match value {
-                    Value::String(text) => text.to_lowercase().contains(needle),
-                    other => other.to_string().contains(needle),
-                }
+fn text(fields: &Map<String, Value>, key: &str) -> String {
+    fields.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
+}
+
+/// `email:3,secret:1` back into its counts; parts that do not parse are skipped.
+fn parse_kinds(summary: &str) -> Vec<(String, u64)> {
+    summary
+        .split(',')
+        .filter_map(|part| {
+            let (name, count) = part.trim().split_once(':')?;
+            Some((name.to_string(), count.parse().ok()?))
         })
+        .collect()
 }
 
 #[cfg(test)]
@@ -234,14 +236,13 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::logs::area_for;
     use crate::logs::layer::tests::capture;
 
     struct Scratch(PathBuf);
 
     impl Scratch {
         fn new(name: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!("makora-logs-{name}-{}", std::process::id()));
+            let dir = std::env::temp_dir().join(format!("makora-network-log-{name}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(&dir).unwrap();
             Self(dir)
@@ -252,8 +253,8 @@ mod tests {
             fs::write(self.0.join(format!("events.{date}.jsonl")), text).unwrap();
         }
 
-        fn reader(&self) -> JsonlLogReader {
-            JsonlLogReader::new(self.0.clone())
+        fn reader(&self) -> JsonlNetworkLog {
+            JsonlNetworkLog::new(self.0.clone())
         }
     }
 
@@ -267,171 +268,81 @@ mod tests {
         "2026-10-31T12:00:00Z".parse().unwrap()
     }
 
-    fn line(ts: &str, level: &str, target: &str, message: &str, fields: Value) -> String {
+    fn line(ts: &str, target: &str, message: &str, fields: Value) -> String {
         json!({
             "ts": ts,
-            "level": level,
+            "level": "info",
             "target": target,
-            "area": area_for(target),
             "message": message,
             "fields": fields,
         })
         .to_string()
     }
 
-    fn query(min_level: LogLevel) -> LogQuery {
-        LogQuery {
-            days: 1,
-            min_level,
-            areas: None,
-            search: None,
-            limit: None,
-        }
-    }
-
     #[test]
-    fn entries_written_by_the_layer_read_back_newest_first() {
+    fn events_written_by_the_layer_read_back() {
         let scratch = Scratch::new("round-trip");
         let text = capture(|| {
-            tracing::info!(target: "makora_lib::settings", setting = "min_session_seconds", value = 30, "setting changed");
-            tracing::warn!(target: "makora_lib::tracking", "focus watcher restarted");
+            tracing::info!(target: "makora_lib::network", host = "api.openai.com", method = "GET", bytes_received = 10u64, "HTTP request");
         });
         let today = Utc::now();
         let lines: Vec<String> = text.lines().map(str::to_string).collect();
         scratch.write(&today.format("%Y-%m-%d").to_string(), &lines);
 
-        let page = scratch.reader().query(&query(LogLevel::Info), today).unwrap();
+        let hosts = scratch.reader().hosts(1, today).unwrap();
 
-        let messages: Vec<&str> = page.entries.iter().map(|entry| entry.message.as_str()).collect();
-        assert_eq!(messages, ["focus watcher restarted", "setting changed"]);
-        assert_eq!(page.entries[1].area, LogArea::Settings);
-        assert_eq!(page.entries[1].fields["value"], 30);
-        assert!(!page.truncated);
-    }
-
-    #[test]
-    fn filters_by_level_search_area_and_period() {
-        let scratch = Scratch::new("filters");
-        scratch.write(
-            "2026-10-29",
-            &[line(
-                "2026-10-29T10:00:00Z",
-                "error",
-                "makora_lib::ai",
-                "too old",
-                json!({}),
-            )],
-        );
-        scratch.write(
-            "2026-10-30",
-            &[
-                line(
-                    "2026-10-30T11:00:00Z",
-                    "info",
-                    "makora_lib::ai",
-                    "before the period",
-                    json!({}),
-                ),
-                line(
-                    "2026-10-30T13:00:00Z",
-                    "info",
-                    "makora_lib::network",
-                    "HTTP request",
-                    json!({"host": "API.openai.com"}),
-                ),
-                line(
-                    "2026-10-30T14:00:00Z",
-                    "debug",
-                    "makora_lib::ai",
-                    "noise",
-                    json!({"host": "api.openai.com"}),
-                ),
-            ],
-        );
-        scratch.write(
-            "2026-10-31",
-            &[
-                line(
-                    "2026-10-31T09:00:00Z",
-                    "warn",
-                    "makora_lib::ai::remote::http",
-                    "retrying",
-                    json!({"host": "api.openai.com", "attempt": 2}),
-                ),
-                "not json".to_string(),
-                line(
-                    "2026-10-31T10:00:00Z",
-                    "info",
-                    "makora_lib::settings",
-                    "setting changed",
-                    json!({"value": 30}),
-                ),
-            ],
-        );
-        let reader = scratch.reader();
-
-        let all = reader.query(&query(LogLevel::Info), now()).unwrap();
-        let messages: Vec<&str> = all.entries.iter().map(|entry| entry.message.as_str()).collect();
-        assert_eq!(messages, ["setting changed", "retrying", "HTTP request"]);
-
-        let searched = LogQuery {
-            search: Some(" OpenAI ".into()),
-            areas: Some(vec![LogArea::Network]),
-            ..query(LogLevel::Info)
-        };
-        let page = reader.query(&searched, now()).unwrap();
-        let messages: Vec<&str> = page.entries.iter().map(|entry| entry.message.as_str()).collect();
-        assert_eq!(messages, ["HTTP request"]);
-        assert_eq!(
-            page.area_counts,
-            BTreeMap::from([(LogArea::Ai, 1), (LogArea::Network, 1)])
-        );
-
-        let warnings = reader.query(&query(LogLevel::Warn), now()).unwrap();
-        assert_eq!(warnings.entries.len(), 1);
-
-        let by_number = LogQuery {
-            search: Some("30".into()),
-            ..query(LogLevel::Info)
-        };
-        assert_eq!(reader.query(&by_number, now()).unwrap().entries.len(), 1);
-    }
-
-    #[test]
-    fn caps_the_entries_and_says_so() {
-        let scratch = Scratch::new("cap");
-        let lines: Vec<String> = (0..1005)
-            .map(|i| {
-                line(
-                    "2026-10-31T10:00:00Z",
-                    "info",
-                    "makora_lib",
-                    &format!("event {i}"),
-                    json!({}),
-                )
-            })
-            .collect();
-        scratch.write("2026-10-31", &lines);
-        let reader = scratch.reader();
-
-        let page = reader.query(&query(LogLevel::Info), now()).unwrap();
-        assert_eq!(page.entries.len(), MAX_ENTRIES as usize);
-        assert_eq!(page.entries[0].message, "event 1004");
-        assert!(page.truncated);
-        assert_eq!(page.area_counts[&LogArea::App], 1005);
-
-        let small = LogQuery {
-            limit: Some(10),
-            ..query(LogLevel::Info)
-        };
-        assert_eq!(reader.query(&small, now()).unwrap().entries.len(), 10);
+        assert_eq!(hosts.len(), 1);
+        assert_eq!((hosts[0].requests, hosts[0].bytes_received), (1, 10));
     }
 
     #[test]
     fn a_missing_log_directory_is_empty() {
-        let reader = JsonlLogReader::new(std::env::temp_dir().join("makora-logs-does-not-exist"));
-        assert!(reader.query(&query(LogLevel::Info), now()).unwrap().entries.is_empty());
-        assert!(reader.network_summary(7, now()).unwrap().is_empty());
+        let reader = JsonlNetworkLog::new(std::env::temp_dir().join("makora-network-log-does-not-exist"));
+        assert!(reader.hosts(7, now()).unwrap().is_empty());
+        assert_eq!(reader.masked(7, now()).unwrap(), MaskedSummary::default());
+    }
+
+    #[test]
+    fn masked_adds_up_redactions_per_kind_newest_send_first() {
+        let scratch = Scratch::new("masked");
+        let net = NETWORK_TARGET;
+        scratch.write(
+            "2026-10-29",
+            &[line("2026-10-29T10:00:00Z", net, REMOTE_SEND, json!({
+                "host": "api.openai.com", "model": "old", "activities_sent": 99, "redactions": 9, "redaction_kinds": "email:9",
+            }))],
+        );
+        scratch.write(
+            "2026-10-31",
+            &[
+                line("2026-10-31T08:00:00Z", net, REMOTE_SEND, json!({
+                    "host": "api.openai.com", "model": "gpt-4o-mini", "activities_sent": 10, "fields": "app name",
+                    "redactions": 4, "redaction_kinds": "email:3,secret:1",
+                })),
+                line("2026-10-31T08:00:01Z", net, "HTTP request", json!({
+                    "host": "api.openai.com", "method": "POST",
+                })),
+                line("2026-10-31T09:00:00Z", net, REMOTE_SEND, json!({
+                    "host": "api.anthropic.com", "model": "claude", "activities_sent": 5,
+                    "redactions": 2, "redaction_kinds": "secret:1,never_send:1,bad",
+                })),
+                line("2026-10-31T09:30:00Z", "makora_lib::ai", REMOTE_SEND, json!({
+                    "activities_sent": 1000,
+                })),
+            ],
+        );
+
+        let masked = scratch.reader().masked(1, now()).unwrap();
+
+        assert_eq!((masked.activities_sent, masked.redactions), (15, 6));
+        assert_eq!(
+            masked.kinds,
+            [("email".to_string(), 3), ("secret".to_string(), 2), ("never_send".to_string(), 1)]
+        );
+        let models: Vec<&str> = masked.sends.iter().map(|send| send.model.as_str()).collect();
+        assert_eq!(models, ["claude", "gpt-4o-mini"]);
+        assert_eq!(masked.sends[1].fields, "app name");
+        assert_eq!(masked.sends[1].at, "2026-10-31T08:00:00Z");
     }
 
     #[test]
@@ -441,14 +352,14 @@ mod tests {
         scratch.write(
             "2026-10-30",
             &[
-                line("2026-10-30T13:00:00Z", "info", net, "HTTP request", json!({
+                line("2026-10-30T13:00:00Z", net, "HTTP request", json!({
                     "method": "GET", "host": "api.openai.com", "path": "/v1/models", "status": 200,
                     "bytes_sent": 0, "bytes_received": 2000, "purpose": "list models",
                 })),
-                line("2026-10-30T14:00:00Z", "info", net, "model download started", json!({
+                line("2026-10-30T14:00:00Z", net, "model download started", json!({
                     "host": "registry.ollama.ai", "total_bytes": 5000, "purpose": "model download",
                 })),
-                line("2026-10-30T15:00:00Z", "info", net, "model download finished", json!({
+                line("2026-10-30T15:00:00Z", net, "model download finished", json!({
                     "host": "registry.ollama.ai", "requests": 3, "bytes_received": 5000, "purpose": "model download",
                 })),
             ],
@@ -458,7 +369,6 @@ mod tests {
             &[
                 line(
                     "2026-10-31T09:00:00Z",
-                    "info",
                     net,
                     "HTTP request",
                     json!({
@@ -468,7 +378,6 @@ mod tests {
                 ),
                 line(
                     "2026-10-31T09:00:01Z",
-                    "info",
                     net,
                     "sent activities to remote provider",
                     json!({
@@ -477,7 +386,6 @@ mod tests {
                 ),
                 line(
                     "2026-10-31T09:30:00Z",
-                    "info",
                     "makora_lib::ai",
                     "not network",
                     json!({
@@ -487,7 +395,7 @@ mod tests {
             ],
         );
 
-        let summary = scratch.reader().network_summary(7, now()).unwrap();
+        let summary = scratch.reader().hosts(7, now()).unwrap();
 
         assert_eq!(
             summary,

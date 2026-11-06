@@ -4,8 +4,8 @@
 //! `cargo run -p makora` shows events in the terminal; release builds have no terminal at all
 //! (`windows_subsystem = "windows"`), so it goes to `<app-data>/logs/makora.<date>.log` instead.
 //! The app log ([`AppLogLayer`]) always goes to `<app-data>/logs/events.<date>.jsonl`, with the
-//! same filter in every build, for the in-app log viewer. Both rotate daily and keep the last
-//! [`MAX_LOG_FILES`] days.
+//! same filter in every build; the Monitoring page reads its network events. Both rotate daily and
+//! keep the last [`MAX_LOG_FILES`] days.
 //!
 //! Must be called in `main` after the single-instance check, like every other process-wide
 //! initializer: a second launch exits at that check and must not touch the log directory the
@@ -28,7 +28,8 @@ pub const LOG_DIR_NAME: &str = "logs";
 
 const LOG_FILE_PREFIX: &str = "makora";
 const LOG_FILE_SUFFIX: &str = "log";
-const MAX_LOG_FILES: usize = 30;
+/// A day more than the Monitoring page's longest period, which can span 31 dates.
+const MAX_LOG_FILES: usize = 31;
 
 const DEV_FILTER: &str = "makora=debug,makora_lib=debug,warn";
 const PROD_FILTER: &str = "makora=info,makora_lib=info,warn";

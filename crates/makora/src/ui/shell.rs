@@ -20,7 +20,7 @@ use crate::ui::route::{Route, Section};
 use crate::ui::screens::Screen;
 use crate::ui::screens::categories::CategoriesScreen;
 use crate::ui::screens::history::HistoryScreen;
-use crate::ui::screens::insights::InsightsScreen;
+use crate::ui::screens::monitoring::MonitoringScreen;
 use crate::ui::screens::settings::SettingsScreen;
 use crate::ui::screens::statistics::StatisticsScreen;
 use crate::ui::theme;
@@ -45,7 +45,7 @@ pub struct Shell {
     statistics: Option<Entity<StatisticsScreen>>,
     categories: Option<Entity<CategoriesScreen>>,
     history: Option<Entity<HistoryScreen>>,
-    insights: Option<Entity<InsightsScreen>>,
+    monitoring: Option<Entity<MonitoringScreen>>,
     settings: Option<Entity<SettingsScreen>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -62,7 +62,7 @@ impl Shell {
             statistics: None,
             categories: None,
             history: None,
-            insights: None,
+            monitoring: None,
             settings: None,
             _subscriptions: subscriptions,
         };
@@ -99,8 +99,8 @@ impl Shell {
                 let screen = open(&mut self.history, window, cx);
                 screen.update(cx, |screen, cx| screen.navigate(filters, window, cx));
             }
-            Route::Insights(tab) => {
-                let screen = open(&mut self.insights, window, cx);
+            Route::Monitoring(tab) => {
+                let screen = open(&mut self.monitoring, window, cx);
                 screen.update(cx, |screen, cx| screen.navigate(tab, window, cx));
             }
         }
@@ -142,7 +142,7 @@ impl Shell {
             Section::Statistics => open(&mut self.statistics, window, cx).into(),
             Section::Categories => open(&mut self.categories, window, cx).into(),
             Section::History => open(&mut self.history, window, cx).into(),
-            Section::Insights => open(&mut self.insights, window, cx).into(),
+            Section::Monitoring => open(&mut self.monitoring, window, cx).into(),
             Section::Settings => open(&mut self.settings, window, cx).into(),
         }
     }
@@ -152,7 +152,7 @@ impl Shell {
             Section::Statistics => self.statistics.is_some(),
             Section::Categories => self.categories.is_some(),
             Section::History => self.history.is_some(),
-            Section::Insights => self.insights.is_some(),
+            Section::Monitoring => self.monitoring.is_some(),
             Section::Settings => self.settings.is_some(),
         }
     }
@@ -168,7 +168,7 @@ impl Shell {
             Section::Statistics => set_visible(&self.statistics, visible, window, cx),
             Section::Categories => set_visible(&self.categories, visible, window, cx),
             Section::History => set_visible(&self.history, visible, window, cx),
-            Section::Insights => set_visible(&self.insights, visible, window, cx),
+            Section::Monitoring => set_visible(&self.monitoring, visible, window, cx),
             Section::Settings => set_visible(&self.settings, visible, window, cx),
         }
     }
@@ -306,7 +306,7 @@ impl Shell {
             Section::Statistics => IconName::ChartColumn,
             Section::Categories => IconName::Tags,
             Section::History => IconName::RotateCcwClock,
-            Section::Insights => IconName::Gauge,
+            Section::Monitoring => IconName::Radar,
             Section::Settings => IconName::Settings,
         };
 
