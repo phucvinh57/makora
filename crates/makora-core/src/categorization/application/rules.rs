@@ -10,9 +10,11 @@ use diesel::result::{DatabaseErrorKind, Error as DieselError};
 use diesel::Connection;
 use serde::Serialize;
 
+use crate::categorization::domain::rule_mining::{self, ExistingRule, FiledActivity, SuggestionKind, Thresholds};
 use crate::categorization::domain::rules::{ActivityFacts, InvalidRule, PatternField, RuleKind, RuleMatcher};
 use crate::categorization::rules_store;
-use crate::db::models::CategoryRuleValues;
+use crate::db::models::{CategoryRuleValues, DismissalValues};
+use crate::db::rule_suggestion_dismissals::RuleSuggestionDismissalsRepo;
 use crate::db::{self, Db};
 use crate::reporting::rules::RulesReportRepo;
 use crate::reporting::Window;
@@ -91,6 +93,33 @@ pub struct PathSuggestion {
     pub total_seconds: f64,
 }
 
+/// A rule the user's pins point to. `change` is set when it would change an existing rule: that
+/// rule's id and the category it files under now.
+#[derive(Debug, Clone, Serialize)]
+pub struct RuleSuggestionView {
+    pub kind: RuleKind,
+    pub field: Option<PatternField>,
+    pub value: String,
+    pub category_id: CategoryId,
+    /// Pinned activities in `category_id`, and their time.
+    pub activity_count: usize,
+    pub total_seconds: f64,
+    /// Every pinned activity the rule would cover, whatever its category.
+    pub pinned_count: usize,
+    pub change: Option<(RuleId, CategoryId)>,
+}
+
+impl RuleSuggestionView {
+    pub fn draft(&self) -> RuleDraft {
+        RuleDraft {
+            kind: self.kind,
+            field: self.field,
+            value: self.value.clone(),
+            category_id: self.category_id,
+        }
+    }
+}
+
 pub trait RuleSvc: Send + Sync {
     fn list(&self) -> Result<Vec<CategoryRuleView>, RuleError>;
     fn create(&self, draft: &RuleDraft) -> Result<RuleId, RuleError>;
@@ -101,6 +130,10 @@ pub trait RuleSvc: Send + Sync {
     fn preview(&self, kind: RuleKind, field: Option<PatternField>, value: &str) -> Result<RulePreview, RuleError>;
     fn source_suggestions(&self) -> Result<Vec<SourceSuggestion>, RuleError>;
     fn path_suggestions(&self, domain: &str) -> Result<Vec<PathSuggestion>, RuleError>;
+    /// Rules the user's pins point to, most tracked time first.
+    fn suggestions(&self) -> Result<Vec<RuleSuggestionView>, RuleError>;
+    /// Stops suggesting this rule for this category.
+    fn dismiss_suggestion(&self, draft: &RuleDraft) -> Result<(), RuleError>;
 }
 
 pub struct SqliteRules {
@@ -236,6 +269,75 @@ impl RuleSvc for SqliteRules {
         let mut conn = self.db.read()?;
         let rows = RulesReportRepo::get_paths_of(&mut *conn, &domain.trim().to_lowercase(), &Window::until(Utc::now()))?;
         Ok(folder_totals(rows.into_iter().map(|row| (row.path, row.total_seconds))))
+    }
+
+    fn suggestions(&self) -> Result<Vec<RuleSuggestionView>, RuleError> {
+        let mut conn = self.db.read()?;
+        let filed: Vec<FiledActivity> = RulesReportRepo::get_pinned_activities(&mut *conn, &Window::until(Utc::now()))?
+            .into_iter()
+            .map(|row| FiledActivity {
+                kind: row.source_kind,
+                key: row.source_key,
+                name: row.source_name,
+                path: row.path,
+                title: row.title,
+                category: CategoryId::from(row.category_id),
+                seconds: row.total_seconds,
+            })
+            .collect();
+        let rules: Vec<ExistingRule> = db::category_rules::CategoryRulesRepo::get_list(&mut *conn)?
+            .into_iter()
+            .filter_map(|row| {
+                let category = CategoryId::from(row.category_id);
+                Some(ExistingRule {
+                    rule: rules_store::rule_from_row(row)?,
+                    category,
+                })
+            })
+            .collect();
+        let dismissed: Vec<(RuleMatcher, CategoryId)> = RuleSuggestionDismissalsRepo::get_list(&mut *conn)?
+            .into_iter()
+            .filter_map(|row| {
+                let matcher = RuleMatcher::parse(row.kind, row.field, &row.value).ok()?;
+                Some((matcher, CategoryId::from(row.category_id)))
+            })
+            .collect();
+        Ok(rule_mining::suggest(&filed, &rules, &dismissed, &Thresholds::default())
+            .into_iter()
+            .map(|suggestion| {
+                let (kind, field, value) = suggestion.matcher.parts();
+                RuleSuggestionView {
+                    kind,
+                    field,
+                    value,
+                    category_id: suggestion.category,
+                    activity_count: suggestion.activity_count,
+                    total_seconds: suggestion.total_seconds,
+                    pinned_count: suggestion.pinned_count,
+                    change: match suggestion.kind {
+                        SuggestionKind::New => None,
+                        SuggestionKind::ChangeRule { rule_id, current } => Some((rule_id, current)),
+                    },
+                }
+            })
+            .collect())
+    }
+
+    fn dismiss_suggestion(&self, draft: &RuleDraft) -> Result<(), RuleError> {
+        let (kind, field, value) = RuleMatcher::parse(draft.kind, draft.field, &draft.value)?.parts();
+        let dismissed_at = Utc::now().to_rfc3339();
+        let mut conn = self.db.write();
+        RuleSuggestionDismissalsRepo::insert(
+            &mut *conn,
+            &DismissalValues {
+                kind: kind.as_str(),
+                field: field.map_or("", PatternField::as_str),
+                value: &value,
+                category_id: draft.category_id.into(),
+                dismissed_at: &dismissed_at,
+            },
+        )?;
+        Ok(())
     }
 }
 

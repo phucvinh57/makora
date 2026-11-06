@@ -60,16 +60,19 @@ impl RuleFields {
 
     /// A saved rule split back into its fields: a page's value at its first `/`.
     pub fn of(rule: &CategoryRuleView) -> Self {
-        let (value, path) = match rule.value.find('/') {
-            Some(slash) if rule.kind == RuleKind::Page => (
-                rule.value[..slash].to_string(),
-                rule.value[slash..].to_string(),
-            ),
-            _ => (rule.value.clone(), String::new()),
+        Self::from_parts(rule.kind, rule.field, &rule.value)
+    }
+
+    pub fn from_parts(kind: RuleKind, field: Option<PatternField>, value: &str) -> Self {
+        let (value, path) = match value.find('/') {
+            Some(slash) if kind == RuleKind::Page => {
+                (value[..slash].to_string(), value[slash..].to_string())
+            }
+            _ => (value.to_string(), String::new()),
         };
         Self {
-            kind: rule.kind,
-            field: rule.field.unwrap_or(PatternField::Url),
+            kind,
+            field: field.unwrap_or(PatternField::Url),
             value,
             path,
         }
@@ -490,8 +493,19 @@ struct RuleForm {
 }
 
 impl RuleForm {
-    fn new(rule: Option<CategoryRuleView>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let category_id = rule.as_ref().map(|rule| rule.category_id);
+    fn new(input: RuleDialogInput, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let (rule, first, category_id) = match input {
+            RuleDialogInput::Add => (None, RuleFields::empty(None), None),
+            RuleDialogInput::Prefill(draft) => (
+                None,
+                RuleFields::from_parts(draft.kind, draft.field, &draft.value),
+                Some(draft.category_id),
+            ),
+            RuleDialogInput::Edit(rule) => {
+                let category_id = rule.category_id;
+                (Some(rule.clone()), RuleFields::of(&rule), Some(category_id))
+            }
+        };
         let category = cx.new(|cx| {
             CategoryCombobox::new(
                 category_id.map(|id| SharedString::from(id.0.to_string())),
@@ -529,9 +543,6 @@ impl RuleForm {
                 }
             },
         )];
-        let first = rule
-            .as_ref()
-            .map_or_else(|| RuleFields::empty(None), RuleFields::of);
         let mut form = Self {
             rule,
             category,
@@ -789,12 +800,18 @@ impl Render for RuleForm {
 
 pub struct RuleDialog;
 
-impl AppDialog for RuleDialog {
-    /// The rule to edit, or `None` to add rules.
-    type Data = Option<CategoryRuleView>;
+pub enum RuleDialogInput {
+    Add,
+    /// Adding, with the category and the first rule filled in.
+    Prefill(RuleDraft),
+    Edit(CategoryRuleView),
+}
 
-    fn open(rule: Option<CategoryRuleView>, window: &mut Window, cx: &mut App) {
-        let form = cx.new(|cx| RuleForm::new(rule, window, cx));
+impl AppDialog for RuleDialog {
+    type Data = RuleDialogInput;
+
+    fn open(input: RuleDialogInput, window: &mut Window, cx: &mut App) {
+        let form = cx.new(|cx| RuleForm::new(input, window, cx));
         window.open_dialog(cx, move |dialog, _, _| {
             dialog.w(px(512.)).child(form.clone())
         });

@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::shared::ids::RuleId;
 use crate::tracking::domain::source_key::{normalized_domain, url_path, KeyKind};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RuleKind {
     App,
@@ -51,7 +51,7 @@ impl TryFrom<&str> for RuleKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PatternField {
     Url,
@@ -104,7 +104,7 @@ pub struct InvalidRule(pub &'static str);
 
 /// What a rule recognizes. Values are held normalized (lowercase, no scheme or `www.`), so
 /// [`RuleMatcher::parts`] is what gets stored and parsing it again changes nothing.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum RuleMatcher {
     App(String),
     Site(String),
@@ -171,7 +171,7 @@ impl RuleMatcher {
     }
 
     /// Ordered so that a greater value wins when several rules match.
-    fn specificity(&self) -> (u8, usize) {
+    pub(crate) fn specificity(&self) -> (u8, usize) {
         match self {
             Self::Page { path, .. } => (3, path.len()),
             Self::App(_) | Self::Site(_) => (2, 0),

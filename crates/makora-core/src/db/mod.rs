@@ -12,6 +12,7 @@ pub mod category_rules;
 mod migrate;
 pub mod models;
 pub mod rule_matches;
+pub mod rule_suggestion_dismissals;
 pub mod schema;
 pub mod sessions;
 pub(crate) mod sql;

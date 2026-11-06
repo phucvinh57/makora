@@ -58,6 +58,24 @@ pub struct ActivityPreviewRow {
     pub total_seconds: f64,
 }
 
+#[derive(QueryableByName)]
+pub struct PinnedActivityRow {
+    #[diesel(sql_type = Text)]
+    pub source_kind: KeyKind,
+    #[diesel(sql_type = Text)]
+    pub source_key: String,
+    #[diesel(sql_type = Text)]
+    pub source_name: String,
+    #[diesel(sql_type = Text)]
+    pub path: String,
+    #[diesel(sql_type = Text)]
+    pub title: String,
+    #[diesel(sql_type = BigInt)]
+    pub category_id: i64,
+    #[diesel(sql_type = Double)]
+    pub total_seconds: f64,
+}
+
 pub trait RulesReportRepo {
     /// For each rule that currently decides some activity: how many, and their tracked time.
     /// Activities with a pin are not counted, since the rule does not decide them.
@@ -65,6 +83,8 @@ pub trait RulesReportRepo {
     fn get_source_suggestions(&mut self, window: &Window) -> QueryResult<Vec<SourceSuggestionRow>>;
     fn get_paths_of(&mut self, domain: &str, window: &Window) -> QueryResult<Vec<PathSecondsRow>>;
     fn get_activities_for_preview(&mut self, window: &Window) -> QueryResult<Vec<ActivityPreviewRow>>;
+    /// Every activity the user pinned to a category, with its tracked time.
+    fn get_pinned_activities(&mut self, window: &Window) -> QueryResult<Vec<PinnedActivityRow>>;
 }
 
 impl RulesReportRepo for SqliteConnection {
@@ -133,6 +153,23 @@ impl RulesReportRepo for SqliteConnection {
         );
         bind_all(sql_query(sql).into_boxed(), window.binds()).get_results(self)
     }
+
+    fn get_pinned_activities(&mut self, window: &Window) -> QueryResult<Vec<PinnedActivityRow>> {
+        let sql = format!(
+            "{WITH_WINDOW}
+             SELECT src.kind AS source_kind, src.key AS source_key, src.name AS source_name,
+                    a.path, a.title, a.category_id,
+                    {seconds} AS total_seconds
+             FROM w
+             JOIN activities a ON a.category_id IS NOT NULL
+             JOIN sources src ON src.id = a.source_id
+             LEFT JOIN sessions s ON s.activity_id = a.id AND {overlaps}
+             GROUP BY a.id",
+            seconds = sum_seconds("s"),
+            overlaps = overlaps("s"),
+        );
+        bind_all(sql_query(sql).into_boxed(), window.binds()).get_results(self)
+    }
 }
 
 #[cfg(test)]
@@ -150,6 +187,7 @@ mod tests {
             "INSERT INTO categories (id, name, color) VALUES (1, 'Work', '#000000');
              INSERT INTO sources (id, kind, key, name) VALUES (1, 'domain', 'github.com', 'github.com');
              INSERT INTO activities (id, source_id, path, title) VALUES (1, 1, '/acme', 'a');
+             INSERT INTO activities (id, source_id, path, title, category_id) VALUES (2, 1, '/pinned', 'b', 1);
              INSERT INTO category_rules (id, category_id, kind, value) VALUES (1, 1, 'site', 'github.com');
              INSERT INTO rule_matches (activity_id, rule_id) VALUES (1, 1);
              INSERT INTO sessions (activity_id, start_time, end_time) VALUES
@@ -166,5 +204,8 @@ mod tests {
         assert_seconds(conn.get_source_suggestions(&window).unwrap()[0].total_seconds, 2400.0);
         assert_seconds(conn.get_paths_of("github.com", &window).unwrap()[0].total_seconds, 2400.0);
         assert_seconds(conn.get_activities_for_preview(&window).unwrap()[0].total_seconds, 2400.0);
+        let pinned = conn.get_pinned_activities(&window).unwrap();
+        assert_eq!(pinned.len(), 1);
+        assert_eq!((pinned[0].path.as_str(), pinned[0].category_id), ("/pinned", 1));
     }
 }

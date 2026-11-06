@@ -2,7 +2,7 @@ use diesel::QueryResult;
 
 use super::models::{
     ActivityIdentityRow, ActivityRow, AiLabelRow, AiModelTotalsRow, AiRunRow, AiRunTokensRow, NewAiRunRow, CategorizedEmbeddingRow, CategoryChanges, CategoryRow,
-    CategoryRuleRow, CategoryRuleValues, NewActivityRow, NewCategoryRow, NewSessionRow, NewSourceRow, SessionRow,
+    CategoryRuleRow, CategoryRuleValues, DismissalRow, DismissalValues, NewActivityRow, NewCategoryRow, NewSessionRow, NewSourceRow, SessionRow,
     SourceRow,
 };
 
@@ -85,6 +85,12 @@ pub trait CategoryRulesRepo {
     /// Returns whether a rule was deleted. Its matches go with it.
     fn delete(&mut self, id: i64) -> QueryResult<bool>;
     fn delete_for_categories(&mut self, category_ids: &[i64]) -> QueryResult<()>;
+}
+
+pub trait RuleSuggestionDismissalsRepo {
+    fn get_list(&mut self) -> QueryResult<Vec<DismissalRow>>;
+    /// Dismissing a pair again keeps the first dismissal.
+    fn insert(&mut self, new: &DismissalValues<'_>) -> QueryResult<()>;
 }
 
 pub trait RuleMatchesRepo {

@@ -28,6 +28,8 @@ These words mean the same thing in the code, the UI and these docs. When a type 
 | **Pin**               | The person's own decision for an activity (`activities.category_id`). Always wins.                                                                      |
 | **Rule**              | A person-written matcher that files activities under a category: an **app**, a **site**, a **page** (domain plus path prefix) or a **pattern** (a glob over URL, title or app name). |
 | **Rule match**        | The single rule that wins for an activity, stored in `rule_matches`.                                                                                     |
+| **Rule suggestion**   | A rule proposed from the person's pins: an app, site or page whose pinned time sits almost all in one category, or a change to a rule the pins contradict. |
+| **Dismissal**         | A rule suggestion the person turned down, kept per (matcher, category) so it is not offered again.                                                        |
 | **Suggestion**        | The model's proposed category for an activity (`ai_labels`). Can be **rejected** by the person.                                                         |
 | **Resolved category** | What an activity is actually filed under: pin, else rule match, else unrejected suggestion. The `activity_category` view.                               |
 | **Category source**   | Which of the three decided the resolved category: `manual`, `rule` or `ai` (`CategorySource`).                                                          |

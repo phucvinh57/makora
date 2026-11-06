@@ -1,6 +1,8 @@
 use diesel::prelude::*;
 
-use super::schema::{activities, ai_labels, ai_runs, categories, category_rules, sessions, sources};
+use super::schema::{
+    activities, ai_labels, ai_runs, categories, category_rules, rule_suggestion_dismissals, sessions, sources,
+};
 use super::text_enums::PatternFieldColumn;
 use crate::categorization::domain::rules::{PatternField, RuleKind};
 use crate::categorization::domain::usage::{RunStatus, RunTrigger};
@@ -115,6 +117,26 @@ pub struct CategoryRuleValues<'a> {
     pub kind: &'a str,
     pub field: &'a str,
     pub value: &'a str,
+}
+
+#[derive(Debug, Clone, Queryable, Selectable)]
+#[diesel(table_name = rule_suggestion_dismissals)]
+pub struct DismissalRow {
+    pub kind: RuleKind,
+    #[diesel(deserialize_as = PatternFieldColumn)]
+    pub field: Option<PatternField>,
+    pub value: String,
+    pub category_id: i64,
+}
+
+#[derive(Debug, Clone, Insertable)]
+#[diesel(table_name = rule_suggestion_dismissals)]
+pub struct DismissalValues<'a> {
+    pub kind: &'a str,
+    pub field: &'a str,
+    pub value: &'a str,
+    pub category_id: i64,
+    pub dismissed_at: &'a str,
 }
 
 #[derive(Debug, Clone, Queryable)]
