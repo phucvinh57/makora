@@ -9,13 +9,14 @@ use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{ActiveTheme, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Subscription, Task,
+    AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled, Subscription, Task,
     Window, div, px,
 };
 use makora_lib::domain::types::FeedbackStats;
 
 use crate::ui::app_state::AppState;
 use crate::ui::data;
+use crate::ui::motion;
 use crate::ui::prefs::Prefs;
 use crate::ui::route::CategoriesTab;
 use crate::ui::screens::Screen;
@@ -153,15 +154,19 @@ impl Render for CategoriesScreen {
                         })),
                 ),
             )
-            .child(match self.tab {
-                CategoriesTab::Taxonomy => taxonomy::render(cx).into_any_element(),
-                CategoriesTab::Rules => self.rules.clone().into_any_element(),
-                CategoriesTab::Review => v_flex()
-                    .gap_6()
-                    .child(self.ai.clone())
-                    .child(self.review.clone())
-                    .into_any_element(),
-            })
+            .child(motion::enter(
+                SharedString::from(format!("categories-{:?}", self.tab)),
+                div().w_full().child(match self.tab {
+                    CategoriesTab::Taxonomy => taxonomy::render(cx).into_any_element(),
+                    CategoriesTab::Rules => self.rules.clone().into_any_element(),
+                    CategoriesTab::Review => v_flex()
+                        .gap_6()
+                        .child(self.ai.clone())
+                        .child(self.review.clone())
+                        .into_any_element(),
+                }),
+                cx,
+            ))
             .pb(px(8.))
     }
 }

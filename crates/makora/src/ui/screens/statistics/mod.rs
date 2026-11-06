@@ -121,14 +121,14 @@ impl StatisticsScreen {
         cx.notify();
     }
 
-    /// The stats to draw, and whether they are another range's held over while this one loads.
-    fn displayed(&self) -> Option<(&ActivityStats, bool)> {
+    /// The stats to draw, whether they are another range's held over while this one loads, and
+    /// the range they are for.
+    fn displayed(&self) -> Option<(&ActivityStats, bool, RangePreset)> {
         match self.loaded.get(&self.range) {
-            Some(stats) => Some((stats, false)),
+            Some(stats) => Some((stats, false, self.range)),
             None => self
                 .previous
-                .and_then(|range| self.loaded.get(&range))
-                .map(|stats| (stats, true)),
+                .and_then(|range| self.loaded.get(&range).map(|stats| (stats, true, range))),
         }
     }
 
@@ -147,7 +147,6 @@ impl StatisticsScreen {
                     .collect(),
                 selected,
                 cx.listener(|screen, ix: &usize, _, cx| screen.select(RANGE_PRESETS[*ix].0, cx)),
-                cx,
             ))
             .child(
                 Button::new("refresh-statistics")
@@ -171,11 +170,11 @@ impl Render for StatisticsScreen {
             .map(|(_, message)| ErrorBanner::new(message.clone()));
         let categories = &AppState::read(cx).categories;
         let body = match self.displayed() {
-            Some((stats, held_over)) => Some(
+            Some((stats, held_over, range)) => Some(
                 v_flex()
                     .gap_6()
                     .when(held_over, |this| this.opacity(0.6))
-                    .child(sections::body(stats, categories, cx))
+                    .child(sections::body(stats, range, categories, cx))
                     .into_any_element(),
             ),
             None if self.loading => Some(sections::skeleton().into_any_element()),

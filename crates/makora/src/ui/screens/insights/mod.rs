@@ -6,9 +6,10 @@ use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AppContext, Context, Entity, IntoElement, ParentElement, Render, Styled, Window, div,
+    AppContext, Context, Entity, IntoElement, ParentElement, Render, SharedString, Styled, Window, div,
 };
 
+use crate::ui::motion;
 use crate::ui::prefs::Prefs;
 use crate::ui::route::InsightsTab;
 use crate::ui::screens::Screen;
@@ -102,12 +103,16 @@ impl Render for InsightsScreen {
                         })),
                 ),
             )
-            .map(|this| {
-                if logs {
-                    this.child(div().flex_1().flex().flex_col().child(self.logs.clone()))
-                } else {
-                    this.child(self.usage.clone())
-                }
-            })
+            .child(motion::enter(
+                SharedString::from(format!("insights-{tab:?}")),
+                div().w_full().map(|this| {
+                    if logs {
+                        this.flex_1().flex().flex_col().child(self.logs.clone())
+                    } else {
+                        this.child(self.usage.clone())
+                    }
+                }),
+                cx,
+            ))
     }
 }

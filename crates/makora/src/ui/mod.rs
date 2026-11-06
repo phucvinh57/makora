@@ -5,6 +5,7 @@ pub mod data;
 pub mod dialogs;
 pub mod error;
 pub mod format;
+pub mod motion;
 pub mod prefs;
 pub mod route;
 pub mod screens;

@@ -35,7 +35,7 @@ const RECENT_RUNS: usize = 8;
 const WIDE_CONTENT: f32 = 896.;
 const NUMERIC_WIDTH: f32 = 88.;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum UsagePeriod {
     Week,
     #[default]
@@ -249,7 +249,6 @@ impl Render for UsageTab {
                     tab.set_period(UsagePeriod::ALL[*ix], cx);
                     cx.notify();
                 }),
-                cx,
             ));
 
         let mut body: Vec<AnyElement> = Vec::new();
@@ -290,7 +289,7 @@ impl Render for UsageTab {
                         Local::now().date_naive(),
                     );
                     body.push(
-                        section("Estimated cost per day", cost_chart(points, cx), cx)
+                        section("Estimated cost per day", cost_chart(points, period, cx), cx)
                             .into_any_element(),
                     );
                 }

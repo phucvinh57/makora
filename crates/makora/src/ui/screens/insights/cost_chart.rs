@@ -10,6 +10,7 @@ use makora_lib::settings::ModelPrice;
 
 use crate::ui::format::ai_usage::{estimate_cost, find_price, format_cost};
 use crate::ui::format::number::to_fixed;
+use crate::ui::screens::insights::usage::UsagePeriod;
 
 /// A day on the chart's axis: one bar per calendar day, labelled `Nov 5`.
 #[derive(Debug, Clone)]
@@ -111,7 +112,7 @@ pub fn format_tick(value: f64) -> String {
     }
 }
 
-pub fn cost_chart(points: Vec<CostPoint>, cx: &App) -> impl IntoElement {
+pub fn cost_chart(points: Vec<CostPoint>, period: UsagePeriod, cx: &App) -> impl IntoElement {
     let color = cx.theme().chart_1;
     let count = points.len();
     div().h(px(176.)).w_full().child(
@@ -123,6 +124,7 @@ pub fn cost_chart(points: Vec<CostPoint>, cx: &App) -> impl IntoElement {
             .value_tick_format(format_tick)
             .band_tick_count(count.min(8))
             .max_band_width(px(24.))
+            .appear_key(period)
             .corner_radii(Corners {
                 top_left: px(4.),
                 top_right: px(4.),

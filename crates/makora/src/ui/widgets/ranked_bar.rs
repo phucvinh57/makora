@@ -7,6 +7,7 @@ use gpui_kit::{
 };
 
 use crate::ui::format::categories::UNCATEGORIZED_COLOR;
+use crate::ui::motion;
 use crate::ui::widgets::category_dot::category_color;
 
 /// How much of the bar `value` fills when the largest row is `max`, from 0 to 1.
@@ -48,7 +49,8 @@ impl RankedBar {
 }
 
 impl RenderOnce for RankedBar {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let fraction = motion::glide(("ranked-bar", self.label.clone()), self.fraction, window, cx);
         h_flex()
             .w_full()
             .gap_3()
@@ -75,7 +77,7 @@ impl RenderOnce for RankedBar {
                             .top_0()
                             .bottom_0()
                             .left_0()
-                            .w(relative(self.fraction))
+                            .w(relative(fraction))
                             .rounded_full()
                             .bg(self.color),
                     ),
