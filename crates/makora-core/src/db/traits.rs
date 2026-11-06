@@ -3,7 +3,7 @@ use diesel::QueryResult;
 use super::models::{
     ActivityIdentityRow, ActivityRow, AiLabelRow, AiModelTotalsRow, AiRunRow, AiRunTokensRow, NewAiRunRow, CategorizedEmbeddingRow, CategoryChanges, CategoryRow,
     CategoryRuleRow, CategoryRuleValues, DismissalRow, DismissalValues, NewActivityRow, NewCategoryRow, NewSessionRow, NewSourceRow, SessionRow,
-    SourceRow,
+    SourceRow, NewTaxonomySuggestionRow, TaxonomySuggestionRow,
 };
 
 pub trait ActivitiesRepo {
@@ -93,6 +93,24 @@ pub trait RuleSuggestionDismissalsRepo {
     fn insert(&mut self, new: &DismissalValues<'_>) -> QueryResult<()>;
 }
 
+/// Activities the model found no category for.
+pub trait AiUnlabeledRepo {
+    fn upsert_many(&mut self, activity_ids: &[i64], model: &str, answered_at: &str) -> QueryResult<()>;
+    fn delete_many(&mut self, activity_ids: &[i64]) -> QueryResult<()>;
+    fn delete_all(&mut self) -> QueryResult<usize>;
+    fn get_ids(&mut self) -> QueryResult<Vec<i64>>;
+}
+
+pub trait TaxonomySuggestionsRepo {
+    fn insert(&mut self, new: &NewTaxonomySuggestionRow<'_>) -> QueryResult<i64>;
+    fn update_payload(&mut self, id: i64, payload: &str) -> QueryResult<()>;
+    /// Moves the suggestion from `from` to `to`; `false` when it was not in `from`.
+    fn set_status(&mut self, id: i64, from: &str, to: &str) -> QueryResult<bool>;
+    fn get(&mut self, id: i64) -> QueryResult<Option<TaxonomySuggestionRow>>;
+    /// The suggestions in any of `statuses`, oldest first.
+    fn get_list(&mut self, statuses: &[&str]) -> QueryResult<Vec<TaxonomySuggestionRow>>;
+}
+
 pub trait RuleMatchesRepo {
     fn replace_all(&mut self, matches: &[(i64, i64)]) -> QueryResult<()>;
     fn set(&mut self, activity_id: i64, rule_id: i64) -> QueryResult<()>;
@@ -112,7 +130,8 @@ pub trait ActivityEmbeddingsRepo {
 }
 
 pub trait AiRunsRepo {
-    fn insert(&mut self, new: &NewAiRunRow<'_>) -> QueryResult<()>;
+    /// Returns the new run's id.
+    fn insert(&mut self, new: &NewAiRunRow<'_>) -> QueryResult<i64>;
     /// Up to `limit` runs, the most recent first.
     fn get_recent(&mut self, limit: i64) -> QueryResult<Vec<AiRunRow>>;
     /// The runs started at or after `since` (every run when `None`), summed per provider and

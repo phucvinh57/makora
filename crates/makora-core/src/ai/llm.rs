@@ -85,6 +85,116 @@ impl Classifier for LlamaClassifier {
     }
 }
 
+impl LlamaClassifier {
+    /// What model `name` answers to `system` and `user_lines` (each kept to one line, with the
+    /// model's control markers taken out), held to `grammar` and at most `max_tokens` long.
+    pub fn complete(
+        &self,
+        name: &str,
+        system: &str,
+        user_lines: &[String],
+        grammar: &str,
+        max_tokens: usize,
+        meter: &UsageMeter,
+    ) -> Result<String> {
+        let backend = backend()?;
+        let model = self.cache.acquire(name)?;
+        let result = complete(backend, &model, system, user_lines, grammar, max_tokens, meter);
+        drop(model);
+        self.cache.touch(name);
+        result
+    }
+}
+
+fn complete(
+    backend: &LlamaBackend,
+    model: &LlamaModel,
+    system: &str,
+    user_lines: &[String],
+    grammar: &str,
+    max_tokens: usize,
+    meter: &UsageMeter,
+) -> Result<String> {
+    let threads = inference_threads();
+    let mut ctx = model
+        .new_context(
+            backend,
+            LlamaContextParams::default()
+                .with_n_ctx(NonZeroU32::new(N_CTX))
+                .with_n_batch(N_BATCH)
+                .with_n_threads(threads)
+                .with_n_threads_batch(threads),
+        )
+        .map_err(|err| anyhow!("creating inference context: {err}"))?;
+    let markers = control_texts(model);
+    let user = user_lines
+        .iter()
+        .map(|line| without_markers(line, &markers))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let template = model
+        .chat_template(None)
+        .map_err(|err| anyhow!("model has no chat template: {err}"))?;
+    let chat = [
+        LlamaChatMessage::new("system".into(), system.to_string())?,
+        LlamaChatMessage::new("user".into(), user)?,
+    ];
+    let prompt = model
+        .apply_chat_template(&template, &chat, true)
+        .map_err(|err| anyhow!("applying chat template: {err}"))?;
+    let vocab = model.vocab();
+    let bos = String::from_utf8_lossy(&vocab.token_to_piece(vocab.bos(), true, None)).into_owned();
+    let mut tokens = vocab.tokenize(prompt.as_bytes(), false, true);
+    if !prompt.starts_with(&bos) {
+        tokens.insert(0, vocab.bos());
+    }
+    if tokens.len() + max_tokens > N_CTX as usize {
+        bail!("the prompt is too large for the {N_CTX}-token context ({} tokens)", tokens.len());
+    }
+    let mut grammar = LlamaSampler::grammar(model, grammar, "root").map_err(|err| anyhow!("building the answer grammar: {err}"))?;
+    let mut batch = LlamaBatch::new(N_BATCH as usize, 1);
+
+    let last = tokens.len() - 1;
+    let prefill = Instant::now();
+    for (chunk_index, chunk) in tokens.chunks(N_BATCH as usize).enumerate() {
+        batch.clear();
+        let start = chunk_index * N_BATCH as usize;
+        for (offset, token) in chunk.iter().enumerate() {
+            let position = start + offset;
+            batch.add(*token, position as i32, &[0], position == last)?;
+        }
+        ctx.decode(&mut batch).map_err(|err| anyhow!("decoding prompt: {err}"))?;
+    }
+    let prefill = prefill.elapsed();
+
+    let decode = Instant::now();
+    let mut answer = Vec::new();
+    let mut generated = 0;
+    for position in (tokens.len()..).take(max_tokens) {
+        let Some(token) = pick_token(&ctx, &mut grammar) else {
+            break;
+        };
+        if vocab.is_eog(token) {
+            break;
+        }
+        generated += 1;
+        answer.extend(vocab.token_to_piece(token, true, None));
+        batch.clear();
+        batch.add(token, position as i32, &[0], true)?;
+        ctx.decode(&mut batch).map_err(|err| anyhow!("decoding reply: {err}"))?;
+    }
+    meter.record_local(
+        TokenUsage {
+            input: tokens.len() as u64,
+            cached_input: 0,
+            output: generated,
+        },
+        prefill,
+        decode.elapsed(),
+    );
+    Ok(String::from_utf8_lossy(&answer).into_owned())
+}
+
 /// How many layers of `path` to put on GPU, and any tensor placement overrides, so the model
 /// and the [`N_CTX`]-token context fit in whatever device memory is actually free right now.
 /// Falls back to [`GPU_LAYERS_FALLBACK`] (CPU-only) if the probe itself fails, so a load never

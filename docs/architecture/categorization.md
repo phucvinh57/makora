@@ -12,7 +12,9 @@ Categorization decides what category an activity is filed under, and why. Three 
 | `domain/rules.rs`                   | Domain       | `RuleKind`, `RuleMatcher`, `RuleSet`, `ActivityFacts`, rule precedence      |
 | `domain/retrieval.rs`               | Domain       | `activity_text`, `SourceRef`, `top_related` (nearest filed activities)      |
 | `domain/usage.rs`                   | Domain       | `AiRunRecord`, `RunTrigger`, `RunStatus`                                    |
-| `ports.rs`                          | Ports        | `Classifier`, `Embedder`, `LlmSpec`, `ActivityText`, `UsageMeter`, `RunUsage` |
+| `domain/clustering.rs`              | Domain       | `cluster`, `samples`: grouping unlabeled activities by embedding            |
+| `domain/suggestions.rs`             | Domain       | `TaxonomySuggestion` and its payloads, `reconcile_new`                      |
+| `ports.rs`                          | Ports        | `Classifier`, `Suggester`, `Embedder`, `LlmSpec`, `ActivityText`, `UsageMeter`, `RunUsage` |
 | `application/pinning.rs`            | Application  | `ClassificationSvc`: assign, undo, accept, store verdicts, reset            |
 | `application/rules.rs`              | Application  | `RuleSvc`: create, edit, delete, preview rules                              |
 | `application/ai_run.rs`             | Application  | `AiRunState::run`: the AI run use case                                      |
@@ -20,6 +22,7 @@ Categorization decides what category an activity is filed under, and why. Three 
 | `application/schedule.rs`           | Application  | `AutoCategorizeSchedule`, `ScheduleAnchor`                                  |
 | `application/embeddings.rs`         | Application  | `EmbeddingSvc`, `embed_missing`                                             |
 | `application/usage.rs`              | Application  | `AiUsageSvc`: the record of every run                                       |
+| `application/suggestions.rs`        | Application  | `TaxonomySuggestionSvc`: list, accept, dismiss; `generate`                  |
 | `store.rs`, `rules_store.rs`        | Adapter      | Loading and saving classifications; keeping `rule_matches` current          |
 
 ## Aggregates
@@ -138,6 +141,15 @@ A new activity from [Tracking](tracking.md) is matched on its own (`rules_store:
 
 Accepting a suggestion is an ordinary `create` or `update`, so it is retroactive, and pins keep precedence.
 
+### Taxonomy suggestions
+
+The taxonomy grows from the data. A **taxonomy suggestion** (`taxonomy_suggestions`) is a change to the categories the person accepts or dismisses.
+
+- **New category.** The activities the model found no category for (`ai_unlabeled`, still unfiled) are clustered by embedding (`domain/clustering.rs`): greedy leader clustering, joining a leader at cosine ≥ 0.80, then merging leaders at ≥ 0.85. A group with at least 5 activities and 30 minutes is proposed, and the model names it through the `Suggester` port from 5 members, with a description and a parent; a group it cannot name is still proposed, unnamed. Points are taken in id order, so the same data always gives the same groups.
+- **Matching earlier suggestions** (`reconcile_new`). Two groups are the same when they share half of the smaller one. A group that is mostly a dismissed suggestion is dropped; one that is mostly a pending suggestion updates its members and keeps its name, so it is not named again. At most 5 groups are named per run.
+- **When.** At the end of every full labeling run that was not stopped, and on demand with a `FindCategories` run. Naming is metered into that run's record, and each suggestion keeps the run's id.
+- **Accepting** a new category creates it from the prefilled add-category dialog, then offers a scoped run over the group's members still unfiled.
+
 ## The AI run
 
 An AI run labels the unpinned activities no rule matches. A run is asked for with a `RunRequest`: its `RunMode` and, for a **scoped run**, the activity ids it may take. A normal run (`Label`) takes those the model has never labeled; a **recheck** takes those whose suggestion is still active, to label them again. A scoped run takes only those of them among its ids, and does not count as the schedule's run. A rejected suggestion is never asked about again. The run shows the model, for each activity, the five filed activities most like it, so the model learns from how the person actually files things.
@@ -158,7 +170,11 @@ sequenceDiagram
         Cls-->>Run: category or none
         Run->>Svc: assign_ai(verdict)
     end
+    opt full labeling run, not stopped
+        Run->>Run: cluster unlabeled activities, name new groups (Suggester)
+    end
     Run->>Use: record(AiRunRecord)
+    Run->>Run: save taxonomy suggestions with the run id
 ```
 
 - Every verdict is saved the moment it arrives, so a stopped run keeps its progress.

@@ -320,6 +320,7 @@ pub fn background_tasks(
             label: match categorize.mode {
                 RunMode::Recheck => "Re-checking AI labels",
                 RunMode::Label => "Categorizing activities",
+                RunMode::FindCategories => "Looking for new categories",
             }
             .into(),
             progress: if categorize.total > 0 {

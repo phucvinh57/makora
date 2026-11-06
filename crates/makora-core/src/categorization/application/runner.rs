@@ -10,7 +10,8 @@ use crate::categorization::application::ai_run::{
 };
 use crate::categorization::application::schedule::ScheduleAnchor;
 use crate::categorization::domain::usage::RunTrigger;
-use crate::categorization::ports::{Classifier, Embedder, LlmSpec};
+use crate::categorization::application::suggestions::TaxonomySuggestionSvc;
+use crate::categorization::ports::{Classifier, Embedder, LlmSpec, Suggester};
 use crate::categorization::{AiUsageSvc, ClassificationSvc, EmbedSkips, EmbeddingSvc};
 use crate::domain::LabelingSvc;
 use crate::events::{CoreEvent, EventSink};
@@ -39,6 +40,8 @@ pub struct AiCategorizationRunner {
     pub embeddings: Arc<dyn EmbeddingSvc>,
     pub embed_skips: Arc<EmbedSkips>,
     pub usage: Arc<dyn AiUsageSvc>,
+    pub suggester: Arc<dyn Suggester>,
+    pub suggestions: Arc<dyn TaxonomySuggestionSvc>,
 }
 
 impl CategorizationRunner for AiCategorizationRunner {
@@ -53,6 +56,8 @@ impl CategorizationRunner for AiCategorizationRunner {
             embeddings: &*self.embeddings,
             embed_skips: &self.embed_skips,
             usage: &*self.usage,
+            suggester: &*self.suggester,
+            suggestions: &*self.suggestions,
         };
         let models = AiModels {
             llm: LlmSpec {

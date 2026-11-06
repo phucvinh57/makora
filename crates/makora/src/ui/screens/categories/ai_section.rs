@@ -113,25 +113,35 @@ pub fn describe_next_run(next: DateTime<Utc>, now: DateTime<Utc>, running: bool)
 
 /// The toast after a run: its title and what it did.
 pub fn run_summary(outcome: &AiRunOutcome, mode: RunMode) -> (&'static str, String) {
-    let recheck = mode == RunMode::Recheck;
-    let title = if outcome.stopped {
-        "AI categorization stopped"
-    } else if recheck {
-        "AI labels re-checked"
-    } else {
-        "AI categorization finished"
+    let title = match mode {
+        _ if outcome.stopped => "AI categorization stopped",
+        RunMode::Recheck => "AI labels re-checked",
+        RunMode::Label => "AI categorization finished",
+        RunMode::FindCategories => "New categories",
     };
-    let counts = if recheck {
-        format!(
+    let mut counts = match mode {
+        RunMode::Recheck => format!(
             "{} labels changed, {} cleared as uncertain.",
             outcome.changed, outcome.skipped
-        )
-    } else {
-        format!(
+        ),
+        RunMode::Label => format!(
             "{} activities labeled, {} left uncategorized.",
             outcome.labeled, outcome.skipped
-        )
+        ),
+        RunMode::FindCategories => String::new(),
     };
+    let found = match outcome.suggested {
+        0 if mode == RunMode::FindCategories => Some("No new groups of activities found.".to_string()),
+        0 => None,
+        1 => Some("1 new category suggested.".to_string()),
+        n => Some(format!("{n} new categories suggested.")),
+    };
+    if let Some(found) = found {
+        if !counts.is_empty() {
+            counts.push(' ');
+        }
+        counts.push_str(&found);
+    }
     let description = match describe_run_usage(&outcome.usage) {
         Some(usage) => format!("{counts} {usage}"),
         None => counts,
@@ -1172,6 +1182,7 @@ mod tests {
             changed: 2,
             stopped: false,
             usage: RunUsage::default(),
+            suggested: 0,
         };
         let (title, description) = run_summary(&outcome, RunMode::Label);
         assert_eq!(title, "AI categorization finished");
@@ -1184,5 +1195,19 @@ mod tests {
             ..outcome
         };
         assert_eq!(run_summary(&stopped, RunMode::Recheck).0, "AI categorization stopped");
+    }
+
+    #[test]
+    fn the_run_summary_says_what_categories_it_found() {
+        let found = AiRunOutcome {
+            labeled: 4,
+            suggested: 2,
+            ..AiRunOutcome::default()
+        };
+        let (_, description) = run_summary(&found, RunMode::Label);
+        assert!(description.starts_with("4 activities labeled, 0 left uncategorized. 2 new categories suggested."));
+        let (title, description) = run_summary(&AiRunOutcome::default(), RunMode::FindCategories);
+        assert_eq!(title, "New categories");
+        assert!(description.starts_with("No new groups of activities found."));
     }
 }

@@ -6,6 +6,7 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
+use chrono::Utc;
 use diesel::sqlite::SqliteConnection;
 use diesel::{Connection, QueryResult};
 
@@ -14,6 +15,7 @@ use crate::categorization::store;
 use crate::db::{self, Db};
 use crate::domain::types::AiVerdict;
 use crate::shared::ids::{raw, ActivityId, CategoryId, SessionId};
+use crate::shared::time;
 
 pub trait ClassificationSvc: Send + Sync {
     /// Returns the classifications as they were before, for [`Self::undo_assignment`].
@@ -28,10 +30,11 @@ pub trait ClassificationSvc: Send + Sync {
         category_id: Option<CategoryId>,
     ) -> Result<Vec<ActivityClassification>>;
     fn undo_assignment(&self, prior: &[ActivityClassification]) -> Result<()>;
-    /// Stores the model's verdicts; a verdict without a category forgets an answer the model no
-    /// longer stands by. A manual pin made in the meantime is untouched: reads prefer it over
-    /// the AI label. Returns how many labels actually changed.
-    fn assign_ai(&self, verdicts: &[AiVerdict]) -> Result<usize>;
+    /// Stores the verdicts `model` gave; a verdict without a category forgets an answer the model
+    /// no longer stands by and records that it found no category. A manual pin made in the
+    /// meantime is untouched: reads prefer it over the AI label. Returns how many labels actually
+    /// changed.
+    fn assign_ai(&self, verdicts: &[AiVerdict], model: &str) -> Result<usize>;
     fn accept_ai_labels(&self, activity_ids: &[ActivityId]) -> Result<Vec<ActivityClassification>>;
     fn reset(&self) -> Result<usize>;
 }
@@ -118,7 +121,7 @@ impl ClassificationSvc for SqliteClassification {
         .map_err(Into::into)
     }
 
-    fn assign_ai(&self, verdicts: &[AiVerdict]) -> Result<usize> {
+    fn assign_ai(&self, verdicts: &[AiVerdict], model: &str) -> Result<usize> {
         if verdicts.is_empty() {
             return Ok(0);
         }
@@ -153,6 +156,15 @@ impl ClassificationSvc for SqliteClassification {
                     }
                 }
             })?;
+
+            let unlabeled: Vec<ActivityId> = verdicts
+                .iter()
+                .filter(|verdict| verdict.category_id.is_none())
+                .map(|verdict| verdict.activity_id)
+                .collect();
+            if !unlabeled.is_empty() {
+                store::mark_unlabeled(conn, &unlabeled, model, &time::to_db(Utc::now()))?;
+            }
 
             // A re-check that lands on the same category is not counted as a change.
             Ok(before

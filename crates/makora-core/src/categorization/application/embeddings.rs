@@ -206,7 +206,7 @@ fn encode(vector: &[f32]) -> Vec<u8> {
     vector.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 
-fn decode(bytes: &[u8]) -> Result<Embedding> {
+pub(crate) fn decode(bytes: &[u8]) -> Result<Embedding> {
     let (floats, rest) = bytes.as_chunks::<4>();
     if !rest.is_empty() {
         bail!("a stored embedding is {} bytes long, not a whole number of floats", bytes.len());

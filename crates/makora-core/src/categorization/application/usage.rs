@@ -78,7 +78,8 @@ pub struct AiUsageSummary {
 }
 
 pub trait AiUsageSvc: Send + Sync {
-    fn record(&self, run: &AiRunRecord) -> Result<()>;
+    /// Returns the recorded run's id.
+    fn record(&self, run: &AiRunRecord) -> Result<i64>;
     /// Up to `limit` runs, the most recent first.
     fn get_recent_runs(&self, limit: usize) -> Result<Vec<AiRunView>>;
     /// The runs started at or after `since`, every run when `None`.
@@ -103,7 +104,7 @@ impl SqliteAiUsage {
 }
 
 impl AiUsageSvc for SqliteAiUsage {
-    fn record(&self, run: &AiRunRecord) -> Result<()> {
+    fn record(&self, run: &AiRunRecord) -> Result<i64> {
         let (started_at, finished_at) = (time::to_db(run.started_at), time::to_db(run.finished_at));
         let usage = &run.usage;
         let row = NewAiRunRow {
@@ -128,8 +129,7 @@ impl AiUsageSvc for SqliteAiUsage {
             embed_count: signed(usage.embed_count),
             embed_ms: signed(usage.embed_ms),
         };
-        AiRunsRepo::insert(&mut *self.db.write(), &row)?;
-        Ok(())
+        Ok(AiRunsRepo::insert(&mut *self.db.write(), &row)?)
     }
 
     fn get_recent_runs(&self, limit: usize) -> Result<Vec<AiRunView>> {

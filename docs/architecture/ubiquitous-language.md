@@ -29,6 +29,8 @@ These words mean the same thing in the code, the UI and these docs. When a type 
 | **Rule**              | A person-written matcher that files activities under a category: an **app**, a **site**, a **page** (domain plus path prefix) or a **pattern** (a glob over URL, title or app name). |
 | **Rule match**        | The single rule that wins for an activity, stored in `rule_matches`.                                                                                     |
 | **Rule suggestion**   | A rule proposed from the person's pins: an app, site or page whose pinned time sits almost all in one category, or a change to a rule the pins contradict. |
+| **Taxonomy suggestion** | A change to the categories proposed from the data: a new category for a group of unlabeled activities, a sharper description, or a merge. Accepted or dismissed by the person. |
+| **Unlabeled answer**  | The model's "None": no category fits the activity. Kept in `ai_unlabeled`, apart from the labels it picked.                                             |
 | **Dismissal**         | A rule suggestion the person turned down, kept per (matcher, category) so it is not offered again.                                                        |
 | **Suggestion**        | The model's proposed category for an activity (`ai_labels`). Can be **rejected** by the person.                                                         |
 | **Resolved category** | What an activity is actually filed under: pin, else rule match, else unrejected suggestion. The `activity_category` view.                               |

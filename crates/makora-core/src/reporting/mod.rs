@@ -10,6 +10,7 @@ pub mod history;
 pub mod query;
 pub mod review;
 pub mod rules;
+pub mod suggestions;
 mod scope;
 mod window;
 

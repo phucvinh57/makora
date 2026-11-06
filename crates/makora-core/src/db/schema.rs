@@ -111,6 +111,25 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    ai_unlabeled (activity_id) {
+        activity_id -> BigInt,
+        model -> Text,
+        answered_at -> Text,
+    }
+}
+
+diesel::table! {
+    taxonomy_suggestions (id) {
+        id -> BigInt,
+        kind -> Text,
+        payload -> Text,
+        status -> Text,
+        created_at -> Text,
+        run_id -> Nullable<BigInt>,
+    }
+}
+
 diesel::joinable!(activities -> sources (source_id));
 diesel::joinable!(activities -> categories (category_id));
 diesel::joinable!(sessions -> activities (activity_id));
@@ -121,15 +140,20 @@ diesel::joinable!(rule_matches -> activities (activity_id));
 diesel::joinable!(rule_matches -> category_rules (rule_id));
 diesel::joinable!(activity_embeddings -> activities (activity_id));
 diesel::joinable!(rule_suggestion_dismissals -> categories (category_id));
+diesel::joinable!(ai_unlabeled -> activities (activity_id));
+diesel::joinable!(taxonomy_suggestions -> ai_runs (run_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     activities,
     activity_embeddings,
     ai_labels,
+    ai_runs,
+    ai_unlabeled,
     categories,
     category_rules,
     rule_matches,
     rule_suggestion_dismissals,
     sessions,
     sources,
+    taxonomy_suggestions,
 );

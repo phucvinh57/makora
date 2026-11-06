@@ -11,10 +11,11 @@ use super::http::{ApiError, Http};
 use super::openai::model_ids;
 use crate::categorization::ports::TokenUsage;
 
-use super::{count, trimmed, ChatApi, Pick};
+use super::{count, json_in, trimmed, ChatApi, JsonReply, Pick};
 
 const VERSION: &str = "2023-06-01";
 const TOOL: &str = "pick_category";
+const ANSWER_TOOL: &str = "answer";
 const MAX_TOKENS: u32 = 256;
 
 pub struct Anthropic {
@@ -47,6 +48,59 @@ impl Anthropic {
 }
 
 impl ChatApi for Anthropic {
+    fn complete_json(&self, model: &str, system: &str, user: &str, schema: &Value, max_tokens: u32) -> Result<JsonReply> {
+        let url = format!("{}/v1/messages", self.base_url);
+        let reply = loop {
+            let mut body = json!({
+                "model": model,
+                "max_tokens": max_tokens,
+                "system": system,
+                "messages": [{ "role": "user", "content": user }],
+                "tools": [{
+                    "name": ANSWER_TOOL,
+                    "description": "Record the answer.",
+                    "input_schema": schema,
+                }],
+                "tool_choice": { "type": "tool", "name": ANSWER_TOOL },
+            });
+            if self.temperature.load(Ordering::Acquire) {
+                body["temperature"] = json!(0);
+            }
+            match self.http.post_json(&url, &self.headers(), &body) {
+                Ok(reply) => break reply,
+                Err(err) => match err.downcast_ref::<ApiError>() {
+                    Some(api) if self.temperature.load(Ordering::Acquire) && api.rejects(&["temperature"]) => {
+                        self.temperature.store(false, Ordering::Release);
+                        info!("provider does not take a temperature; sending without it");
+                    }
+                    _ => return Err(err),
+                },
+            }
+        };
+        let blocks = reply
+            .get("content")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow!("the provider's reply has no content"))?;
+        let from_tool = blocks
+            .iter()
+            .find(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+            .and_then(|block| block.get("input"))
+            .filter(|input| input.is_object())
+            .cloned();
+        let value = from_tool
+            .or_else(|| {
+                blocks
+                    .iter()
+                    .filter_map(|block| block.get("text").and_then(Value::as_str))
+                    .find_map(json_in)
+            })
+            .ok_or_else(|| anyhow!("the provider's reply holds no answer"))?;
+        Ok(JsonReply {
+            value,
+            usage: usage(&reply),
+        })
+    }
+
     fn pick(&self, model: &str, system: &str, user: &str, choices: &[String]) -> Result<Pick> {
         let url = format!("{}/v1/messages", self.base_url);
         loop {

@@ -10,7 +10,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::time::Instant;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -18,9 +18,10 @@ use tracing::{info, warn};
 use crate::categorization::application::embeddings::{embed_missing, EmbedSkips, EmbeddingSvc};
 use crate::categorization::application::ClassificationSvc;
 use crate::categorization::domain::retrieval::{top_related, RELATED_COUNT};
+use crate::categorization::application::suggestions::{generate, SuggestionWrite, TaxonomySuggestionSvc};
 use crate::categorization::application::usage::AiUsageSvc;
 use crate::categorization::domain::usage::{AiRunRecord, RunStatus, RunTrigger};
-use crate::categorization::ports::{ActivityText, Classifier, Embedder, LlmSpec, RunUsage, UsageMeter};
+use crate::categorization::ports::{ActivityText, Classifier, Embedder, LlmSpec, RunUsage, Suggester, UsageMeter};
 use crate::domain::types::{ActivitySample, AiVerdict, Category};
 use crate::domain::LabelingSvc;
 use crate::shared::ids::{ActivityId, CategoryId, ProviderId};
@@ -54,6 +55,8 @@ pub enum RunMode {
     Label,
     /// Activities whose AI label the user has not confirmed, to label them again.
     Recheck,
+    /// No labeling: only look for groups of unlabeled activities to propose as new categories.
+    FindCategories,
 }
 
 impl RunMode {
@@ -61,12 +64,14 @@ impl RunMode {
         match self {
             Self::Label => 0,
             Self::Recheck => 1,
+            Self::FindCategories => 2,
         }
     }
 
     fn from_u8(value: u8) -> Self {
         match value {
             1 => Self::Recheck,
+            2 => Self::FindCategories,
             _ => Self::Label,
         }
     }
@@ -87,6 +92,13 @@ impl RunRequest {
     pub fn recheck() -> Self {
         Self {
             mode: RunMode::Recheck,
+            only: None,
+        }
+    }
+
+    pub fn find_categories() -> Self {
+        Self {
+            mode: RunMode::FindCategories,
             only: None,
         }
     }
@@ -115,7 +127,7 @@ pub struct AiRunProgress {
     pub total: usize,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct AiRunOutcome {
     pub labeled: usize,
     pub skipped: usize,
@@ -123,6 +135,8 @@ pub struct AiRunOutcome {
     pub changed: usize,
     pub stopped: bool,
     pub usage: RunUsage,
+    /// New taxonomy suggestions the run came up with.
+    pub suggested: usize,
 }
 
 pub struct AiModels {
@@ -139,6 +153,8 @@ pub struct AiRunDeps<'a> {
     pub embeddings: &'a dyn EmbeddingSvc,
     pub embed_skips: &'a EmbedSkips,
     pub usage: &'a dyn AiUsageSvc,
+    pub suggester: &'a dyn Suggester,
+    pub suggestions: &'a dyn TaxonomySuggestionSvc,
 }
 
 impl AiRunState {
@@ -155,9 +171,11 @@ impl AiRunState {
         self.cancel.store(true, Ordering::Release);
     }
 
-    /// Labels the activities `request` names. Blocks until the run ends; `on_progress` is called
-    /// after every activity. A run with something to label is recorded, with what it cost,
-    /// however it ends.
+    /// Runs `request`: labels the activities it names, or with [`RunMode::FindCategories`] only
+    /// proposes new categories. Blocks until the run ends; `on_progress` is called after every
+    /// activity. A full labeling run ends by proposing new categories for the activities the
+    /// model found none for. A run with something to do is recorded, with what it cost, however
+    /// it ends.
     pub fn run(
         &self,
         deps: &AiRunDeps<'_>,
@@ -176,6 +194,9 @@ impl AiRunState {
         if taxonomy.is_empty() {
             return Err(AiRunError::NoCategories);
         }
+        if request.mode == RunMode::FindCategories {
+            return self.find_categories(deps, models, &taxonomy, trigger);
+        }
         let pending = deps
             .labeling
             .get_activities_to_label(request.mode == RunMode::Recheck, request.only.as_deref())?;
@@ -184,61 +205,86 @@ impl AiRunState {
         info!(total, provider = models.llm.provider.as_ref().map_or("local", ProviderId::as_str), model = %models.llm.model, categories = taxonomy.len(), "categorizing activities");
         self.total.store(total, Ordering::Release);
         if total == 0 {
-            return Ok(AiRunOutcome {
-                labeled: 0,
-                skipped: 0,
-                changed: 0,
-                stopped: false,
-                usage: RunUsage::default(),
-            });
+            return Ok(AiRunOutcome::default());
         }
 
         let started_at = Utc::now();
         let meter = UsageMeter::default();
         let mut tally = RunTally::default();
         let result = self.label(deps, models, &taxonomy, &pending, &meter, &mut tally, on_progress);
-        let usage = RunUsage {
-            llm_ms: tally.llm_ms,
-            embed_count: tally.embed_count,
-            embed_ms: tally.embed_ms,
-            ..meter.snapshot()
+        let writes = match &result {
+            Ok(outcome) if request.is_full_label() && !outcome.stopped => {
+                let cancelled = || self.cancel.load(Ordering::Acquire);
+                generate(deps.suggestions, deps.suggester, &models.llm, &models.embedding, &taxonomy, &meter, &cancelled)
+                    .unwrap_or_else(|err| {
+                        warn!(error = format!("{err:#}"), "could not look for new categories");
+                        Vec::new()
+                    })
+            }
+            _ => Vec::new(),
         };
+        let usage = tally.usage(&meter);
         let (status, error) = match &result {
             Ok(outcome) if outcome.stopped => (RunStatus::Stopped, None),
             Ok(_) => (RunStatus::Completed, None),
             Err(AiRunError::Failed(err)) => (RunStatus::Failed, Some(format!("{err:#}"))),
             Err(err) => (RunStatus::Failed, Some(err.to_string())),
         };
-        info!(
-            status = status.as_str(),
-            items = tally.done,
-            labeled = tally.labeled,
-            requests = usage.requests,
-            failed_requests = usage.failed_requests,
-            input_tokens = usage.input_tokens,
-            cached_input_tokens = usage.cached_input_tokens,
-            output_tokens = usage.output_tokens,
-            llm_ms = usage.llm_ms,
-            busy_ms = usage.busy_ms,
-            embed_ms = usage.embed_ms,
-            "AI run finished"
-        );
-        let record = AiRunRecord {
-            trigger,
-            provider: models.llm.provider.as_ref().map(|id| id.as_str().to_string()),
-            model: models.llm.model.clone(),
-            status,
-            error,
-            started_at,
-            finished_at: Utc::now(),
-            items: tally.done as u64,
-            labeled: tally.labeled as u64,
+        let run_id = record(deps, models, trigger, started_at, status, error, &tally, usage);
+        let suggested = save_suggestions(deps, &writes, run_id);
+        result.map(|outcome| AiRunOutcome {
             usage,
+            suggested,
+            ..outcome
+        })
+    }
+
+    /// Proposes new categories without labeling anything, after embedding what is missing.
+    fn find_categories(
+        &self,
+        deps: &AiRunDeps<'_>,
+        models: &AiModels,
+        taxonomy: &[Category],
+        trigger: RunTrigger,
+    ) -> Result<AiRunOutcome, AiRunError> {
+        info!(provider = models.llm.provider.as_ref().map_or("local", ProviderId::as_str), model = %models.llm.model, "looking for new categories");
+        let started_at = Utc::now();
+        let meter = UsageMeter::default();
+        let mut tally = RunTally::default();
+        let cancelled = || self.cancel.load(Ordering::Acquire);
+        self.embed(deps, models, &mut tally);
+        let result = generate(deps.suggestions, deps.suggester, &models.llm, &models.embedding, taxonomy, &meter, &cancelled);
+        let stopped = cancelled();
+        let usage = tally.usage(&meter);
+        let (status, error) = match &result {
+            Ok(_) if stopped => (RunStatus::Stopped, None),
+            Ok(_) => (RunStatus::Completed, None),
+            Err(err) => (RunStatus::Failed, Some(format!("{err:#}"))),
         };
-        if let Err(err) = deps.usage.record(&record) {
-            warn!(error = format!("{err:#}"), "could not record the AI run's usage");
+        let run_id = record(deps, models, trigger, started_at, status, error, &tally, usage);
+        let suggested = save_suggestions(deps, &result?, run_id);
+        Ok(AiRunOutcome {
+            stopped,
+            usage,
+            suggested,
+            ..AiRunOutcome::default()
+        })
+    }
+
+    /// Embeds the activities that have no vector yet, counting it in `tally`. Related examples
+    /// and new categories only build on them, so a run goes on without.
+    fn embed(&self, deps: &AiRunDeps<'_>, models: &AiModels, tally: &mut RunTally) {
+        let started = Instant::now();
+        let cancelled = || self.cancel.load(Ordering::Acquire);
+        match embed_missing(deps.embeddings, deps.embedder, &models.embedding, deps.embed_skips, &cancelled) {
+            Ok(0) => {}
+            Ok(embedded) => {
+                tally.embed_count = embedded as u64;
+                info!(embedded, model = %models.embedding, "embedded activities before the run");
+            }
+            Err(err) => warn!(error = format!("{err:#}"), model = %models.embedding, "embedding activities failed; going on without them"),
         }
-        result.map(|outcome| AiRunOutcome { usage, ..outcome })
+        tally.embed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     }
 
     /// The run past its checks: embeds what is missing, then labels `pending`, keeping count in
@@ -255,25 +301,11 @@ impl AiRunState {
         on_progress: &mut dyn FnMut(AiRunProgress),
     ) -> Result<AiRunOutcome, AiRunError> {
         let total = pending.len();
-        let started = Instant::now();
-        let cancelled = || self.cancel.load(Ordering::Acquire);
-        // Related examples only sharpen the answers, so the run goes on without them.
-        match embed_missing(deps.embeddings, deps.embedder, &models.embedding, deps.embed_skips, &cancelled) {
-            Ok(0) => {}
-            Ok(embedded) => {
-                tally.embed_count = embedded as u64;
-                info!(embedded, model = %models.embedding, "embedded activities before the run");
-            }
-            Err(err) => warn!(error = format!("{err:#}"), model = %models.embedding, "embedding activities failed; labeling without related examples"),
-        }
-        tally.embed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        if cancelled() {
+        self.embed(deps, models, tally);
+        if self.cancel.load(Ordering::Acquire) {
             return Ok(AiRunOutcome {
-                labeled: 0,
-                skipped: 0,
-                changed: 0,
                 stopped: true,
-                usage: RunUsage::default(),
+                ..AiRunOutcome::default()
             });
         }
         let candidates = deps.embeddings.get_candidates(&models.embedding)?;
@@ -295,7 +327,7 @@ impl AiRunState {
                 activity_id: pending[position].id,
                 category_id: answer,
             };
-            match deps.classification.assign_ai(&[verdict]) {
+            match deps.classification.assign_ai(&[verdict], &models.llm.model) {
                 Ok(n) => changed += n,
                 Err(err) => {
                     save_error = Some(err.context("saving an AI label"));
@@ -326,7 +358,7 @@ impl AiRunState {
             skipped: tally.done - tally.labeled,
             changed,
             stopped,
-            usage: RunUsage::default(),
+            ..AiRunOutcome::default()
         })
     }
 }
@@ -339,4 +371,67 @@ struct RunTally {
     embed_count: u64,
     embed_ms: u64,
     llm_ms: u64,
+}
+
+impl RunTally {
+    fn usage(&self, meter: &UsageMeter) -> RunUsage {
+        RunUsage {
+            llm_ms: self.llm_ms,
+            embed_count: self.embed_count,
+            embed_ms: self.embed_ms,
+            ..meter.snapshot()
+        }
+    }
+}
+
+/// Logs and records the run that ended, returning its id; `None` when it could not be recorded.
+#[allow(clippy::too_many_arguments)]
+fn record(
+    deps: &AiRunDeps<'_>,
+    models: &AiModels,
+    trigger: RunTrigger,
+    started_at: DateTime<Utc>,
+    status: RunStatus,
+    error: Option<String>,
+    tally: &RunTally,
+    usage: RunUsage,
+) -> Option<i64> {
+    info!(
+        status = status.as_str(),
+        items = tally.done,
+        labeled = tally.labeled,
+        requests = usage.requests,
+        failed_requests = usage.failed_requests,
+        input_tokens = usage.input_tokens,
+        cached_input_tokens = usage.cached_input_tokens,
+        output_tokens = usage.output_tokens,
+        llm_ms = usage.llm_ms,
+        busy_ms = usage.busy_ms,
+        embed_ms = usage.embed_ms,
+        "AI run finished"
+    );
+    let record = AiRunRecord {
+        trigger,
+        provider: models.llm.provider.as_ref().map(|id| id.as_str().to_string()),
+        model: models.llm.model.clone(),
+        status,
+        error,
+        started_at,
+        finished_at: Utc::now(),
+        items: tally.done as u64,
+        labeled: tally.labeled as u64,
+        usage,
+    };
+    deps.usage
+        .record(&record)
+        .inspect_err(|err| warn!(error = format!("{err:#}"), "could not record the AI run's usage"))
+        .ok()
+}
+
+/// Saves the suggestions a run came up with; how many are new.
+fn save_suggestions(deps: &AiRunDeps<'_>, writes: &[SuggestionWrite], run_id: Option<i64>) -> usize {
+    deps.suggestions
+        .save(writes, run_id)
+        .inspect_err(|err| warn!(error = format!("{err:#}"), "could not save the suggested categories"))
+        .unwrap_or(0)
 }

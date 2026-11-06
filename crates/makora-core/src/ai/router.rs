@@ -1,6 +1,6 @@
-//! The [`Classifier`] the app uses: the local llama.cpp model, or the remote provider the run's
-//! [`LlmSpec`] names, reached with its key from the keychain. Only what goes to a remote provider
-//! is passed through the [`Redactor`] first; the local model sees everything.
+//! The [`Classifier`] and [`Suggester`] the app uses: the local llama.cpp model, or the remote
+//! provider the run's [`LlmSpec`] names, reached with its key from the keychain. Only what goes
+//! to a remote provider is passed through the [`Redactor`] first; the local model sees everything.
 
 use std::sync::Arc;
 
@@ -9,13 +9,18 @@ use tracing::warn;
 
 use crate::ai::privacy::{PrivacySettings, RedactionReport, Redactor};
 use crate::categorization::domain::retrieval::RelatedActivity;
-use crate::categorization::ports::{ActivityText, Classifier, LlmSpec, UsageMeter};
+use crate::categorization::ports::{ActivityText, Classifier, ClusterName, LlmSpec, Suggester, UsageMeter};
 use crate::domain::types::Category;
 use crate::settings::SettingsStore;
 use crate::shared::ids::{CategoryId, ProviderId};
 
 use super::llm::LlamaClassifier;
-use super::remote::{self, ChatApi};
+use super::choices::choices;
+use super::remote::{self, ChatApi, JsonRequest};
+use super::suggest::{
+    naming_grammar, naming_schema, naming_system_prompt, naming_user_prompt, parse_name, sample_lines, NAMING_FIELDS,
+    NAMING_MAX_TOKENS,
+};
 use super::secrets::SecretStore;
 
 pub struct LlmRouter {
@@ -28,6 +33,82 @@ impl LlmRouter {
     pub fn new(local: LlamaClassifier, settings: Arc<dyn SettingsStore>, secrets: Arc<dyn SecretStore>) -> Self {
         Self { local, settings, secrets }
     }
+
+    /// The remote provider `id`, its API and its base URL, and the privacy settings to apply.
+    fn remote(&self, id: &str) -> Result<(Box<dyn ChatApi>, String, PrivacySettings)> {
+        let ai = self.settings.get().ai;
+        let provider = ai
+            .provider(id)
+            .cloned()
+            .ok_or_else(|| anyhow!("the provider \"{id}\" no longer exists"))?;
+        // A local server needs no key, so a keychain that cannot be read is not the end of the run.
+        let key = self.secrets.get(id).unwrap_or_else(|err| {
+            warn!(provider = id, error = format!("{err:#}"), "could not read the provider's API key; going without one");
+            None
+        });
+        Ok((remote::api_for(&provider, key), provider.base_url, ai.privacy))
+    }
+}
+
+impl Suggester for LlmRouter {
+    fn name_cluster(
+        &self,
+        llm: &LlmSpec,
+        taxonomy: &[Category],
+        samples: &[ActivityText],
+        meter: &UsageMeter,
+    ) -> Result<Option<ClusterName>> {
+        let choices = choices(taxonomy);
+        let system = naming_system_prompt(&choices);
+        let Some(id) = llm.provider.as_ref().map(ProviderId::as_str) else {
+            let mut lines = vec!["Activities that fit no category:".to_string()];
+            lines.extend(sample_lines(samples));
+            let answer = self.local.complete(
+                &llm.model,
+                &system,
+                &lines,
+                &naming_grammar(&choices),
+                NAMING_MAX_TOKENS as usize,
+                meter,
+            )?;
+            return Ok(remote::json_in(&answer).and_then(|answer| parse_name(&answer, &choices)));
+        };
+        let (api, base_url, privacy) = self.remote(id)?;
+        let answer = name_remote(&*api, &base_url, &privacy, &llm.model, &system, &choices, samples, meter)?;
+        Ok(parse_name(&answer, &choices))
+    }
+}
+
+/// Asks the remote provider to name `samples`, as `privacy` lets them out.
+#[allow(clippy::too_many_arguments)]
+fn name_remote(
+    api: &dyn ChatApi,
+    base_url: &str,
+    privacy: &PrivacySettings,
+    model: &str,
+    system: &str,
+    choices: &[super::choices::Choice],
+    samples: &[ActivityText],
+    meter: &UsageMeter,
+) -> Result<serde_json::Value> {
+    let redactor = Redactor::new(privacy);
+    let report = RedactionReport::default();
+    let redacted: Vec<ActivityText> = samples
+        .iter()
+        .map(|sample| redactor.redact_activity(sample, &report))
+        .collect();
+    let user = naming_user_prompt(&sample_lines(&redacted));
+    let schema = naming_schema(choices);
+    let request = JsonRequest {
+        system,
+        user: &user,
+        schema: &schema,
+        max_tokens: NAMING_MAX_TOKENS,
+        purpose: "Category suggestions",
+        fields: NAMING_FIELDS,
+        activities_sent: redacted.len(),
+    };
+    remote::complete_json(api, base_url, model, &request, meter, &report)
 }
 
 impl Classifier for LlmRouter {
@@ -43,21 +124,11 @@ impl Classifier for LlmRouter {
         let Some(id) = llm.provider.as_ref().map(ProviderId::as_str) else {
             return self.local.classify(llm, taxonomy, activities, related, meter, on_answer);
         };
-        let ai = self.settings.get().ai;
-        let provider = ai
-            .provider(id)
-            .cloned()
-            .ok_or_else(|| anyhow!("the provider \"{id}\" no longer exists"))?;
-        // A local server needs no key, so a keychain that cannot be read is not the end of the run.
-        let key = self.secrets.get(id).unwrap_or_else(|err| {
-            warn!(provider = id, error = format!("{err:#}"), "could not read the provider's API key; going without one");
-            None
-        });
-        let api = remote::api_for(&provider, key);
+        let (api, base_url, privacy) = self.remote(id)?;
         classify_remote(
             &*api,
-            &provider.base_url,
-            &ai.privacy,
+            &base_url,
+            &privacy,
             &llm.model,
             taxonomy,
             activities,
@@ -100,7 +171,7 @@ fn classify_remote(
 mod tests {
     use std::sync::Mutex;
 
-    use crate::ai::remote::Pick;
+    use crate::ai::remote::{JsonReply, Pick};
     use crate::categorization::domain::retrieval::SourceRef;
     use crate::categorization::domain::rules::RuleKind;
     use crate::categorization::ports::TokenUsage;
@@ -119,6 +190,21 @@ mod tests {
             lock(&self.0).push(format!("{system}\n{user}"));
             Ok(Pick {
                 answer: "Work".to_string(),
+                usage: TokenUsage::default(),
+            })
+        }
+
+        fn complete_json(
+            &self,
+            _model: &str,
+            system: &str,
+            user: &str,
+            _schema: &serde_json::Value,
+            _max_tokens: u32,
+        ) -> Result<JsonReply> {
+            lock(&self.0).push(format!("{system}\n{user}"));
+            Ok(JsonReply {
+                value: serde_json::json!({ "name": "Games", "description": "Playing games.", "parent": "None" }),
                 usage: TokenUsage::default(),
             })
         }
@@ -193,5 +279,35 @@ mod tests {
         }
         assert!(sent.contains("[email]") && sent.contains("[hidden]") && sent.contains("pull/{id}"));
         assert_eq!(activities[0].title, "Re: offer - jane.doe@acme.com");
+    }
+
+    #[test]
+    fn naming_a_group_sends_only_redacted_samples() {
+        let taxonomy = [Category {
+            id: CategoryId(1),
+            name: "Work".to_string(),
+            color: "#000000".to_string(),
+            parent_id: None,
+            description: None,
+        }];
+        let choices = choices(&taxonomy);
+        let samples = [page("mail.google.com", "/mail/u/0", "Re: lunch - jane.doe@acme.com")];
+        let api = RecordingApi::default();
+        let answer = name_remote(
+            &api,
+            "https://api.example.com/v1",
+            &PrivacySettings::default(),
+            "model",
+            &naming_system_prompt(&choices),
+            &choices,
+            &samples,
+            &UsageMeter::default(),
+        )
+        .unwrap();
+
+        assert_eq!(parse_name(&answer, &choices).unwrap().name, "Games");
+        let sent = lock(&api.0).join("\n");
+        assert!(!sent.contains("jane.doe@acme.com"), "{sent}");
+        assert!(sent.contains("[email]"));
     }
 }
