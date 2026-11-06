@@ -1,7 +1,7 @@
 //! Taxonomy suggestions at the top of the Taxonomy tab: new categories for groups of activities
-//! the model found none for, and sharper descriptions for categories the model keeps getting
-//! wrong. Accepting one, or changing what a category means, offers a run over just the activities
-//! it concerns.
+//! the model found none for, sharper descriptions for categories the model keeps getting wrong,
+//! and merges of categories the user keeps swapping between. Accepting one, or changing what a
+//! category means, offers a run over just the activities it concerns.
 
 use std::collections::HashMap;
 
@@ -15,13 +15,16 @@ use gpui_kit::{
 };
 use makora_lib::categorization::application::ai_run::{RunMode, RunRequest};
 use makora_lib::categorization::application::suggestions::SuggestionView;
-use makora_lib::categorization::domain::suggestions::{DescribeProposal, NewCategoryProposal, TaxonomySuggestion};
+use makora_lib::categorization::domain::suggestions::{
+    DescribeProposal, MergeProposal, NewCategoryProposal, TaxonomySuggestion,
+};
 use makora_lib::domain::types::{Category, NewCategory};
 use makora_lib::shared::ids::{ActivityId, CategoryId};
 
 use crate::ui::app_state::{AppState, Core};
 use crate::ui::data;
 use crate::ui::dialogs::add_category::{AddCategoryData, AddCategoryDialog};
+use crate::ui::dialogs::confirm::Confirm;
 use crate::ui::dialogs::edit_category::{EditCategoryData, EditCategoryDialog};
 use crate::ui::dialogs::{self};
 use crate::ui::error::UiError;
@@ -45,6 +48,14 @@ pub fn moved_line(proposal: &DescribeProposal) -> String {
     format!(
         "You moved {} of its {} AI {noun} elsewhere lately.",
         proposal.corrected, proposal.reviewed
+    )
+}
+
+/// "They look alike, and you moved activities both ways: 3 into Code, 1 back."
+pub fn merge_line(proposal: &MergeProposal, into: &str) -> String {
+    format!(
+        "They look alike, and you moved activities both ways: {} into {into}, {} back.",
+        proposal.moved_out, proposal.moved_in
     )
 }
 
@@ -280,6 +291,106 @@ impl TaxonomySuggestions {
             .into_any_element()
     }
 
+    /// Asks first, then folds `from` into `into` and marks the suggestion accepted.
+    fn confirm_merge(&mut self, id: i64, proposal: &MergeProposal, window: &mut Window, cx: &mut Context<Self>) {
+        let categories = &AppState::read(cx).categories;
+        let paths = category_paths(categories);
+        let (Some(from), Some(into)) = (paths.get(&proposal.from).cloned(), paths.get(&proposal.into).cloned()) else {
+            return;
+        };
+        let children = categories
+            .iter()
+            .filter(|category| category.parent_id == Some(proposal.from))
+            .count();
+        let moved = if children == 0 {
+            "Its pinned activities, rules and AI labels".to_string()
+        } else {
+            let noun = if children == 1 { "subcategory" } else { "subcategories" };
+            format!("Its {children} {noun}, pinned activities, rules and AI labels")
+        };
+        let (from_id, into_id) = (proposal.from, proposal.into);
+        let this = cx.entity().downgrade();
+        Confirm::new(format!("Merge “{from}” into “{into}”?"))
+            .description(format!("{moved} move to “{into}”, then “{from}” is deleted. This cannot be undone."))
+            .confirm_label("Merge")
+            .destructive()
+            .open(window, cx, move |window, cx| {
+                let (from, into) = (from.clone(), into.clone());
+                let _ = this.update(cx, |this, cx| {
+                    this.suggestions.retain(|suggestion| suggestion.id != id);
+                    this.apply = data::fetch_in(
+                        window,
+                        cx,
+                        move |core| {
+                            core.categories.merge(from_id, into_id).map_err(UiError::from)?;
+                            core.suggestions.accept(id).map_err(UiError::from)
+                        },
+                        move |this, result, window, cx| {
+                            match result {
+                                Ok(()) => {
+                                    AppState::update(cx, |state, cx| state.invalidate_categorization(cx));
+                                    Toast::success(format!("Merged “{from}” into “{into}”")).show(window, cx);
+                                }
+                                Err(err) => Toast::error(err.to_string()).show(window, cx),
+                            }
+                            this.refresh(cx);
+                        },
+                    );
+                    cx.notify();
+                });
+            });
+    }
+
+    fn render_merge(
+        &self,
+        id: i64,
+        proposal: &MergeProposal,
+        paths: &HashMap<CategoryId, String>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let (Some(from), Some(into)) = (paths.get(&proposal.from), paths.get(&proposal.into)) else {
+            return div().into_any_element();
+        };
+        let button = |kind: &str| ElementId::Name(SharedString::from(format!("{kind}-suggestion-{id}")));
+        let merge = proposal.clone();
+
+        suggestion_row(cx)
+            .child(
+                h_flex()
+                    .gap_3()
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_2()
+                            .text_sm()
+                            .child(div().truncate().font_medium().child(from.clone()))
+                            .child(div().flex_shrink_0().text_color(muted).child("into"))
+                            .child(div().truncate().font_medium().child(into.clone())),
+                    )
+                    .child(
+                        Button::new(button("merge"))
+                            .primary()
+                            .xsmall()
+                            .label("Merge…")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.confirm_merge(id, &merge, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new(button("dismiss"))
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::X)
+                            .tooltip("Dismiss")
+                            .on_click(cx.listener(move |this, _, window, cx| this.dismiss(id, window, cx))),
+                    ),
+            )
+            .child(div().text_xs().text_color(muted).child(merge_line(proposal, into)))
+            .into_any_element()
+    }
+
     fn render_new(
         &self,
         id: i64,
@@ -412,13 +523,14 @@ impl Render for TaxonomySuggestions {
         let paths = category_paths(&AppState::read(cx).categories);
         let mut new_rows: Vec<AnyElement> = Vec::new();
         let mut describe_rows: Vec<AnyElement> = Vec::new();
+        let mut merge_rows: Vec<AnyElement> = Vec::new();
         for view in self.suggestions.clone() {
             match &view.suggestion {
                 TaxonomySuggestion::New(proposal) => new_rows.push(self.render_new(view.id, proposal, &paths, cx)),
                 TaxonomySuggestion::Describe(proposal) => {
                     describe_rows.push(self.render_describe(view.id, proposal, &paths, cx))
                 }
-                TaxonomySuggestion::Merge(_) => {}
+                TaxonomySuggestion::Merge(proposal) => merge_rows.push(self.render_merge(view.id, proposal, &paths, cx)),
             }
         }
         v_flex()
@@ -443,6 +555,15 @@ impl Render for TaxonomySuggestions {
                     .children(describe_rows),
                 )
             })
+            .when(!merge_rows.is_empty(), |this| {
+                this.child(
+                    SuggestionCard::new(
+                        "Categories to merge",
+                        "Their activities look alike, and you keep moving activities between them.",
+                    )
+                    .children(merge_rows),
+                )
+            })
             .into_any_element()
     }
 }
@@ -450,6 +571,21 @@ impl Render for TaxonomySuggestions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_merge_line_says_how_activities_moved() {
+        let proposal = MergeProposal {
+            from: CategoryId(1),
+            into: CategoryId(2),
+            similarity: 0.95,
+            moved_out: 3,
+            moved_in: 1,
+        };
+        assert_eq!(
+            merge_line(&proposal, "Code"),
+            "They look alike, and you moved activities both ways: 3 into Code, 1 back."
+        );
+    }
 
     #[test]
     fn the_moved_line_counts_labels() {

@@ -55,6 +55,13 @@ impl ActivitiesRepo for SqliteConnection {
         Ok(())
     }
 
+    fn move_pins(&mut self, from: i64, into: i64) -> QueryResult<()> {
+        diesel::update(activities::table.filter(activities::category_id.eq(from)))
+            .set(activities::category_id.eq(into))
+            .execute(self)?;
+        Ok(())
+    }
+
     fn clear_all_pins(&mut self) -> QueryResult<usize> {
         diesel::update(activities::table.filter(activities::category_id.is_not_null()))
             .set(activities::category_id.eq(None::<i64>))

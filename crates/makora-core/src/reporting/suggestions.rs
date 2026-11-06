@@ -1,6 +1,6 @@
 //! Read models behind taxonomy suggestions: the activities the model found no category for and
-//! that are still unfiled, with their embeddings and tracked time; and how the user answered each
-//! category's AI labels.
+//! that are still unfiled, with their embeddings and tracked time; how the user answered each
+//! category's AI labels; and where they moved them.
 
 use diesel::sql_types::{BigInt, Binary, Double, Nullable, Text};
 use diesel::sqlite::SqliteConnection;
@@ -51,6 +51,25 @@ pub struct CategoryFeedbackRow {
     pub corrected: i64,
     #[diesel(sql_type = BigInt)]
     pub rejected: i64,
+}
+
+/// How many AI labels in `from_id` the user pinned to `into_id`.
+#[derive(QueryableByName, Debug, PartialEq, Eq)]
+pub struct CorrectionPairRow {
+    #[diesel(sql_type = BigInt)]
+    pub from_id: i64,
+    #[diesel(sql_type = BigInt)]
+    pub into_id: i64,
+    #[diesel(sql_type = BigInt)]
+    pub count: i64,
+}
+
+#[derive(QueryableByName, Debug)]
+pub struct CategorySecondsRow {
+    #[diesel(sql_type = BigInt)]
+    pub category_id: i64,
+    #[diesel(sql_type = Double)]
+    pub seconds: f64,
 }
 
 /// An activity as the model sees it, and, for one moved out of a category, the category the user
@@ -106,6 +125,11 @@ pub trait SuggestionsReportRepo {
     fn get_kept_samples(&mut self, category_id: i64, limit: i64) -> QueryResult<Vec<SampleRow>>;
     /// Activities seen since `since` whose AI label in `category_id` the user moved out.
     fn get_moved_out_samples(&mut self, category_id: i64, since: &str, limit: i64) -> QueryResult<Vec<SampleRow>>;
+    /// Per pair of categories, how many AI labels of activities seen since `since` the user
+    /// pinned from the first to the second.
+    fn get_correction_pairs(&mut self, since: &str) -> QueryResult<Vec<CorrectionPairRow>>;
+    /// Per category, the time tracked in `window` on the activities filed there by a pin or a rule.
+    fn get_filed_seconds(&mut self, window: &Window) -> QueryResult<Vec<CategorySecondsRow>>;
 }
 
 impl SuggestionsReportRepo for SqliteConnection {
@@ -192,6 +216,34 @@ impl SuggestionsReportRepo for SqliteConnection {
         let binds = vec![Param::I64(category_id), Param::Text(since.to_string()), Param::I64(limit)];
         bind_all(sql_query(sql).into_boxed(), binds).get_results(self)
     }
+
+    fn get_correction_pairs(&mut self, since: &str) -> QueryResult<Vec<CorrectionPairRow>> {
+        let sql = format!(
+            "SELECT l.category_id AS from_id, a.category_id AS into_id, COUNT(*) AS count
+             FROM ai_labels l
+             JOIN activities a ON a.id = l.activity_id
+             WHERE a.category_id IS NOT NULL AND a.category_id != l.category_id AND {SEEN_SINCE}
+             GROUP BY l.category_id, a.category_id
+             ORDER BY from_id, into_id"
+        );
+        bind_all(sql_query(sql).into_boxed(), vec![Param::Text(since.to_string())]).get_results(self)
+    }
+
+    fn get_filed_seconds(&mut self, window: &Window) -> QueryResult<Vec<CategorySecondsRow>> {
+        let sql = format!(
+            "{WITH_WINDOW}
+             SELECT ac.category_id, {seconds} AS seconds
+             FROM w
+             JOIN activity_category ac
+             JOIN sessions s ON s.activity_id = ac.activity_id AND {overlaps}
+             WHERE ac.source IN ('manual', 'rule')
+             GROUP BY ac.category_id
+             ORDER BY ac.category_id",
+            seconds = sum_seconds("s"),
+            overlaps = overlaps("s"),
+        );
+        bind_all(sql_query(sql).into_boxed(), window.binds()).get_results(self)
+    }
 }
 
 #[cfg(test)]
@@ -277,6 +329,29 @@ mod tests {
             }]
         );
         assert!(conn.get_feedback_by_category("2026-04-01T00:00:00+00:00").unwrap().is_empty());
+    }
+
+    #[test]
+    fn corrections_are_counted_per_pair_and_filed_time_per_category() {
+        let mut conn = feedback_conn();
+        assert_eq!(
+            conn.get_correction_pairs(SINCE).unwrap(),
+            [CorrectionPairRow {
+                from_id: 1,
+                into_id: 2,
+                count: 1,
+            }]
+        );
+        let window = Window::until(DateTime::parse_from_rfc3339("2026-04-01T00:00:00Z").unwrap().with_timezone(&Utc));
+        let seconds: Vec<(i64, f64)> = conn
+            .get_filed_seconds(&window)
+            .unwrap()
+            .into_iter()
+            .map(|row| (row.category_id, row.seconds))
+            .collect();
+        assert_eq!(seconds.iter().map(|(id, _)| *id).collect::<Vec<_>>(), [1, 2]);
+        assert_seconds(seconds[0].1, 3600.);
+        assert_seconds(seconds[1].1, 3.0 * 3600.);
     }
 
     #[test]

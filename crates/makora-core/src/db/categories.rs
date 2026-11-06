@@ -45,6 +45,13 @@ impl CategoriesRepo for SqliteConnection {
             .optional()
     }
 
+    fn reparent_children(&mut self, from: i64, into: i64) -> QueryResult<()> {
+        diesel::update(categories::table.filter(categories::parent_id.eq(from)))
+            .set(categories::parent_id.eq(into))
+            .execute(self)?;
+        Ok(())
+    }
+
     fn delete_many(&mut self, ids: &[i64]) -> QueryResult<()> {
         diesel::delete(categories::table.filter(categories::id.eq_any(ids))).execute(self)?;
         Ok(())

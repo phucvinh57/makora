@@ -152,6 +152,7 @@ Each application service does one use case in one transaction, so the database n
 - Opening, closing or retitling a session, including matching a new activity against the rules and carrying a pin across.
 - Creating, editing or deleting a rule, including rewriting `rule_matches`.
 - Deleting a category branch, including releasing its pins and AI labels.
+- Merging one category into another, including moving its subcategories, pins, rules and AI labels and rewriting `rule_matches`.
 - Pinning, unpinning, accepting, and undoing an assignment.
 
 Writes go through `Db::write`, reads through `Db::read` (`db/mod.rs`).

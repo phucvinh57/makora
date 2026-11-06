@@ -1,7 +1,7 @@
 //! Taxonomy suggestions: generating them at the end of an AI run, and listing, accepting and
 //! dismissing them from the UI. Generation clusters the activities the model found no category
-//! for and asks the model to name each new group, and asks for a sharper description of each
-//! category whose AI labels the user keeps moving out.
+//! for and asks the model to name each new group, asks for a sharper description of each
+//! category whose AI labels the user keeps moving out, and finds pairs of categories to merge.
 
 use std::collections::{HashMap, HashSet};
 
@@ -13,10 +13,12 @@ use tracing::{info, warn};
 use crate::categorization::domain::clustering::{cluster, samples, ClusterThresholds, Point};
 use crate::categorization::domain::retrieval::SourceRef;
 use crate::categorization::domain::suggestions::{
-    pick_to_describe, reconcile_new, CategoryFeedback, ClusterPlan, DescribeProposal, NewCategoryProposal, SuggestionKind,
-    SuggestionStatus, TaxonomySuggestion, DESCRIBE_QUIET_DAYS, MAX_NAMED_PER_RUN,
+    centroid, find_merges, pick_to_describe, reconcile_new, unordered, CategoryFeedback, ClusterPlan, DescribeProposal,
+    MergeCategory, NewCategoryProposal, SuggestionKind, SuggestionStatus, TaxonomySuggestion, DESCRIBE_QUIET_DAYS,
+    MAX_NAMED_PER_RUN,
 };
 use crate::categorization::ports::{ActivityText, LlmSpec, MovedActivity, Suggester, UsageMeter};
+use crate::db::activity_embeddings::ActivityEmbeddingsRepo;
 use crate::db::models::{NewTaxonomySuggestionRow, TaxonomySuggestionRow};
 use crate::db::taxonomy_suggestions::TaxonomySuggestionsRepo;
 use crate::db::Db;
@@ -62,6 +64,15 @@ pub struct StoredSuggestion {
     pub suggestion: TaxonomySuggestion,
 }
 
+/// What says two categories may be one: the embeddings of their filed activities, the time filed
+/// in each, and how many AI labels the user moved from one to another.
+#[derive(Debug, Clone, Default)]
+pub struct MergeSignals {
+    pub vectors: Vec<(CategoryId, Vec<f32>)>,
+    pub seconds: HashMap<CategoryId, f64>,
+    pub corrections: HashMap<(CategoryId, CategoryId), u32>,
+}
+
 /// What generation decided to write.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SuggestionWrite {
@@ -91,6 +102,9 @@ pub trait TaxonomySuggestionSvc: Send + Sync {
     fn get_feedback(&self, since: DateTime<Utc>) -> Result<Vec<CategoryFeedback>>;
     /// What the user kept in `category` and what they moved out of it since `since`.
     fn get_describe_samples(&self, category: CategoryId, since: DateTime<Utc>) -> Result<(Vec<ActivityText>, Vec<MovedActivity>)>;
+    /// The embeddings from `embedding_model` and the time of each category's filed activities,
+    /// and the corrections between categories since `since`.
+    fn get_merge_signals(&self, embedding_model: &str, since: DateTime<Utc>) -> Result<MergeSignals>;
     /// Writes what generation decided, linked to `run_id`. Returns how many are new.
     fn save(&self, writes: &[SuggestionWrite], run_id: Option<i64>) -> Result<usize>;
 }
@@ -268,6 +282,30 @@ impl TaxonomySuggestionSvc for SqliteTaxonomySuggestions {
         ))
     }
 
+    fn get_merge_signals(&self, embedding_model: &str, since: DateTime<Utc>) -> Result<MergeSignals> {
+        let mut conn = self.db.read()?;
+        let (filed, seconds, corrections) = (*conn).transaction(|conn| {
+            let filed = conn.get_categorized(embedding_model)?;
+            let seconds = conn.get_filed_seconds(&Window::until(Utc::now()))?;
+            let corrections = conn.get_correction_pairs(&time::to_db(since))?;
+            diesel::QueryResult::Ok((filed, seconds, corrections))
+        })?;
+        Ok(MergeSignals {
+            vectors: filed
+                .into_iter()
+                .map(|row| Ok((CategoryId(row.category_id), decode(&row.vector)?)))
+                .collect::<Result<_>>()?,
+            seconds: seconds.into_iter().map(|row| (CategoryId(row.category_id), row.seconds)).collect(),
+            corrections: corrections
+                .into_iter()
+                .map(|row| {
+                    let count = u32::try_from(row.count).unwrap_or(u32::MAX);
+                    ((CategoryId(row.from_id), CategoryId(row.into_id)), count)
+                })
+                .collect(),
+        })
+    }
+
     fn save(&self, writes: &[SuggestionWrite], run_id: Option<i64>) -> Result<usize> {
         if writes.is_empty() {
             return Ok(0);
@@ -332,6 +370,7 @@ pub fn generate(
     let existing = suggestions.get_for_generation()?;
     let mut writes = propose_new(suggestions, suggester, llm, embedding_model, taxonomy, &existing, meter, cancelled)?;
     writes.extend(propose_descriptions(suggestions, suggester, llm, taxonomy, &existing, meter, cancelled)?);
+    writes.extend(propose_merges(suggestions, embedding_model, taxonomy, &existing)?);
     Ok(writes)
 }
 
@@ -416,6 +455,44 @@ fn propose_new(
     Ok(writes)
 }
 
+/// Finds pairs of categories to fold into one. Asks the model nothing: the signal is the data.
+fn propose_merges(
+    suggestions: &dyn TaxonomySuggestionSvc,
+    embedding_model: &str,
+    taxonomy: &[Category],
+    existing: &[StoredSuggestion],
+) -> Result<Vec<SuggestionWrite>> {
+    let since = Utc::now() - Duration::days(FEEDBACK_DAYS);
+    let signals = suggestions.get_merge_signals(embedding_model, since)?;
+    if signals.corrections.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut vectors: HashMap<CategoryId, Vec<&[f32]>> = HashMap::new();
+    for (category, vector) in &signals.vectors {
+        vectors.entry(*category).or_default().push(vector);
+    }
+    let categories: Vec<MergeCategory> = taxonomy
+        .iter()
+        .map(|category| MergeCategory {
+            id: category.id,
+            parent: category.parent_id,
+            centroid: vectors.remove(&category.id).and_then(centroid),
+            seconds: signals.seconds.get(&category.id).copied().unwrap_or(0.),
+        })
+        .collect();
+    let known: HashSet<(CategoryId, CategoryId)> = existing
+        .iter()
+        .filter_map(|stored| match &stored.suggestion {
+            TaxonomySuggestion::Merge(proposal) => Some(unordered(proposal.from, proposal.into)),
+            _ => None,
+        })
+        .collect();
+    Ok(find_merges(&categories, &signals.corrections, &known)
+        .into_iter()
+        .map(|proposal| SuggestionWrite::Insert(TaxonomySuggestion::Merge(proposal)))
+        .collect())
+}
+
 /// Asks for a sharper description of each category whose AI labels the user moved out often
 /// enough lately, unless one is pending or was dismissed lately.
 fn propose_descriptions(
@@ -486,6 +563,7 @@ mod tests {
         unlabeled: Vec<UnlabeledActivity>,
         existing: Vec<StoredSuggestion>,
         feedback: Vec<CategoryFeedback>,
+        merge: MergeSignals,
     }
 
     impl TaxonomySuggestionSvc for Store {
@@ -515,6 +593,9 @@ mod tests {
         }
         fn get_describe_samples(&self, _: CategoryId, _: DateTime<Utc>) -> Result<(Vec<ActivityText>, Vec<MovedActivity>)> {
             Ok((vec![activity(1, 1.).text], vec![MovedActivity { text: activity(2, 1.).text, to: None }]))
+        }
+        fn get_merge_signals(&self, _: &str, _: DateTime<Utc>) -> Result<MergeSignals> {
+            Ok(self.merge.clone())
         }
         fn save(&self, _: &[SuggestionWrite], _: Option<i64>) -> Result<usize> {
             unimplemented!()
@@ -711,5 +792,38 @@ mod tests {
             ..Store::default()
         };
         assert_eq!(run(&store, &Namer::default()).len(), 1);
+    }
+
+    fn swapped() -> MergeSignals {
+        MergeSignals {
+            vectors: vec![(CategoryId(1), vec![1., 0.]), (CategoryId(2), vec![0.99, 0.141]), (CategoryId(2), vec![1., 0.])],
+            seconds: HashMap::from([(CategoryId(1), 7200.), (CategoryId(2), 60.)]),
+            corrections: HashMap::from([((CategoryId(1), CategoryId(2)), 3), ((CategoryId(2), CategoryId(1)), 1)]),
+        }
+    }
+
+    #[test]
+    fn categories_swapped_both_ways_are_proposed_for_a_merge_once() {
+        let store = Store {
+            merge: swapped(),
+            ..Store::default()
+        };
+        let writes = run(&store, &Namer::default());
+        let [SuggestionWrite::Insert(TaxonomySuggestion::Merge(proposal))] = writes.as_slice() else {
+            panic!("expected one merge: {writes:?}");
+        };
+        assert_eq!((proposal.from, proposal.into), (CategoryId(2), CategoryId(1)));
+
+        let store = Store {
+            merge: swapped(),
+            existing: vec![StoredSuggestion {
+                id: 5,
+                status: SuggestionStatus::Dismissed,
+                created_at: None,
+                suggestion: TaxonomySuggestion::Merge(proposal.clone()),
+            }],
+            ..Store::default()
+        };
+        assert!(run(&store, &Namer::default()).is_empty());
     }
 }

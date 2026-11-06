@@ -14,6 +14,8 @@ pub trait ActivitiesRepo {
     fn get_pins_many(&mut self, ids: &[i64]) -> QueryResult<Vec<(i64, Option<i64>)>>;
     fn set_category_many(&mut self, ids: &[i64], category_id: Option<i64>) -> QueryResult<()>;
     fn unpin_categories(&mut self, category_ids: &[i64]) -> QueryResult<()>;
+    /// Re-pins every activity pinned to `from` to `into`.
+    fn move_pins(&mut self, from: i64, into: i64) -> QueryResult<()>;
     fn clear_all_pins(&mut self) -> QueryResult<usize>;
     /// Every activity among `ids` that is unpinned and no session references any more —
     /// candidates for deletion once their last session goes away.
@@ -35,6 +37,8 @@ pub trait AiLabelsRepo {
     fn reject_active_many(&mut self, activity_ids: &[i64]) -> QueryResult<()>;
     fn delete_for_activities(&mut self, activity_ids: &[i64]) -> QueryResult<()>;
     fn delete_for_categories(&mut self, category_ids: &[i64]) -> QueryResult<()>;
+    /// Points every label in `from`, rejected ones included, at `into`.
+    fn move_labels(&mut self, from: i64, into: i64) -> QueryResult<()>;
     /// Returns how many labels were removed.
     fn delete_all(&mut self) -> QueryResult<usize>;
 }
@@ -45,6 +49,8 @@ pub trait CategoriesRepo {
     fn get_list(&mut self) -> QueryResult<Vec<CategoryRow>>;
     fn filter_existing(&mut self, ids: &[i64]) -> QueryResult<Vec<i64>>;
     fn get_parent_pairs(&mut self) -> QueryResult<Vec<(i64, Option<i64>)>>;
+    /// Moves the children of `from` under `into`.
+    fn reparent_children(&mut self, from: i64, into: i64) -> QueryResult<()>;
     fn insert(&mut self, new: &NewCategoryRow<'_>) -> QueryResult<CategoryRow>;
     /// Replaces every editable field; `Ok(None)` when `id` does not exist.
     fn update(&mut self, id: i64, changes: &CategoryChanges<'_>) -> QueryResult<Option<CategoryRow>>;
@@ -85,6 +91,8 @@ pub trait CategoryRulesRepo {
     /// Returns whether a rule was deleted. Its matches go with it.
     fn delete(&mut self, id: i64) -> QueryResult<bool>;
     fn delete_for_categories(&mut self, category_ids: &[i64]) -> QueryResult<()>;
+    /// Points every rule that files into `from` at `into`.
+    fn move_rules(&mut self, from: i64, into: i64) -> QueryResult<()>;
 }
 
 pub trait RuleSuggestionDismissalsRepo {

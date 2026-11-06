@@ -123,6 +123,15 @@ pub fn release_categories(conn: &mut SqliteConnection, category_ids: &[i64]) -> 
     super::rules_store::rematch_all(conn)
 }
 
+/// Moves every pin, AI label and rule from `from` to `into` — called as `from` is merged into
+/// `into`, in the same transaction. Rules are matched again, since which one wins may change.
+pub fn move_category(conn: &mut SqliteConnection, from: i64, into: i64) -> QueryResult<()> {
+    db::activities::ActivitiesRepo::move_pins(conn, from, into)?;
+    db::ai_labels::AiLabelsRepo::move_labels(conn, from, into)?;
+    db::category_rules::CategoryRulesRepo::move_rules(conn, from, into)?;
+    super::rules_store::rematch_all(conn)
+}
+
 /// Drops the AI labels of activities that are about to be deleted. Their rule matches go with
 /// them (the foreign key cascades).
 pub fn discard_labels(conn: &mut SqliteConnection, activity_ids: &[i64]) -> QueryResult<()> {

@@ -36,6 +36,8 @@ The tree as a whole is the aggregate; `CategoryTree` checks every change against
 
 Deleting a category deletes its whole branch. In the same transaction, `categorization::store::release_categories` removes the pins and AI labels pointing into it, so no activity is left filed under a category that no longer exists.
 
+Merging a category into another (`CategorySvc::merge`) moves its subcategories under the other, then, through `categorization::store::move_category`, its pins, rules and AI labels, and matches the rules again. Then it deletes the category, all in one transaction. A category cannot be merged into its own branch (`Cycle`).
+
 ## Settings
 
 `crates/makora-core/src/settings.rs`, `crates/makora-core/src/settings/application.rs`

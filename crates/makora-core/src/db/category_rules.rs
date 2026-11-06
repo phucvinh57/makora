@@ -38,4 +38,11 @@ impl CategoryRulesRepo for SqliteConnection {
         diesel::delete(category_rules::table.filter(category_rules::category_id.eq_any(category_ids))).execute(self)?;
         Ok(())
     }
+
+    fn move_rules(&mut self, from: i64, into: i64) -> QueryResult<()> {
+        diesel::update(category_rules::table.filter(category_rules::category_id.eq(from)))
+            .set(category_rules::category_id.eq(into))
+            .execute(self)?;
+        Ok(())
+    }
 }

@@ -1,11 +1,12 @@
 //! Taxonomy suggestions: changes to the categories proposed from the data, which the user accepts
 //! or dismisses. Each kind keeps what it needs as a JSON payload in `taxonomy_suggestions`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::categorization::domain::clustering::Cluster;
+use crate::categorization::domain::retrieval::similarity;
 use crate::shared::ids::{ActivityId, CategoryId};
 
 /// How much a fresh cluster must share with an earlier suggestion to count as the same group.
@@ -21,6 +22,10 @@ pub const DESCRIBE_MIN_SHARE: f64 = 0.3;
 pub const MAX_DESCRIBED_PER_RUN: usize = 3;
 /// How long a dismissed description suggestion keeps its category from being questioned again.
 pub const DESCRIBE_QUIET_DAYS: i64 = 30;
+/// Two categories look alike when the centroids of their filed activities are closer than this.
+pub const MERGE_MIN_SIMILARITY: f32 = 0.9;
+/// At most this many merges are proposed per generation.
+pub const MAX_MERGES_PER_RUN: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SuggestionKind {
@@ -178,6 +183,97 @@ pub fn pick_to_describe(feedback: &[CategoryFeedback], quiet: &HashSet<CategoryI
     picked.sort_by(|a, b| b.moved().cmp(&a.moved()).then(a.category_id.cmp(&b.category_id)));
     picked.truncate(MAX_DESCRIBED_PER_RUN);
     picked
+}
+
+/// A category as merge detection sees it: where it sits, the centroid of its filed activities
+/// (`None` when none has an embedding), and their tracked time.
+#[derive(Debug, Clone)]
+pub struct MergeCategory {
+    pub id: CategoryId,
+    pub parent: Option<CategoryId>,
+    pub centroid: Option<Vec<f32>>,
+    pub seconds: f64,
+}
+
+/// The mean of `vectors`, scaled to unit length; `None` when there are none or they cancel out.
+pub fn centroid<'a>(vectors: impl IntoIterator<Item = &'a [f32]>) -> Option<Vec<f32>> {
+    let mut sum: Vec<f32> = Vec::new();
+    for vector in vectors {
+        if sum.is_empty() {
+            sum = vec![0.; vector.len()];
+        }
+        if vector.len() != sum.len() {
+            continue;
+        }
+        for (total, value) in sum.iter_mut().zip(vector) {
+            *total += value;
+        }
+    }
+    let norm = sum.iter().map(|value| value * value).sum::<f32>().sqrt();
+    (norm > f32::EPSILON).then(|| sum.into_iter().map(|value| value / norm).collect())
+}
+
+/// `(a, b)` in a fixed order, so a pair is the same whichever way round it is named.
+pub fn unordered(a: CategoryId, b: CategoryId) -> (CategoryId, CategoryId) {
+    if a <= b { (a, b) } else { (b, a) }
+}
+
+/// Pairs of categories to fold into one: their filed activities look alike, the user moved AI
+/// labels from each to the other, and neither holds the other. The one with less filed time
+/// goes into the other. `corrections` counts labels moved from the first category to the second;
+/// `known` are pairs already proposed and pending or dismissed, never proposed again.
+pub fn find_merges(
+    categories: &[MergeCategory],
+    corrections: &HashMap<(CategoryId, CategoryId), u32>,
+    known: &HashSet<(CategoryId, CategoryId)>,
+) -> Vec<MergeProposal> {
+    let parents: HashMap<CategoryId, Option<CategoryId>> =
+        categories.iter().map(|category| (category.id, category.parent)).collect();
+    let holds = |ancestor: CategoryId, mut id: CategoryId| {
+        // Bounded so a corrupt parent cycle cannot hang generation.
+        for _ in 0..16 {
+            match parents.get(&id).copied().flatten() {
+                Some(parent) if parent == ancestor => return true,
+                Some(parent) => id = parent,
+                None => return false,
+            }
+        }
+        false
+    };
+    let moved = |from: CategoryId, into: CategoryId| corrections.get(&(from, into)).copied().unwrap_or(0);
+    let mut proposals = Vec::new();
+    for (position, a) in categories.iter().enumerate() {
+        for b in &categories[position + 1..] {
+            let (Some(left), Some(right)) = (&a.centroid, &b.centroid) else {
+                continue;
+            };
+            let alike = similarity(left, right);
+            if alike <= MERGE_MIN_SIMILARITY
+                || known.contains(&unordered(a.id, b.id))
+                || holds(a.id, b.id)
+                || holds(b.id, a.id)
+                || moved(a.id, b.id) == 0
+                || moved(b.id, a.id) == 0
+            {
+                continue;
+            }
+            let (from, into) = if a.seconds < b.seconds || (a.seconds == b.seconds && a.id > b.id) {
+                (a, b)
+            } else {
+                (b, a)
+            };
+            proposals.push(MergeProposal {
+                from: from.id,
+                into: into.id,
+                similarity: alike,
+                moved_out: moved(from.id, into.id),
+                moved_in: moved(into.id, from.id),
+            });
+        }
+    }
+    proposals.sort_by(|a, b| b.similarity.total_cmp(&a.similarity).then(a.from.cmp(&b.from)));
+    proposals.truncate(MAX_MERGES_PER_RUN);
+    proposals
 }
 
 /// The share of the smaller of `a` and `b` that is in both; 0 when either is empty.
@@ -352,6 +448,58 @@ mod tests {
         let quiet = HashSet::from([CategoryId(5)]);
         let picked: Vec<i64> = pick_to_describe(&all, &quiet).iter().map(|entry| entry.category_id.0).collect();
         assert_eq!(picked, [2, 3, 4]);
+    }
+
+    fn category(id: i64, parent: Option<i64>, centroid: [f32; 2], seconds: f64) -> MergeCategory {
+        MergeCategory {
+            id: CategoryId(id),
+            parent: parent.map(CategoryId),
+            centroid: Some(centroid.to_vec()),
+            seconds,
+        }
+    }
+
+    fn both_ways(a: i64, b: i64) -> HashMap<(CategoryId, CategoryId), u32> {
+        HashMap::from([((CategoryId(a), CategoryId(b)), 2), ((CategoryId(b), CategoryId(a)), 1)])
+    }
+
+    #[test]
+    fn the_centroid_is_the_unit_mean() {
+        let vectors = [vec![1., 0.], vec![0., 1.]];
+        let mean = centroid(vectors.iter().map(Vec::as_slice)).unwrap();
+        assert!((mean[0] - mean[1]).abs() < 1e-6 && (mean[0] - 0.5f32.sqrt()).abs() < 1e-6);
+        assert!(centroid(std::iter::empty()).is_none());
+    }
+
+    #[test]
+    fn alike_categories_swapped_both_ways_merge_into_the_bigger() {
+        let categories = [category(1, None, [1., 0.], 100.), category(2, None, [0.99, 0.141], 900.)];
+        let merges = find_merges(&categories, &both_ways(1, 2), &HashSet::new());
+        let [merge] = merges.as_slice() else {
+            panic!("expected one merge: {merges:?}");
+        };
+        assert_eq!((merge.from, merge.into), (CategoryId(1), CategoryId(2)));
+        assert_eq!((merge.moved_out, merge.moved_in), (2, 1));
+    }
+
+    #[test]
+    fn a_merge_needs_likeness_corrections_both_ways_and_no_nesting() {
+        let alike = [category(1, None, [1., 0.], 100.), category(2, None, [0.99, 0.141], 900.)];
+        let one_way = HashMap::from([((CategoryId(1), CategoryId(2)), 3)]);
+        assert!(find_merges(&alike, &one_way, &HashSet::new()).is_empty());
+
+        let apart = [category(1, None, [1., 0.], 100.), category(2, None, [0.8, 0.6], 900.)];
+        assert!(find_merges(&apart, &both_ways(1, 2), &HashSet::new()).is_empty());
+
+        let nested = [
+            category(1, None, [1., 0.], 100.),
+            category(3, Some(1), [0., 1.], 0.),
+            category(2, Some(3), [0.99, 0.141], 900.),
+        ];
+        assert!(find_merges(&nested, &both_ways(1, 2), &HashSet::new()).is_empty());
+
+        let known = HashSet::from([unordered(CategoryId(2), CategoryId(1))]);
+        assert!(find_merges(&alike, &both_ways(1, 2), &known).is_empty());
     }
 
     #[test]
