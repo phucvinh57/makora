@@ -35,7 +35,8 @@ Packaging config: `crates/makora/Cargo.toml` (`[package.metadata.{deb,generate-r
 
 - **One worktree per independent change.** Start with `claude -w <name>` or ask for a worktree. They live in `.claude/worktrees/`. A hook runs `scripts/worktree-setup.sh` (JS deps, `target/` symlink to the main checkout); run it yourself after a plain `git worktree add`.
 - **Show the result, don't claim it.** Run `scripts/check.sh` (checks for paths changed since `main`; `--all` for everything) and report its output. For UI changes, launch the app in the background and screenshot the affected screen. Never bypass the pre-push hook with `--no-verify`.
-- **Finish with `/pre-pr`, without asking.** It checks, reviews against `REVIEW.md`, commits, and opens the PR (a `gh stack` for related changes). There is no AI review in CI. Stop and ask only when checks keep failing or findings remain after round 3.
+- **Keep `docs/architecture/` current.** When a change alters a bounded context, aggregate, process, IPC message, table or a term in the ubiquitous language, update the matching page in the same PR.
+- **Finish with `/pre-pr`, without asking.** It checks, reviews against `docs/REVIEW.md`, commits, and opens the PR (a `gh stack` for related changes). There is no AI review in CI. Stop and ask only when checks keep failing or findings remain after round 3.
 
 ## Rules
 

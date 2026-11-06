@@ -1,6 +1,6 @@
 ---
 name: pre-pr
-description: Take finished work to open pull requests — run the checks for what changed, review the diff against REVIEW.md and fix findings, commit, and open the PR (or a gh stack of PRs when the changes are related). Use when the user runs /pre-pr, asks to open/ship a PR, or when work in a worktree is done.
+description: Take finished work to open pull requests — run the checks for what changed, review the diff against docs/REVIEW.md and fix findings, commit, and open the PR (or a gh stack of PRs when the changes are related). Use when the user runs /pre-pr, asks to open/ship a PR, or when work in a worktree is done.
 ---
 
 # Pre-PR
@@ -11,7 +11,7 @@ There is no AI reviewer in CI; this is the review. Report evidence, not claims.
 
 - Never work on `main`. Move the work into a worktree under `.claude/worktrees/` if it isn't in one.
 - Look at the change: `git status --short`, `git diff main...HEAD --stat`.
-- Pick its tier from **Risk tiers** in `REVIEW.md`.
+- Pick its tier from **Risk tiers** in `docs/REVIEW.md`.
 - Pick the shape:
   - **Single PR** for one coherent change.
   - **Stack** (`gh stack`) when each layer builds on the one below and is reviewable alone, e.g. migration + db → core → UI, or refactor → feature. Each layer passes checks on its own.
@@ -25,16 +25,20 @@ There is no AI reviewer in CI; this is the review. Report evidence, not claims.
 
 ## 3. Review
 
-Review with fresh context, following `REVIEW.md`. For a stack, review each layer against its parent.
+Review with fresh context, following `docs/REVIEW.md`. For a stack, review each layer against its parent.
 
 - Run `code-review` at the tier's level: `low`, `medium` or `high`.
 - High tier: also run `security-review`.
 
 Fix every Important finding. Fix the rest or give a one-line reason. Repeat steps 2–3 on the new changes only, up to 3 rounds. If findings keep coming, stop and question the approach with the user.
 
-If the same kind of finding recurs, propose a fix at the source: an `AGENTS.md` rule, a `REVIEW.md` line, or a lint.
+If the same kind of finding recurs, propose a fix at the source: an `AGENTS.md` rule, a `docs/REVIEW.md` line, or a lint.
 
-## 4. Commit and open the PR
+## 4. Update the architecture docs
+
+Read `docs/architecture/README.md` and check the diff against each page. Update the pages the change makes wrong or incomplete: new or changed contexts, aggregates, processes, IPC messages, tables, or terms (`ubiquitous-language.md`). Skip when nothing there is affected, and say so in the PR body.
+
+## 5. Commit and open the PR
 
 - Branches: `claude/<topic>`; stack layers `claude/<topic>-<layer>`.
 - Commit messages: `fix(scope): …` for fixes, a plain imperative sentence for features.
@@ -76,7 +80,7 @@ gh pr edit claude/<topic>-<layerN> --title "<title>" --body-file <bodyN.md>
 
 To fix a layer: `gh stack checkout <branch>` (or `gh stack down`/`up`), commit, `gh stack rebase --upstack`, `gh stack push`. After lower PRs merge, `gh stack sync --prune`.
 
-## 5. Watch CI
+## 6. Watch CI
 
 For each PR (every layer of a stack):
 
@@ -87,6 +91,6 @@ For each PR (every layer of a stack):
 
 If the failure isn't caused by the PR (it fails on `main` too, or it's CI setup), fix it in its own PR or on `main` if the user allows, then merge `main` in. Stop and ask after 3 failed rounds on one check, or when the failure is flaky or infrastructure.
 
-## 6. Report
+## 7. Report
 
 List each PR URL with its risk tier and final check results.

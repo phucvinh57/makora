@@ -10,7 +10,7 @@ For human reviewers and the `/pre-pr` skill. When a bug slips through, add a lin
 - **API keys** stored or logged in plain text.
 - **AGENTS.md rules broken:** process-wide state before the single-instance check; `println!`/`eprintln!` outside the allowed spots.
 - **Bridge:** the native-host manifest points at the wrong binary, or the socket/pipe accepts another user's messages.
-- **Docs out of date** with the change (README, CONTRIBUTING, AGENTS.md).
+- **Docs out of date** with the change (README, CONTRIBUTING, AGENTS.md, `docs/architecture/`).
 
 ## Risk tiers
 
