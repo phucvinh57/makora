@@ -5,12 +5,14 @@ When reporting a bug, include your OS, desktop environment if relevant, what you
 ## Prerequisites
 
 - [Rust](https://www.rust-lang.org/tools/install) (stable), [Bun](https://bun.sh) and [Node.js](https://nodejs.org).
+- [Git LFS](https://git-lfs.com/): run `git lfs pull` after cloning to fetch the app assets.
 - A C/C++ toolchain and CMake: SQLite and llama.cpp build from source.
 - **Linux:** a Vulkan driver, Vulkan headers, a shader compiler (`glslc`), and GPUI's libraries. On Debian/Ubuntu:
 
   ```sh
-  sudo apt install build-essential libxkbcommon-dev libxkbcommon-x11-dev \
-      libwayland-dev libxcb1-dev libx11-xcb-dev libfontconfig-dev libfreetype-dev
+  sudo apt install build-essential cmake libclang-dev libvulkan-dev glslc \
+      libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev \
+      libx11-xcb-dev libfontconfig-dev libfreetype-dev
   ```
 - **macOS:** Xcode command line tools. Dev rebuilds change the app signature, so you may need to grant Accessibility again.
 - **Windows:** Visual Studio Build Tools with **Desktop development with C++**, and Vulkan. Set a short target path before every build: `$env:CARGO_TARGET_DIR = "C:\mk"`.
